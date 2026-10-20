@@ -49,11 +49,29 @@ export async function snapshotActiveTab(): Promise<SnapshotResult> {
     const parsed = new Defuddle(doc as unknown as Document, { url: raw.url }).parse();
     if (parsed?.content && parsed.content.trim().length > 0) {
       markdown = createMarkdownContent(parsed.content, raw.url).trim();
-    } else {
-      extractErr = "正文提取结果为空（该页可能不是文章型内容）";
     }
   } catch (e) {
     extractErr = `正文解析失败：${errText(e)}`;
+  }
+
+  if (!markdown) {
+    // 回退：非文章型页面（GitHub 列表页、文档目录页等）Defuddle 常返回空 → 退化为页面纯文本
+    // 注意 Defuddle.parse 会改动传入的 DOM，所以这里重新解析一份
+    try {
+      const doc2 = new DOMParser().parseFromString(raw.html, "text/html");
+      doc2.querySelectorAll("script,style,noscript,svg").forEach((el) => el.remove());
+      const text = (doc2.body?.textContent ?? "")
+        .replace(/[ \t\r]+/g, " ")
+        .replace(/\n{3,}/g, "\n\n")
+        .trim();
+      if (text) {
+        markdown = text;
+        extractErr = null; // 回退成功即视为提取成功
+      }
+    } catch (e) {
+      extractErr = extractErr ?? `正文解析失败：${errText(e)}`;
+    }
+    if (!markdown && !extractErr) extractErr = "正文提取结果为空（该页可能不是文章型内容）";
   }
   return { page: { url: raw.url, title: raw.title, markdown, selection: raw.selection }, error: extractErr };
 }
