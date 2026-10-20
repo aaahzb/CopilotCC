@@ -1508,8 +1508,8 @@ git commit -m "feat(bridge): CLI 入口与自检命令"
 
 **Files:**
 - Create: `extension/package.json`, `extension/wxt.config.ts`, `extension/vitest.config.ts`
-- Create: `extension/src/entries/background.ts`
-- Create: `extension/src/entries/sidepanel/index.html`, `main.tsx`（占位 App，Task 12 填充）
+- Create: `extension/src/entrypoints/background.ts`
+- Create: `extension/src/entrypoints/sidepanel/index.html`, `main.tsx`（占位 App，Task 12 填充）
 
 **Interfaces:**
 - Produces: 可加载的扩展，点击图标开侧栏；右键菜单"用 Claude Code 询问选中内容"把选中文字写入 `chrome.storage.session` 的 `ccc.pendingQuote` 并打开面板（Task 12 的 App 读取该键）。manifest `key` 用 Task 1 生成的值。
@@ -1594,7 +1594,7 @@ export default defineBackground(() => {
 
 - [ ] **Step 4: 写占位 sidepanel 页面**
 
-`extension/src/entries/sidepanel/index.html`:
+`extension/src/entrypoints/sidepanel/index.html`:
 ```html
 <!doctype html>
 <html lang="zh-CN">
@@ -1609,7 +1609,7 @@ export default defineBackground(() => {
 </html>
 ```
 
-`extension/src/entries/sidepanel/main.tsx`:
+`extension/src/entrypoints/sidepanel/main.tsx`:
 ```tsx
 import React from "react";
 import { createRoot } from "react-dom/client";
@@ -2074,8 +2074,8 @@ Expected: 11 passed。
 **Files:**
 - Create: `extension/src/lib/page-extract.ts`
 - Create: `extension/src/components/TokenGate.tsx`, `FolderBar.tsx`, `MessageList.tsx`, `InputBox.tsx`, `PermissionCard.tsx`
-- Modify: `extension/src/entries/sidepanel/main.tsx`（替换占位）
-- Create: `extension/src/entries/sidepanel/App.tsx`, `style.css`
+- Modify: `extension/src/entrypoints/sidepanel/main.tsx`（替换占位）
+- Create: `extension/src/entrypoints/sidepanel/App.tsx`, `style.css`
 
 **Interfaces:**
 - Consumes: Task 10 全部（storage/attach-policy）、Task 11（BridgeClient）、Task 9（pendingQuote 键）。
@@ -2304,7 +2304,7 @@ export function PermissionCard(props: {
 
 - [ ] **Step 3: 实现 App.tsx 装配**
 
-`extension/src/entries/sidepanel/App.tsx`:
+`extension/src/entrypoints/sidepanel/App.tsx`:
 ```tsx
 import React, { useEffect, useRef, useState } from "react";
 import { BridgeClient, type ConnState } from "../../lib/ws-client";
@@ -2489,7 +2489,7 @@ export default function App(): React.ReactElement {
 
 - [ ] **Step 4: 写 style.css 并接线 main.tsx**
 
-`extension/src/entries/sidepanel/style.css`:
+`extension/src/entrypoints/sidepanel/style.css`:
 ```css
 :root { color-scheme: dark; }
 * { box-sizing: border-box; }
