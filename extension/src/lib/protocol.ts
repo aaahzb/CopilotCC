@@ -13,6 +13,10 @@ export type EffortLevelSetting = "low" | "medium" | "high" | "xhigh" | "max";
 export interface HistoryMessage {
   role: "user" | "assistant";
   text: string;
+  /** 完整发送内容（已去防注入前缀）；仅桥接来源的用户消息有，供右键溯源 */
+  sentText?: string;
+  /** 附带标记：full=页面全文，selection=仅选中文字 */
+  attachKind?: "full" | "selection";
 }
 
 export type ClientMessage =

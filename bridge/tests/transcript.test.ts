@@ -45,7 +45,7 @@ describe("readTranscript", () => {
   });
 });
 
-describe("readTranscript 剥离桥接发送包装", () => {
+describe("readTranscript 拆解桥接发送包装", () => {
   const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ccc-home-"));
   const cwd = path.join("proj", "笔记");
   const sid = "sess-wrap";
@@ -56,7 +56,8 @@ describe("readTranscript 剥离桥接发送包装", () => {
     process.env.CCC_FAKE_HOME = fakeHome;
     const dir = path.join(fakeHome, ".claude", "projects", slugifyPath(path.resolve(cwd)));
     fs.mkdirSync(dir, { recursive: true });
-    const wrapped = `${GUARD}[页面上下文 url=https://a.b 标题=T]\n正文内容\n\n[用户问题]\n这页讲了什么`;
+    const page = "[页面上下文 url=https://a.b 标题=T]\n正文内容\n\n[用户问题]\n这页讲了什么";
+    const wrapped = GUARD + page;
     const selOnly = "[选中文字]\n某段文字\n\n[用户问题]\n解释这段话";
     const plain = "交互式 CLI 直接发的消息";
     const lines = [wrapped, selOnly, plain].map((t) => JSON.stringify({ type: "user", message: { content: t } }));
@@ -67,10 +68,20 @@ describe("readTranscript 剥离桥接发送包装", () => {
     delete process.env.CCC_FAKE_HOME;
   });
 
-  it("剥离防注入前缀与页面上下文/选中文字包装，只留用户问题；无标记消息原样保留", () => {
+  it("气泡只显示用户问题；完整发送内容保留在 sentText 供溯源，并给出附带标记；无标记消息原样保留", () => {
     expect(readTranscript(cwd, sid)).toEqual([
-      { role: "user", text: "这页讲了什么" },
-      { role: "user", text: "解释这段话" },
+      {
+        role: "user",
+        text: "这页讲了什么",
+        sentText: "[页面上下文 url=https://a.b 标题=T]\n正文内容\n\n[用户问题]\n这页讲了什么",
+        attachKind: "full",
+      },
+      {
+        role: "user",
+        text: "解释这段话",
+        sentText: "[选中文字]\n某段文字\n\n[用户问题]\n解释这段话",
+        attachKind: "selection",
+      },
       { role: "user", text: "交互式 CLI 直接发的消息" },
     ]);
   });

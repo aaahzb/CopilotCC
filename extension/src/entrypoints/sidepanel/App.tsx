@@ -53,7 +53,8 @@ export default function App(): React.ReactElement {
         setMessages((ms) => [...ms, { id: crypto.randomUUID(), role: "assistant", text: `⚠️ ${m.message}` }]);
         break;
       case "session.history.data":
-        setMessages(m.messages.map((h) => ({ id: crypto.randomUUID(), role: h.role, text: h.text })));
+        // 回放消息带 sentText/attachKind：重载前后显示行为一致（气泡只显示问题，完整发送内容右键可溯源）
+        setMessages(m.messages.map((h) => ({ id: crypto.randomUUID(), role: h.role, text: h.text, sentText: h.sentText, attachKind: h.attachKind })));
         break;
       case "chat.delta":
         setStreaming((s) => (s ?? "") + m.text);
