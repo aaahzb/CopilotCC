@@ -79,7 +79,7 @@ npm i -g bun        # 一次性
 npm run build:exe   # 产物在 bridge/dist/
 ```
 
-产物布局：`ccc-bridge[.exe]` + `traybin/`（托盘原生二进制，需与 exe 同级）。运行后驻留系统托盘，右键菜单：复制配对 Token、打开配置目录、退出。开发态免打包直接跑托盘：`npm run tray`。
+产物布局：`ccc-bridge[.exe]` + `traybin/`（托盘原生二进制，需与 exe 同级）。运行后驻留系统托盘，右键菜单：复制配对 Token、退出。配置文件 `~/.ccc-bridge/config.json` 里可改的只有三项：token（改掉即换配对码）、port（默认 19280，端口冲突时改）、allowedOrigins（扩展来源白名单，默认空=仅本机放行）。开发态免打包直接跑托盘：`npm run tray`。
 
 **macOS（arm64）部署**：把整个 `ccc-bridge-darwin-arm64` 目录拷到 Mac，执行一次：
 

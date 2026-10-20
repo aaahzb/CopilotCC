@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import type { SessionInfo } from "../lib/protocol";
 
 /** 顶部文件夹栏：路径输入 + 文件夹切换 + 会话切换 + 新建/删除会话 + 续聊标识 + 续接命令复制 */
@@ -17,6 +17,11 @@ export function FolderBar(props: {
 }): React.ReactElement {
   const [value, setValue] = useState(props.bound ?? "");
   const [copied, setCopied] = useState(false);
+
+  // useState 只在挂载时初始化一次：自动回绑/切换文件夹后，把已绑定路径回填进输入框
+  useEffect(() => {
+    if (props.bound) setValue(props.bound);
+  }, [props.bound]);
 
   /** 一键复制 cmd 续接命令：claude --resume <sessionId> */
   function copyResumeCmd(): void {
@@ -88,6 +93,7 @@ export function FolderBar(props: {
               }}
             >
               <option value="" disabled>切换会话…</option>
+              {props.sessions.length === 0 ? <option key="empty" value="__none" disabled>（此文件夹暂无历史会话）</option> : null}
               {props.sessions.map((s) => (
                 <option key={s.sessionId} value={s.sessionId}>
                   {s.sessionId === props.sessionId ? "▶ " : ""}

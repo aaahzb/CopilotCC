@@ -13,7 +13,7 @@ const dist = path.join(root, "dist");
 
 /** 构建目标。--windows-hide 让 win 版双击不弹黑窗；darwin 目标在 Windows 上交叉编译 */
 const targets = [
-  { target: "bun-windows-x64", dir: "ccc-bridge-win-x64", exe: "ccc-bridge.exe", trayBin: "tray_windows_release.exe", extra: ["--windows-hide"] },
+  { target: "bun-windows-x64", dir: "ccc-bridge-win-x64", exe: "ccc-bridge.exe", trayBin: "tray_windows_release.exe", extra: ["--windows-hide-console"] },
   { target: "bun-darwin-arm64", dir: "ccc-bridge-darwin-arm64", exe: "ccc-bridge", trayBin: "tray_darwin_release", extra: [] },
 ];
 

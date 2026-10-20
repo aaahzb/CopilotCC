@@ -1,4 +1,4 @@
-/** 托盘入口：WS 桥 + 系统托盘图标（右键菜单：复制 token / 打开配置目录 / 退出）。跨平台：win32 / darwin(arm64) / linux。 */
+/** 托盘入口：WS 桥 + 系统托盘图标（右键菜单：复制 token / 退出）。跨平台：win32 / darwin(arm64) / linux。 */
 import systray2 from "systray2";
 import type { MenuItem } from "systray2";
 
@@ -68,23 +68,12 @@ function copyToClipboard(text: string): void {
   const cmd = process.platform === "win32" ? "clip" : process.platform === "darwin" ? "pbcopy" : "xclip";
   const args = process.platform === "linux" ? ["-selection", "clipboard"] : [];
   try {
-    const p = spawn(cmd, args, { stdio: ["pipe", "ignore", "ignore"] });
+    // clip 是控制台程序；GUI 形态的托盘 exe 不给它窗口，避免复制时闪黑框
+    const p = spawn(cmd, args, { stdio: ["pipe", "ignore", "ignore"], windowsHide: true });
     p.on("error", () => {});
     p.stdin.end(text);
   } catch {
     // 剪贴板工具缺失就静默
-  }
-}
-
-/** 用系统文件管理器打开目录：win32=explorer，darwin=open，linux=xdg-open */
-function openDir(p: string): void {
-  const cmd = process.platform === "win32" ? "explorer" : process.platform === "darwin" ? "open" : "xdg-open";
-  try {
-    const child = spawn(cmd, [p], { detached: true, stdio: "ignore" });
-    child.on("error", () => {});
-    child.unref();
-  } catch {
-    // 忽略
   }
 }
 
@@ -101,7 +90,6 @@ async function main(): Promise<void> {
   const items: TrayItem[] = [
     { title: `Claude Code 桥接运行中（端口 ${config.port}）`, tooltip: "", enabled: false },
     { title: "复制配对 Token", tooltip: "复制到剪贴板，粘贴到扩展设置页", enabled: true, click: () => copyToClipboard(config.token) },
-    { title: "打开配置目录", tooltip: configDir(), enabled: true, click: () => openDir(configDir()) },
     SysTray.separator,
     {
       title: "退出",
@@ -134,7 +122,7 @@ main().catch((e: unknown) => {
   const msg = e instanceof Error ? e.stack ?? e.message : String(e);
   console.error("[ccc-bridge] 托盘启动失败:", msg);
   try {
-    // --windows-hide 编译版没有控制台，错误同时落一份日志便于排查
+    // --windows-hide-console 编译版没有控制台，错误同时落一份日志便于排查
     fs.mkdirSync(configDir(), { recursive: true });
     fs.appendFileSync(path.join(configDir(), "tray-error.log"), `${new Date().toISOString()} ${msg}\n`, "utf-8");
   } catch {

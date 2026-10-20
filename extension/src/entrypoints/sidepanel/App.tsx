@@ -118,10 +118,12 @@ export default function App(): React.ReactElement {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // auth.ok 后自动回绑上次文件夹
+  // 每次 WS 进入 open（含断线重连）都回绑：服务端每条连接的状态独立，
+  // 重连后不重绑会出现客户端显示已绑定、服务端却报"请先绑定文件夹"
   useEffect(() => {
-    if (conn === "open" && settings?.lastFolder && !bound) {
-      clientRef.current?.send({ type: "folder.bind", path: settings.lastFolder });
+    if (conn === "open") {
+      const p = bound ?? settings?.lastFolder;
+      if (p) clientRef.current?.send({ type: "folder.bind", path: p });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conn]);
