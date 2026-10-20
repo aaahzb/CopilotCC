@@ -22,8 +22,23 @@ export function slugifyPath(p: string): string {
   return p.replace(/[^a-zA-Z0-9-]/g, "-");
 }
 
+/** 桥接消息包装中的用户问题标记（对应扩展端 composeMessage 的输出格式） */
+const USER_QUESTION_MARK = "[用户问题]\n";
+
+/**
+ * 剥离桥接发送包装（防注入前缀、[页面上下文]/[选中文字] 块），只留真实用户输入。
+ * 保证重载后回放历史的显示与当前会话气泡一致（气泡只显示用户输入部分）。
+ * @param text jsonl 里的原始用户消息文本
+ * @returns 用户实际输入；无标记（非桥接来源的消息）时原样返回
+ */
+function stripBridgeWrapper(text: string): string {
+  const i = text.indexOf(USER_QUESTION_MARK);
+  return i >= 0 ? text.slice(i + USER_QUESTION_MARK.length) : text;
+}
+
 /**
  * 读取某 session 的转录，抽取 user/assistant 纯文本消息（跳过工具块），取最后 max 条。
+ * 用户消息先剥离桥接发送包装，避免重载回放后气泡里冒出页面上下文原文。
  * @param cwd 会话工作目录
  * @param sessionId 会话 ID
  * @param max 最多返回条数，默认 100
@@ -48,6 +63,7 @@ export function readTranscript(cwd: string, sessionId: string, max = 100): Histo
           .map((b: { text?: string }) => b.text ?? "")
           .join("\n");
       }
+      if (e.type === "user") text = stripBridgeWrapper(text); // 回放显示行为与当前会话一致
       if (text) out.push({ role: e.type, text: text.slice(0, 2000) });
     } catch {
       // 跳过坏行
