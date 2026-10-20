@@ -10,7 +10,7 @@
 - [x] Task 8: index.ts CLI + selftest 验证
 - [x] Task 9: extension 骨架（WXT + background）
 - [x] Task 10: storage.ts + attach-policy.ts
-- [ ] Task 11: ws-client.ts
+- [x] Task 11: ws-client.ts
 - [ ] Task 12: page-extract.ts + UI 组件 + App 装配
 - [ ] Task 13: 端到端手动验收 + README.md
 
