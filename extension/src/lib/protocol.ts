@@ -19,6 +19,15 @@ export interface HistoryMessage {
   attachKind?: "full" | "selection";
 }
 
+/** 会话列表项（一个文件夹下可有多个会话） */
+export interface SessionInfo {
+  sessionId: string;
+  /** 标题：首条用户消息拆解包装后的前 30 字；无则 "(空会话)" */
+  title: string;
+  /** 转录文件 mtime，epoch 毫秒 */
+  updatedAt: number;
+}
+
 export type ClientMessage =
   | { type: "auth"; token: string }
   | { type: "client.ready" }
@@ -27,6 +36,10 @@ export type ClientMessage =
   | { type: "chat.abort" }
   | { type: "permission.response"; requestId: string; allow: boolean }
   | { type: "session.history" }
+  | { type: "session.list" }
+  | { type: "session.new" }
+  | { type: "session.switch"; sessionId: string }
+  | { type: "session.delete"; sessionId: string }
   | { type: "settings.set"; permissionMode: PermissionModeSetting; model?: string; effort?: EffortLevelSetting };
 
 export type ServerMessage =
@@ -39,7 +52,8 @@ export type ServerMessage =
   | { type: "chat.done"; sessionId: string }
   | { type: "chat.error"; message: string }
   | { type: "permission.request"; requestId: string; tool: string; detail: string }
-  | { type: "session.history.data"; messages: HistoryMessage[] };
+  | { type: "session.history.data"; messages: HistoryMessage[] }
+  | { type: "session.list.data"; sessions: SessionInfo[]; currentId: string | null };
 
 /**
  * 校验权限模式字符串。
@@ -74,6 +88,8 @@ export function parseClientMessage(raw: string): ClientMessage | null {
       case "client.ready":
       case "chat.abort":
       case "session.history":
+      case "session.list":
+      case "session.new":
         return m;
       case "folder.bind":
         return typeof m.path === "string" && m.path.length > 0 ? m : null;
@@ -81,6 +97,9 @@ export function parseClientMessage(raw: string): ClientMessage | null {
         return typeof m.text === "string" && m.text.length > 0 ? m : null;
       case "permission.response":
         return typeof m.requestId === "string" && typeof m.allow === "boolean" ? m : null;
+      case "session.switch":
+      case "session.delete":
+        return typeof m.sessionId === "string" && m.sessionId.length > 0 ? m : null;
       case "settings.set": {
         if (!isPermissionMode(m.permissionMode)) return null;
         // model/effort 为可选字段：只接受合法值，空串视为"跟随默认"（不下发）

@@ -43,3 +43,17 @@ describe("settings.set 扩展字段", () => {
       .toEqual({ type: "settings.set", permissionMode: "auto", model: undefined, effort: undefined });
   });
 });
+
+describe("会话管理消息", () => {
+  it("解析 session.list / session.new / session.switch / session.delete", () => {
+    expect(parseClientMessage(JSON.stringify({ type: "session.list" }))).toEqual({ type: "session.list" });
+    expect(parseClientMessage(JSON.stringify({ type: "session.new" }))).toEqual({ type: "session.new" });
+    expect(parseClientMessage(JSON.stringify({ type: "session.switch", sessionId: "s1" }))).toEqual({ type: "session.switch", sessionId: "s1" });
+    expect(parseClientMessage(JSON.stringify({ type: "session.delete", sessionId: "s1" }))).toEqual({ type: "session.delete", sessionId: "s1" });
+  });
+
+  it("sessionId 缺失或为空返回 null", () => {
+    expect(parseClientMessage(JSON.stringify({ type: "session.switch" }))).toBeNull();
+    expect(parseClientMessage(JSON.stringify({ type: "session.delete", sessionId: "" }))).toBeNull();
+  });
+});

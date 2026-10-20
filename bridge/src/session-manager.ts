@@ -69,4 +69,14 @@ export class SessionManager {
     fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
     fs.writeFileSync(this.filePath, JSON.stringify(this.map, null, 2), "utf-8");
   }
+
+  /**
+   * 删除文件夹的映射记录并落盘（新建会话/删除当前会话时用）。
+   * @param folder 文件夹路径
+   */
+  delete(folder: string): void {
+    delete this.map[normalizeFolder(folder)];
+    fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
+    fs.writeFileSync(this.filePath, JSON.stringify(this.map, null, 2), "utf-8");
+  }
 }

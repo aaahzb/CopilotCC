@@ -4,7 +4,7 @@ import { timingSafeEqual } from "node:crypto";
 import { encode, parseClientMessage, type PermissionModeSetting, type EffortLevelSetting, type ServerMessage } from "./protocol";
 import { isValidFolder, SessionManager } from "./session-manager";
 import { createClaudeSession, type ClaudeSessionLike } from "./claude-session";
-import { readTranscript } from "./transcript";
+import { readTranscript, listSessions, deleteTranscript } from "./transcript";
 import type { BridgeConfig } from "./config";
 
 /** 服务依赖。createSession 仅供测试注入假会话工厂。 */
@@ -76,6 +76,16 @@ export function startServer(deps: ServerDeps): { wss: WebSocketServer; close: ()
       if (ws.readyState === WebSocket.OPEN) ws.send(encode(m));
     };
 
+    /** 推送当前文件夹的会话列表（currentId 取映射里的当前会话） */
+    function sendSessionList(): void {
+      if (!folder) return;
+      send({
+        type: "session.list.data",
+        sessions: listSessions(folder),
+        currentId: sessions.get(folder)?.sessionId ?? null,
+      });
+    }
+
     /** 为当前文件夹创建（或重建）Claude 会话 */
     function openSession(resumeId?: string): void {
       if (!folder) return;
@@ -88,7 +98,10 @@ export function startServer(deps: ServerDeps): { wss: WebSocketServer; close: ()
         events: {
           onDelta: (text) => send({ type: "chat.delta", text }),
           onTool: (name, summary) => send({ type: "chat.tool", name, summary }),
-          onDone: (sessionId) => send({ type: "chat.done", sessionId }),
+          onDone: (sessionId) => {
+            send({ type: "chat.done", sessionId });
+            if (folder === f) sendSessionList(); // 一轮结束后转录已落盘，刷新列表（新会话此刻才有文件）
+          },
           onError: (message) => send({ type: "chat.error", message }),
           onPermission: (r) => send({ type: "permission.request", ...r }),
           onSessionId: (id) => {
@@ -120,6 +133,7 @@ export function startServer(deps: ServerDeps): { wss: WebSocketServer; close: ()
           const rec = sessions.get(folder);
           openSession(rec?.sessionId);
           send({ type: "folder.bound", path: folder, resumed: Boolean(rec), title: rec?.title ?? "", sessionId: rec?.sessionId ?? null });
+          sendSessionList();
           break;
         }
         case "chat.send": {
@@ -145,6 +159,46 @@ export function startServer(deps: ServerDeps): { wss: WebSocketServer; close: ()
           if (!folder) break;
           const rec = sessions.get(folder);
           send({ type: "session.history.data", messages: rec ? readTranscript(folder, rec.sessionId) : [] });
+          break;
+        }
+        case "session.list":
+          sendSessionList();
+          break;
+        case "session.new": {
+          if (!folder) break;
+          void claude?.close();
+          sessions.delete(folder); // 清掉映射：下一条消息走全新会话
+          openSession(undefined);
+          send({ type: "folder.bound", path: folder, resumed: false, title: "", sessionId: null });
+          sendSessionList();
+          break;
+        }
+        case "session.switch": {
+          if (!folder) break;
+          const target = listSessions(folder).find((s) => s.sessionId === m.sessionId);
+          if (!target) {
+            send({ type: "folder.error", message: `会话不存在: ${m.sessionId}` });
+            break;
+          }
+          void claude?.close();
+          sessions.set(folder, { sessionId: target.sessionId, title: target.title, updatedAt: new Date(target.updatedAt).toISOString() });
+          openSession(target.sessionId);
+          send({ type: "folder.bound", path: folder, resumed: true, title: target.title, sessionId: target.sessionId });
+          sendSessionList();
+          break;
+        }
+        case "session.delete": {
+          if (!folder) break;
+          const wasCurrent = sessions.get(folder)?.sessionId === m.sessionId;
+          deleteTranscript(folder, m.sessionId);
+          if (wasCurrent) {
+            // 删的是当前会话：关会话、清映射，回到"未开始"状态
+            void claude?.close();
+            sessions.delete(folder);
+            openSession(undefined);
+            send({ type: "folder.bound", path: folder, resumed: false, title: "", sessionId: null });
+          }
+          sendSessionList();
           break;
         }
         case "settings.set": {

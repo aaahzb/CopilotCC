@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { slugifyPath, readTranscript } from "../src/transcript";
+import { slugifyPath, readTranscript, listSessions, deleteTranscript } from "../src/transcript";
 
 describe("slugifyPath", () => {
   it("Windows 路径转为 Claude 项目目录名", () => {
@@ -84,5 +84,41 @@ describe("readTranscript 拆解桥接发送包装", () => {
       },
       { role: "user", text: "交互式 CLI 直接发的消息" },
     ]);
+  });
+});
+
+describe("listSessions / deleteTranscript", () => {
+  const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ccc-home-"));
+  const cwd = path.join("proj", "会话");
+
+  beforeEach(() => {
+    process.env.CCC_FAKE_HOME = fakeHome;
+    const dir = path.join(fakeHome, ".claude", "projects", slugifyPath(path.resolve(cwd)));
+    fs.mkdirSync(dir, { recursive: true });
+    // 两个会话：sid-a 带桥接包装，sid-b 纯文本；mtime 调成 sid-a 更旧
+    fs.writeFileSync(path.join(dir, "sid-a.jsonl"), JSON.stringify({ type: "user", message: { content: "[页面上下文 url=https://a.b 标题=T]\n正文\n\n[用户问题]\n第一个问题" } }), "utf-8");
+    fs.writeFileSync(path.join(dir, "sid-b.jsonl"), JSON.stringify({ type: "user", message: { content: "第二个问题" } }), "utf-8");
+    const past = new Date(Date.now() - 60_000);
+    fs.utimesSync(path.join(dir, "sid-a.jsonl"), past, past);
+    fs.writeFileSync(path.join(dir, "not-a-session.txt"), "x", "utf-8"); // 非 jsonl 应被忽略
+  });
+
+  afterEach(() => {
+    delete process.env.CCC_FAKE_HOME;
+  });
+
+  it("枚举会话：标题取首条用户消息（拆包装），按 mtime 倒序，忽略非 jsonl", () => {
+    const list = listSessions(cwd);
+    expect(list.map((s) => s.sessionId)).toEqual(["sid-b", "sid-a"]);
+    expect(list[0].title).toBe("第二个问题");
+    expect(list[1].title).toBe("第一个问题");
+    expect(typeof list[0].updatedAt).toBe("number");
+  });
+
+  it("deleteTranscript 删除文件并防路径穿越", () => {
+    expect(deleteTranscript(cwd, "sid-a")).toBe(true);
+    expect(listSessions(cwd).map((s) => s.sessionId)).toEqual(["sid-b"]);
+    expect(deleteTranscript(cwd, "sid-a")).toBe(false); // 已不存在
+    expect(deleteTranscript(cwd, "../evil")).toBe(false); // 路径穿越被拒
   });
 });

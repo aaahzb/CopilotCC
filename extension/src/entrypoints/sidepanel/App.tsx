@@ -3,7 +3,7 @@ import { BridgeClient, type ConnState } from "../../lib/ws-client";
 import { loadSettings, saveSettings, pushFolderHistory, takePendingQuote, type ExtSettings } from "../../lib/storage";
 import { decideAttach, composeMessage, type PageSnapshot } from "../../lib/attach-policy";
 import { snapshotActiveTab } from "../../lib/page-extract";
-import type { ServerMessage, PermissionModeSetting } from "../../lib/protocol";
+import type { ServerMessage, PermissionModeSetting, SessionInfo } from "../../lib/protocol";
 import { TokenGate } from "../../components/TokenGate";
 import { FolderBar } from "../../components/FolderBar";
 import { MessageList, type UiMsg } from "../../components/MessageList";
@@ -20,10 +20,12 @@ export default function App(): React.ReactElement {
   const [messages, setMessages] = useState<UiMsg[]>([]);
   const [streaming, setStreaming] = useState<string | null>(null);
   const [permReq, setPermReq] = useState<{ requestId: string; tool: string; detail: string } | null>(null);
-  const [sessionId, setSessionId] = useState<string | null>(null); // 当前会话 ID（folder.bound 携带或 chat.done 推送）
+  const [sessionId, setSessionId] = useState<string | null>(null); // 当前会话 ID（folder.bound/session.list.data 携带或 chat.done 推送）
+  const [sessions, setSessions] = useState<SessionInfo[]>([]); // 当前文件夹下的会话列表（切换会话下拉）
   const clientRef = useRef<BridgeClient | null>(null);
   const lastUrlRef = useRef<string | null>(null);
-  const prevFolderRef = useRef<string | null>(null); // 上次绑定的文件夹（用于识别"切换聊天"）
+  const prevFolderRef = useRef<string | null>(null); // 上次绑定的文件夹（识别"切换文件夹"）
+  const prevBoundSidRef = useRef<string | null>(null); // 上次 folder.bound/chat.done 的会话 ID（识别"切换会话"）
   const settingsRef = useRef<ExtSettings | null>(null);
   settingsRef.current = settings;
 
@@ -37,16 +39,20 @@ export default function App(): React.ReactElement {
         setAuthError(m.reason);
         break;
       case "folder.bound":
-        if (prevFolderRef.current !== null && prevFolderRef.current !== m.path) {
-          // 切换到别的聊天：清空当前显示（含流式残留），历史回放随后覆盖
+        if (
+          (prevFolderRef.current !== null && prevFolderRef.current !== m.path) ||
+          (prevBoundSidRef.current !== null && prevBoundSidRef.current !== m.sessionId)
+        ) {
+          // 换文件夹或换会话：清空当前显示（含流式残留），历史回放随后覆盖
           setMessages([]);
           setStreaming(null);
         }
         prevFolderRef.current = m.path;
+        prevBoundSidRef.current = m.sessionId;
         setBound(m.path);
         setResumed(m.resumed);
         setSessionId(m.sessionId);
-        lastUrlRef.current = null; // 换文件夹后重新附带全文
+        lastUrlRef.current = null; // 换文件夹/会话后重新附带全文
         if (m.resumed) clientRef.current?.send({ type: "session.history" });
         break;
       case "folder.error":
@@ -56,6 +62,11 @@ export default function App(): React.ReactElement {
         // 回放消息带 sentText/attachKind：重载前后显示行为一致（气泡只显示问题，完整发送内容右键可溯源）
         setMessages(m.messages.map((h) => ({ id: crypto.randomUUID(), role: h.role, text: h.text, sentText: h.sentText, attachKind: h.attachKind })));
         break;
+      case "session.list.data":
+        setSessions(m.sessions);
+        setSessionId(m.currentId);
+        prevBoundSidRef.current = m.currentId;
+        break;
       case "chat.delta":
         setStreaming((s) => (s ?? "") + m.text);
         break;
@@ -64,6 +75,7 @@ export default function App(): React.ReactElement {
         break;
       case "chat.done":
         setSessionId(m.sessionId);
+        prevBoundSidRef.current = m.sessionId;
         setStreaming((s) => {
           if (s) setMessages((ms) => [...ms, { id: crypto.randomUUID(), role: "assistant", text: s }]);
           return null;
@@ -198,7 +210,17 @@ export default function App(): React.ReactElement {
   return (
     <div className="app">
       <div className={`conn ${conn}`}>{conn === "open" ? "● 已连接" : conn === "connecting" ? "● 连接中…" : "● 已断开（自动重连中）"}</div>
-      <FolderBar history={settings.folderHistory} bound={bound} resumed={resumed} sessionId={sessionId} onBind={handleBind} />
+      <FolderBar
+        history={settings.folderHistory}
+        bound={bound}
+        resumed={resumed}
+        sessionId={sessionId}
+        sessions={sessions}
+        onBind={handleBind}
+        onNewSession={() => clientRef.current?.send({ type: "session.new" })}
+        onSwitchSession={(id) => clientRef.current?.send({ type: "session.switch", sessionId: id })}
+        onDeleteSession={(id) => clientRef.current?.send({ type: "session.delete", sessionId: id })}
+      />
       <MessageList messages={messages} streaming={streaming} />
       <PermissionCard
         request={permReq}
