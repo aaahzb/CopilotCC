@@ -6,7 +6,7 @@
 - [x] Task 4: session-manager.ts
 - [x] Task 5: transcript.ts
 - [x] Task 6: claude-session.ts
-- [ ] Task 7: server.ts
+- [x] Task 7: server.ts
 - [ ] Task 8: index.ts CLI + selftest 验证
 - [ ] Task 9: extension 骨架（WXT + background）
 - [ ] Task 10: storage.ts + attach-policy.ts
