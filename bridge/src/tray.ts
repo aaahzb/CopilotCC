@@ -1,4 +1,4 @@
-/** 托盘入口：WS 桥 + 系统托盘图标（右键菜单：复制配对串 / 修改端口 / 退出）。跨平台：win32 / darwin(arm64) / linux。 */
+/** 托盘入口：WS 桥 + 系统托盘图标（右键菜单：复制配对串 / 修改端口（浏览器打开设置页）/ 退出）。跨平台：win32 / darwin(arm64) / linux。 */
 import systray2 from "systray2";
 import type { MenuItem } from "systray2";
 
@@ -79,141 +79,12 @@ function copyToClipboard(text: string): void {
   }
 }
 
-/** 命令执行结果：ok=正常退出（text 为 trim 后输出）；exit=非零退出（如弹窗点取消）；error=进程未能启动（工具缺失） */
-type CmdResult = { kind: "ok"; text: string } | { kind: "exit" } | { kind: "error" };
-
-/**
- * 运行系统命令并收集 stdout（utf8）。
- * @param cmd 命令
- * @param args 参数
- * @returns 执行结果
- */
-function runCmdCapture(cmd: string, args: string[]): Promise<CmdResult> {
-  return new Promise((resolve) => {
-    let out = "";
-    try {
-      const p = spawn(cmd, args, { stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
-      p.on("error", () => resolve({ kind: "error" }));
-      p.stdout.on("data", (d: Buffer) => (out += d.toString("utf-8")));
-      p.on("close", (code) => resolve(code === 0 ? { kind: "ok", text: out.trim() } : { kind: "exit" }));
-    } catch {
-      resolve({ kind: "error" });
-    }
-  });
-}
-
-/** PowerShell 单引号字符串转义（单引号双写） */
-function psQ(s: string): string {
-  return `'${s.replace(/'/g, "''")}'`;
-}
-
-/** PowerShell -EncodedCommand 参数（UTF-16LE base64）：避免 -Command 直传中文被控制台代码页搅乱 */
-function psEncoded(script: string): string {
-  return Buffer.from(script, "utf16le").toString("base64");
-}
-
-/** AppleScript 双引号字符串转义；字面量不能跨行，换行用 & return & 拼接 */
-function asQ(s: string): string {
-  const esc = (x: string): string => `"${x.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
-  return s.split("\n").map(esc).join(" & return & ");
-}
-
-/** 弹窗输入结果：input=用户确认；cancel=取消；unavailable=系统没有可用弹窗工具（调用方回退网页设置页） */
-type PromptResult = { kind: "input"; text: string } | { kind: "cancel" } | { kind: "unavailable" };
-
-/**
- * 弹系统原生输入框：win32=PowerShell VisualBasic InputBox，darwin=AppleScript display dialog，linux=zenity/kdialog。
- * @param title 窗口标题
- * @param prompt 提示语
- * @param def 默认值（预填）
- * @returns 输入结果
- */
-async function promptText(title: string, prompt: string, def: string): Promise<PromptResult> {
-  const tries: Array<[string, string[]]> =
-    process.platform === "win32"
-      ? [
-          [
-            "powershell",
-            [
-              "-NoProfile",
-              "-Sta", // WinForms 对话框需要 STA 线程模型
-              "-WindowStyle",
-              "Hidden",
-              "-EncodedCommand",
-              psEncoded(
-                // 自己画一个 Topmost 小窗口：VisualBasic InputBox 没有置顶选项，
-                // 从托盘这种后台进程弹出时会被前台窗口（如 Chrome）压住，用户以为没弹出来（实测踩坑）
-                `[Console]::OutputEncoding=[Text.Encoding]::UTF8; Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing; ` +
-                  `$f = New-Object System.Windows.Forms.Form; $f.Text = ${psQ(title)}; $f.Width = 400; $f.Height = 175; ` +
-                  `$f.StartPosition = 'CenterScreen'; $f.Topmost = $true; $f.FormBorderStyle = 'FixedDialog'; $f.MaximizeBox = $false; $f.MinimizeBox = $false; ` +
-                  `$l = New-Object System.Windows.Forms.Label; $l.Left = 12; $l.Top = 12; $l.Width = 360; $l.Text = ${psQ(prompt)}; ` +
-                  `$t = New-Object System.Windows.Forms.TextBox; $t.Left = 12; $t.Top = 38; $t.Width = 360; $t.Text = ${psQ(def)}; ` +
-                  `$ok = New-Object System.Windows.Forms.Button; $ok.Text = '确定'; $ok.DialogResult = [System.Windows.Forms.DialogResult]::OK; $ok.Left = 196; $ok.Top = 76; $ok.Width = 84; ` +
-                  `$no = New-Object System.Windows.Forms.Button; $no.Text = '取消'; $no.DialogResult = [System.Windows.Forms.DialogResult]::Cancel; $no.Left = 288; $no.Top = 76; $no.Width = 84; ` +
-                  `$f.Controls.Add($l); $f.Controls.Add($t); $f.Controls.Add($ok); $f.Controls.Add($no); $f.AcceptButton = $ok; $f.CancelButton = $no; ` +
-                  `$f.Add_Shown({ $f.Activate(); $t.SelectAll(); $t.Focus() }); ` +
-                  `if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Write($t.Text) }`,
-              ),
-            ],
-          ],
-        ]
-      : process.platform === "darwin"
-        ? [["osascript", ["-e", `text returned of (display dialog ${asQ(prompt)} default answer ${asQ(def)} with title ${asQ(title)})`]]]
-        : [
-            ["zenity", ["--entry", `--title=${title}`, `--text=${prompt}`, `--entry-text=${def}`]],
-            ["kdialog", ["--inputbox", prompt, def]],
-          ];
-  for (const [cmd, args] of tries) {
-    const r = await runCmdCapture(cmd, args);
-    if (r.kind === "error") continue; // 工具不存在，试下一个
-    if (r.kind === "exit" || r.text === "") return { kind: "cancel" }; // 非零退出或空输入都视为取消
-    return { kind: "input", text: r.text };
-  }
-  return { kind: "unavailable" };
-}
-
-/** 弹系统原生消息框（结果/错误提示）。没有可用弹窗工具就静默 */
-function showMessage(title: string, text: string): void {
-  const tries: Array<[string, string[]]> =
-    process.platform === "win32"
-      ? [
-          [
-            "powershell",
-            [
-              "-NoProfile",
-              "-WindowStyle",
-              "Hidden",
-              "-EncodedCommand",
-              // 4096 = SystemModal：消息框置顶，避免被前台窗口压住看不见
-              psEncoded(`Add-Type -AssemblyName Microsoft.VisualBasic; [void][Microsoft.VisualBasic.Interaction]::MsgBox(${psQ(text)}, 4096, ${psQ(title)})`),
-            ],
-          ],
-        ]
-      : process.platform === "darwin"
-        ? [["osascript", ["-e", `display dialog ${asQ(text)} with title ${asQ(title)} buttons {"OK"} default button "OK"`]]]
-        : [
-            ["zenity", ["--info", `--title=${title}`, `--text=${text}`]],
-            ["kdialog", ["--title", title, "--msgbox", text]],
-          ];
-  const tryNext = (i: number): void => {
-    const t = tries[i];
-    if (!t) return;
-    try {
-      const p = spawn(t[0], t[1], { stdio: "ignore", windowsHide: true });
-      p.on("error", () => tryNext(i + 1)); // 工具缺失就换下一个
-    } catch {
-      tryNext(i + 1);
-    }
-  };
-  tryNext(0);
-}
-
 /** 用系统默认浏览器打开 URL：win32=cmd start（第一个引号参数是窗口标题，必须给空串），darwin=open，linux=xdg-open。失败静默 */
 function openUrl(url: string): void {
   try {
     const [cmd, args] =
       process.platform === "win32" ? ["cmd", ["/c", "start", "", url]] : process.platform === "darwin" ? ["open", [url]] : ["xdg-open", [url]];
-    // 托盘 exe 是 GUI 程序：不给子进程窗口，避免闪黑框
+    // 托盘 exe 是 GUI 程序：不给子进程窗口，避免闪黑框；浏览器是 shell 另起的独立进程，不受影响
     const p = spawn(cmd, args, { stdio: "ignore", windowsHide: true });
     p.on("error", () => {});
   } catch {
@@ -251,31 +122,6 @@ async function main(): Promise<void> {
   releaseRuntimeOnExit(configDir());
   console.log(`[ccc-bridge] 已启动 ws://127.0.0.1:${server.port}/ws（托盘模式）`);
 
-  /**
-   * 「修改端口…」完整流程：弹系统输入框 → 校验 → 在线切换（setPort 内含持久化与菜单刷新回调）
-   * → 新配对串复制到剪贴板并弹结果提示。系统弹窗不可用（如精简 Linux）时回退内置网页设置页。
-   */
-  const changePortFlow = async (): Promise<void> => {
-    const r = await promptText("Claude Code 桥接 · 修改端口", `当前端口 ${server.port}。输入新端口（1024-65535）：`, String(server.port));
-    if (r.kind === "unavailable") {
-      openUrl(`http://127.0.0.1:${server.port}/config?t=${config.token}`);
-      return;
-    }
-    if (r.kind === "cancel") return;
-    const p = Number(r.text);
-    if (!Number.isInteger(p) || p < 1024 || p > 65535) {
-      showMessage("Claude Code 桥接 · 修改端口", "端口需为 1024-65535 的整数");
-      return;
-    }
-    try {
-      const port = await server.setPort(p);
-      copyToClipboard(encodePairing({ h: "127.0.0.1", p: port, t: config.token })); // 顺手复制：用户下一步就是去扩展粘贴
-      showMessage("Claude Code 桥接 · 修改端口", `已切换到端口 ${port}。\n新配对串已复制到剪贴板，到扩展侧栏点「⚙ 配对」粘贴一次即可。`);
-    } catch (e) {
-      showMessage("Claude Code 桥接 · 修改端口失败", e instanceof Error ? e.message : String(e));
-    }
-  };
-
   chdirToTraybinParent();
   icon = writeIcon();
   // server.port 是 getter，在线改端口后始终返回当前值：配对串与设置页 URL 无需额外跟踪端口
@@ -289,9 +135,12 @@ async function main(): Promise<void> {
     },
     {
       title: "修改端口…",
-      tooltip: "弹窗输入新端口，保存即生效；新配对串自动复制，到扩展「⚙ 配对」粘贴一次",
+      tooltip: "浏览器打开本机设置页（与 WS 同端口，不占额外端口）；保存即在线生效，页面给出新配对串",
       enabled: true,
-      click: () => void changePortFlow(),
+      // 历史坑：改端口曾用系统原生弹窗输入（PowerShell InputBox / 自绘 WinForms Topmost 窗），但 GUI 子系统的
+      // 托盘 exe 以 windowsHide 拉起 console 子进程时，SW_HIDE 启动标志会被子进程第一个窗口继承——弹窗进程活着
+      // （WinForms 程序集已加载、进程常驻等输入）窗口却永远不可见，两轮实测踩坑。浏览器设置页实测可靠，固定走浏览器。
+      click: () => openUrl(`http://127.0.0.1:${server.port}/config?t=${config.token}`),
     },
     SysTray.separator,
     {
