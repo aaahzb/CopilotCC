@@ -19,3 +19,20 @@
 - 扩展 ID: `cnalihjaacpahpjkpneacjcfbhboglno`
 - allowedOrigins: `chrome-extension://cnalihjaacpahpjkpneacjcfbhboglno`
 - manifest.key: 见 wxt.config.ts（Task 9 写入）
+
+## 端到端手动验收（Task 13，待用户执行）
+
+桥接已冒烟启动通过，真实 config.json 已生成且 allowedOrigins 已预填为本扩展 ID。验收步骤：
+
+1. `cd bridge && npm start` → 记下打印的 token
+2. `chrome://extensions` 加载 `extension/.output/chrome-mv3`（确认 ID = cnalihjaacpahpjkpneacjcfbhboglno）
+3. 点图标开侧栏 → 粘贴 token → 状态灯变绿
+4. 绑定一个已存在的文件夹 → 显示已绑定（无"已续聊"徽标）
+5. 打开技术文档页提问"这页讲了什么，100 字总结" → 回答确实来自该页面
+6. 同页追问某概念（不附全文）→ 回答能引用页面内容（上下文保留）
+7. 让它"把 XX 知识点写成 notes/xx.md"（auto 模式）→ 文件夹真实出现该文件
+8. 网页选中文字 → 右键"用 Claude Code 询问选中内容" → 侧栏带入引用
+9. 切"逐条审批"再让其写文件 → 审批卡片点允许后写入成功
+10. 关侧栏重开、重新绑定同文件夹 → "已续聊"徽标 + 历史消息回放
+11. 杀掉 bridge → 状态灯变红；重启 bridge → 自动重连变绿且可继续对话（resume 生效）
+12. 全部通过后把顶部 Task 13 勾选并提交
