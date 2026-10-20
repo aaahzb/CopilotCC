@@ -136,12 +136,23 @@ async function promptText(title: string, prompt: string, def: string): Promise<P
             "powershell",
             [
               "-NoProfile",
+              "-Sta", // WinForms 对话框需要 STA 线程模型
               "-WindowStyle",
               "Hidden",
               "-EncodedCommand",
               psEncoded(
-                `[Console]::OutputEncoding=[Text.Encoding]::UTF8; Add-Type -AssemblyName Microsoft.VisualBasic; ` +
-                  `[Microsoft.VisualBasic.Interaction]::InputBox(${psQ(prompt)}, ${psQ(title)}, ${psQ(def)})`,
+                // 自己画一个 Topmost 小窗口：VisualBasic InputBox 没有置顶选项，
+                // 从托盘这种后台进程弹出时会被前台窗口（如 Chrome）压住，用户以为没弹出来（实测踩坑）
+                `[Console]::OutputEncoding=[Text.Encoding]::UTF8; Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing; ` +
+                  `$f = New-Object System.Windows.Forms.Form; $f.Text = ${psQ(title)}; $f.Width = 400; $f.Height = 175; ` +
+                  `$f.StartPosition = 'CenterScreen'; $f.Topmost = $true; $f.FormBorderStyle = 'FixedDialog'; $f.MaximizeBox = $false; $f.MinimizeBox = $false; ` +
+                  `$l = New-Object System.Windows.Forms.Label; $l.Left = 12; $l.Top = 12; $l.Width = 360; $l.Text = ${psQ(prompt)}; ` +
+                  `$t = New-Object System.Windows.Forms.TextBox; $t.Left = 12; $t.Top = 38; $t.Width = 360; $t.Text = ${psQ(def)}; ` +
+                  `$ok = New-Object System.Windows.Forms.Button; $ok.Text = '确定'; $ok.DialogResult = [System.Windows.Forms.DialogResult]::OK; $ok.Left = 196; $ok.Top = 76; $ok.Width = 84; ` +
+                  `$no = New-Object System.Windows.Forms.Button; $no.Text = '取消'; $no.DialogResult = [System.Windows.Forms.DialogResult]::Cancel; $no.Left = 288; $no.Top = 76; $no.Width = 84; ` +
+                  `$f.Controls.Add($l); $f.Controls.Add($t); $f.Controls.Add($ok); $f.Controls.Add($no); $f.AcceptButton = $ok; $f.CancelButton = $no; ` +
+                  `$f.Add_Shown({ $f.Activate(); $t.SelectAll(); $t.Focus() }); ` +
+                  `if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Write($t.Text) }`,
               ),
             ],
           ],
@@ -173,7 +184,8 @@ function showMessage(title: string, text: string): void {
               "-WindowStyle",
               "Hidden",
               "-EncodedCommand",
-              psEncoded(`Add-Type -AssemblyName Microsoft.VisualBasic; [void][Microsoft.VisualBasic.Interaction]::MsgBox(${psQ(text)}, 0, ${psQ(title)})`),
+              // 4096 = SystemModal：消息框置顶，避免被前台窗口压住看不见
+              psEncoded(`Add-Type -AssemblyName Microsoft.VisualBasic; [void][Microsoft.VisualBasic.Interaction]::MsgBox(${psQ(text)}, 4096, ${psQ(title)})`),
             ],
           ],
         ]
