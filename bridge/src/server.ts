@@ -1,7 +1,7 @@
 import { WebSocketServer, WebSocket } from "ws";
 import type { IncomingMessage } from "node:http";
 import { timingSafeEqual } from "node:crypto";
-import { encode, parseClientMessage, type PermissionModeSetting, type ServerMessage } from "./protocol";
+import { encode, parseClientMessage, type PermissionModeSetting, type EffortLevelSetting, type ServerMessage } from "./protocol";
 import { isValidFolder, SessionManager } from "./session-manager";
 import { createClaudeSession, type ClaudeSessionLike } from "./claude-session";
 import { readTranscript } from "./transcript";
@@ -69,6 +69,8 @@ export function startServer(deps: ServerDeps): { wss: WebSocketServer; close: ()
     let folder: string | null = null;
     let claude: ClaudeSessionLike | null = null;
     let mode: PermissionModeSetting = "auto";
+    let model: string | undefined;
+    let effort: EffortLevelSetting | undefined;
 
     const send = (m: ServerMessage): void => {
       if (ws.readyState === WebSocket.OPEN) ws.send(encode(m));
@@ -81,6 +83,8 @@ export function startServer(deps: ServerDeps): { wss: WebSocketServer; close: ()
       claude = newSession(f, {
         resumeId,
         permissionMode: mode,
+        model,
+        effort,
         events: {
           onDelta: (text) => send({ type: "chat.delta", text }),
           onTool: (name, summary) => send({ type: "chat.tool", name, summary }),
@@ -144,10 +148,12 @@ export function startServer(deps: ServerDeps): { wss: WebSocketServer; close: ()
           break;
         }
         case "settings.set": {
-          const changed = m.permissionMode !== mode;
+          const changed = m.permissionMode !== mode || m.model !== model || m.effort !== effort;
           mode = m.permissionMode;
+          model = m.model;
+          effort = m.effort;
           if (changed && folder && claude) {
-            // 模式变更需要重建会话（resumeId 保证上下文不断）
+            // 模式/模型/effort 变更需要重建会话（resumeId 保证上下文不断）
             const rec = sessions.get(folder);
             void claude.close();
             openSession(rec?.sessionId);

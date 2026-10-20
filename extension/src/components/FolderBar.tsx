@@ -21,6 +21,21 @@ export function FolderBar(props: {
         {props.history.map((h) => <option key={h} value={h} />)}
       </datalist>
       <button onClick={() => props.onBind(value)}>绑定</button>
+      {props.history.length > 0 ? (
+        <select
+          className="chat-switch"
+          title="切换到绑过的文件夹聊天"
+          value=""
+          onChange={(e) => {
+            if (e.target.value) props.onBind(e.target.value);
+          }}
+        >
+          <option value="" disabled>切换聊天…</option>
+          {props.history.map((h) => (
+            <option key={h} value={h}>{h}</option>
+          ))}
+        </select>
+      ) : null}
       {props.bound ? (
         <div className="bound-info">
           {props.bound}

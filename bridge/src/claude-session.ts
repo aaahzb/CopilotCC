@@ -1,5 +1,5 @@
 import { query as sdkQuery } from "@anthropic-ai/claude-agent-sdk";
-import type { PermissionModeSetting } from "./protocol";
+import type { PermissionModeSetting, EffortLevelSetting } from "./protocol";
 
 /** 会话事件回调集（server.ts 把它们转成 WS 消息） */
 export interface SessionEvents {
@@ -23,6 +23,10 @@ export interface ClaudeSessionLike {
 export interface SessionOptions {
   resumeId?: string;
   permissionMode: PermissionModeSetting;
+  /** 模型别名或完整 ID；缺省跟随 CLI 配置 */
+  model?: string;
+  /** 推理强度；缺省用 CLI 默认 */
+  effort?: EffortLevelSetting;
   events: SessionEvents;
   queryFn?: (args: { prompt: AsyncIterable<unknown>; options: Record<string, unknown> }) => AsyncIterable<unknown>;
 }
@@ -147,6 +151,8 @@ export function createClaudeSession(cwd: string, opts: SessionOptions): ClaudeSe
       includePartialMessages: true,
       stderr: (line: string) => console.error("[claude-stderr]", line),
       canUseTool,
+      ...(opts.model ? { model: opts.model } : {}),
+      ...(opts.effort ? { effort: opts.effort } : {}),
     },
   });
   void consume(stream);

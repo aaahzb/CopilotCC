@@ -1,61 +1,122 @@
-import React, { useState } from "react";
+import React, { useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
+import rehypeHighlight from "rehype-highlight";
 import "katex/dist/katex.min.css";
+import "highlight.js/styles/github-dark.css";
 
 /** 界面消息：user/assistant 聊天气泡，tool 为折叠工具卡片 */
 export interface UiMsg {
   id: string;
   role: "user" | "assistant" | "tool";
   text: string;
-  /** 实际发送给 Claude 的完整文本（含页面上下文），仅用户消息有 */
+  /** 实际发送给 Claude 的完整文本（含页面上下文），仅用户消息与附带状态行有 */
   sentText?: string;
   /** 附带标记：full=页面全文，selection=选中文字；无标记=未附带 */
   attachKind?: "full" | "selection";
 }
 
 /**
- * 消息列表。用户气泡支持附带角标（📄全文/📎选中）与右键查看实际发送内容。
+ * 代码块容器：相对定位 + 右上角复制按钮。
+ * react-markdown 会把 <pre> 渲染委派到这里。
+ * @param props.children 代码内容（react-markdown 传入的 <code> 元素）
+ * @returns 带复制按钮的代码块
+ */
+function CodeBlock(props: { children?: React.ReactNode }): React.ReactElement {
+  const ref = useRef<HTMLPreElement>(null);
+  const [copied, setCopied] = useState(false);
+  return (
+    <div className="code-wrap">
+      <button
+        className="code-copy"
+        onClick={() => {
+          const text = ref.current?.innerText ?? "";
+          void navigator.clipboard.writeText(text).then(() => {
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1500);
+          });
+        }}
+      >
+        {copied ? "已复制" : "复制"}
+      </button>
+      <pre ref={ref}>{props.children}</pre>
+    </div>
+  );
+}
+
+/** react-markdown 渲染配置：GFM + 数学公式 + 语法高亮 + 代码块复制按钮 */
+const MD = {
+  remarkPlugins: [remarkGfm, remarkMath],
+  rehypePlugins: [rehypeKatex, rehypeHighlight],
+  components: { pre: CodeBlock },
+};
+
+/** 距底超过该像素值时显示"回到底部"按钮 */
+const BOTTOM_THRESHOLD = 120;
+
+/**
+ * 消息列表。用户气泡支持附带角标（📄全文/📎选中）与右键查看实际发送内容；
+ * 附带状态行点击弹浮层；滚动离开底部时出现回到底部按钮。
  * @param props.messages 已落地的消息列表
  * @param props.streaming 正在流式生成、尚未落地的 assistant 文本
  * @returns 消息列表 React 元素
  */
 export function MessageList(props: { messages: UiMsg[]; streaming: string | null }): React.ReactElement {
-  const [viewing, setViewing] = useState<UiMsg | null>(null); // 右键查看中的消息
+  const [viewing, setViewing] = useState<UiMsg | null>(null); // 浮层查看中的消息
+  const [showBottom, setShowBottom] = useState(false); // 是否显示回到底部按钮
+  const listRef = useRef<HTMLDivElement>(null);
+
+  /** 滚动监听：离底部较远时显示回到底部按钮 */
+  function onScroll(): void {
+    const el = listRef.current;
+    if (!el) return;
+    setShowBottom(el.scrollHeight - el.scrollTop - el.clientHeight > BOTTOM_THRESHOLD);
+  }
+
+  /** 平滑滚动到底部 */
+  function scrollToBottom(): void {
+    listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" });
+  }
+
   return (
-    <div className="message-list">
-      {props.messages.map((m) =>
-        m.role === "tool" ? (
-          m.sentText ? (
-            // 附带状态行：平时一行折叠态，点击弹出临时浮层查看完整发送内容，关闭即消失
-            <div key={m.id} className="tool-card clickable" title="点击查看实际发送内容" onClick={() => setViewing(m)}>
-              {m.text} 🔍
-            </div>
+    <div className="message-wrap">
+      <div className="message-list" ref={listRef} onScroll={onScroll}>
+        {props.messages.map((m) =>
+          m.role === "tool" ? (
+            m.sentText ? (
+              // 附带状态行：平时一行折叠态，点击弹出临时浮层查看完整发送内容，关闭即消失
+              <div key={m.id} className="tool-card clickable" title="点击查看实际发送内容" onClick={() => setViewing(m)}>
+                {m.text} 🔍
+              </div>
+            ) : (
+              <div key={m.id} className="tool-card">{m.text}</div>
+            )
           ) : (
-            <div key={m.id} className="tool-card">{m.text}</div>
-          )
-        ) : (
-          <div
-            key={m.id}
-            className={`msg ${m.role}`}
-            title={m.sentText ? "右键查看实际发送内容" : undefined}
-            onContextMenu={m.sentText ? (e) => { e.preventDefault(); setViewing(m); } : undefined}
-          >
-            {m.attachKind ? (
-              <span className="attach-mark" title={m.attachKind === "full" ? "已附带页面全文" : "已附带选中文字"}>
-                {m.attachKind === "full" ? "📄" : "📎"}
-              </span>
-            ) : null}
-            <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>{m.text}</ReactMarkdown>
+            <div
+              key={m.id}
+              className={`msg ${m.role}`}
+              title={m.sentText ? "右键查看实际发送内容" : undefined}
+              onContextMenu={m.sentText ? (e) => { e.preventDefault(); setViewing(m); } : undefined}
+            >
+              {m.attachKind ? (
+                <span className="attach-mark" title={m.attachKind === "full" ? "已附带页面全文" : "已附带选中文字"}>
+                  {m.attachKind === "full" ? "📄" : "📎"}
+                </span>
+              ) : null}
+              <ReactMarkdown {...MD}>{m.text}</ReactMarkdown>
+            </div>
+          ),
+        )}
+        {props.streaming !== null ? (
+          <div className="msg assistant streaming">
+            <ReactMarkdown {...MD}>{props.streaming}</ReactMarkdown>
           </div>
-        ),
-      )}
-      {props.streaming !== null ? (
-        <div className="msg assistant streaming">
-          <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>{props.streaming}</ReactMarkdown>
-        </div>
+        ) : null}
+      </div>
+      {showBottom ? (
+        <button className="scroll-bottom" onClick={scrollToBottom}>⬇ 回到底部</button>
       ) : null}
       {viewing ? (
         <div className="sent-viewer" onClick={() => setViewing(null)}>

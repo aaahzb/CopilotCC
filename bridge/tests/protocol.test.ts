@@ -32,3 +32,14 @@ describe("encode", () => {
     expect(encode({ type: "auth.ok" })).toBe('{"type":"auth.ok"}');
   });
 });
+
+describe("settings.set 扩展字段", () => {
+  it("携带合法 model/effort 时透传", () => {
+    expect(parseClientMessage(JSON.stringify({ type: "settings.set", permissionMode: "auto", model: "opus", effort: "high" })))
+      .toEqual({ type: "settings.set", permissionMode: "auto", model: "opus", effort: "high" });
+  });
+  it("空串 model 与非法 effort 被剥掉", () => {
+    expect(parseClientMessage(JSON.stringify({ type: "settings.set", permissionMode: "auto", model: "", effort: "ultra" })))
+      .toEqual({ type: "settings.set", permissionMode: "auto", model: undefined, effort: undefined });
+  });
+});

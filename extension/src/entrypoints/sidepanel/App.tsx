@@ -22,6 +22,7 @@ export default function App(): React.ReactElement {
   const [permReq, setPermReq] = useState<{ requestId: string; tool: string; detail: string } | null>(null);
   const clientRef = useRef<BridgeClient | null>(null);
   const lastUrlRef = useRef<string | null>(null);
+  const prevFolderRef = useRef<string | null>(null); // 上次绑定的文件夹（用于识别"切换聊天"）
   const settingsRef = useRef<ExtSettings | null>(null);
   settingsRef.current = settings;
 
@@ -35,6 +36,12 @@ export default function App(): React.ReactElement {
         setAuthError(m.reason);
         break;
       case "folder.bound":
+        if (prevFolderRef.current !== null && prevFolderRef.current !== m.path) {
+          // 切换到别的聊天：清空当前显示（含流式残留），历史回放随后覆盖
+          setMessages([]);
+          setStreaming(null);
+        }
+        prevFolderRef.current = m.path;
         setBound(m.path);
         setResumed(m.resumed);
         lastUrlRef.current = null; // 换文件夹后重新附带全文
@@ -151,10 +158,21 @@ export default function App(): React.ReactElement {
     clientRef.current?.send({ type: "chat.send", text: full });
   }
 
+  /** 更新设置并把权限模式/模型/effort 全量推给桥接（任一变化桥接都会重建会话） */
+  async function applySettings(patch: Partial<ExtSettings>): Promise<void> {
+    await saveSettings(patch);
+    const s = await loadSettings();
+    setSettings(s);
+    clientRef.current?.send({
+      type: "settings.set",
+      permissionMode: s.permissionMode,
+      model: s.model || undefined,
+      effort: s.effort || undefined,
+    });
+  }
+
   async function handleModeChange(m: PermissionModeSetting): Promise<void> {
-    await saveSettings({ permissionMode: m });
-    setSettings(await loadSettings());
-    clientRef.current?.send({ type: "settings.set", permissionMode: m });
+    await applySettings({ permissionMode: m });
   }
 
   if (!settings) return <div className="loading">加载中…</div>;
@@ -177,6 +195,29 @@ export default function App(): React.ReactElement {
     <div className="app">
       <div className={`conn ${conn}`}>{conn === "open" ? "● 已连接" : conn === "connecting" ? "● 连接中…" : "● 已断开（自动重连中）"}</div>
       <FolderBar history={settings.folderHistory} bound={bound} resumed={resumed} onBind={handleBind} />
+      <div className="model-bar">
+        <label>
+          模型
+          <select value={settings.model} onChange={(e) => void applySettings({ model: e.target.value })}>
+            <option value="">默认</option>
+            <option value="fable">fable</option>
+            <option value="opus">opus</option>
+            <option value="sonnet">sonnet</option>
+            <option value="haiku">haiku</option>
+          </select>
+        </label>
+        <label>
+          effort
+          <select value={settings.effort} onChange={(e) => void applySettings({ effort: e.target.value as ExtSettings["effort"] })}>
+            <option value="">默认</option>
+            <option value="low">low</option>
+            <option value="medium">medium</option>
+            <option value="high">high</option>
+            <option value="xhigh">xhigh</option>
+            <option value="max">max</option>
+          </select>
+        </label>
+      </div>
       <MessageList messages={messages} streaming={streaming} />
       <PermissionCard
         request={permReq}

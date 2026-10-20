@@ -1,4 +1,4 @@
-import type { PermissionModeSetting } from "./protocol";
+import type { PermissionModeSetting, EffortLevelSetting } from "./protocol";
 
 /** 扩展设置（chrome.storage.local 键 ccc.settings） */
 export interface ExtSettings {
@@ -7,6 +7,10 @@ export interface ExtSettings {
   folderHistory: string[];
   attachEnabled: boolean;
   permissionMode: PermissionModeSetting;
+  /** 模型别名或完整 ID；空串 = 跟随 CLI 配置 */
+  model: string;
+  /** 推理强度；空串 = 默认 */
+  effort: EffortLevelSetting | "";
   lastFolder: string;
 }
 
@@ -16,6 +20,8 @@ export const DEFAULTS: ExtSettings = {
   folderHistory: [],
   attachEnabled: true,
   permissionMode: "auto",
+  model: "",
+  effort: "",
   lastFolder: "",
 };
 

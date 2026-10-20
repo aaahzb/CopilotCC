@@ -6,6 +6,9 @@
 /** 权限模式设置：auto=自动审批分类器；approve-each=聊天内逐条审批卡片 */
 export type PermissionModeSetting = "auto" | "acceptEdits" | "plan" | "approve-each";
 
+/** 推理强度档位（对应 Agent SDK 的 EffortLevel） */
+export type EffortLevelSetting = "low" | "medium" | "high" | "xhigh" | "max";
+
 /** 历史回放消息 */
 export interface HistoryMessage {
   role: "user" | "assistant";
@@ -20,7 +23,7 @@ export type ClientMessage =
   | { type: "chat.abort" }
   | { type: "permission.response"; requestId: string; allow: boolean }
   | { type: "session.history" }
-  | { type: "settings.set"; permissionMode: PermissionModeSetting };
+  | { type: "settings.set"; permissionMode: PermissionModeSetting; model?: string; effort?: EffortLevelSetting };
 
 export type ServerMessage =
   | { type: "auth.ok" }
@@ -41,6 +44,15 @@ export type ServerMessage =
  */
 export function isPermissionMode(v: unknown): v is PermissionModeSetting {
   return v === "auto" || v === "acceptEdits" || v === "plan" || v === "approve-each";
+}
+
+/**
+ * 校验 effort 档位字符串。
+ * @param v 任意值
+ * @returns 是否为合法 EffortLevelSetting
+ */
+export function isEffortLevel(v: unknown): v is EffortLevelSetting {
+  return v === "low" || v === "medium" || v === "high" || v === "xhigh" || v === "max";
 }
 
 /**
@@ -65,8 +77,13 @@ export function parseClientMessage(raw: string): ClientMessage | null {
         return typeof m.text === "string" && m.text.length > 0 ? m : null;
       case "permission.response":
         return typeof m.requestId === "string" && typeof m.allow === "boolean" ? m : null;
-      case "settings.set":
-        return isPermissionMode(m.permissionMode) ? m : null;
+      case "settings.set": {
+        if (!isPermissionMode(m.permissionMode)) return null;
+        // model/effort 为可选字段：只接受合法值，空串视为"跟随默认"（不下发）
+        const model = typeof m.model === "string" && m.model.length > 0 ? m.model : undefined;
+        const effort = isEffortLevel(m.effort) ? m.effort : undefined;
+        return { type: "settings.set", permissionMode: m.permissionMode, model, effort };
+      }
       default:
         return null;
     }
