@@ -1,25 +1,29 @@
-/** ccc-bridge CLI 入口：start（默认）/ selftest [--live] / --print-token */
+/** ccc-bridge CLI 入口：start（默认）/ selftest [--live] / --print-token / --print-pairing */
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import WebSocket from "ws";
-import type { AddressInfo } from "node:net";
 import { loadOrCreateConfig, configDir } from "./config";
 import { SessionManager } from "./session-manager";
 import { startServer } from "./server";
+import { claimInstance, writeRuntime, releaseRuntimeOnExit } from "./runtime";
+import { encodePairing } from "./pairing";
 import { type ServerMessage } from "./protocol";
 
 const cmd = process.argv[2] ?? "start";
 
 /** 打印配对信息并启动常驻服务 */
-function cmdStart(): void {
+async function cmdStart(): Promise<void> {
   const config = loadOrCreateConfig();
+  claimInstance(configDir()); // 单实例守卫：已有活实例直接抛错退出，避免双桥抢端口
   const sessions = new SessionManager(path.join(configDir(), "sessions.json"));
   sessions.load();
-  startServer({ config, sessions });
-  console.log(`[ccc-bridge] 已启动 ws://127.0.0.1:${config.port}/ws`);
-  console.log(`[ccc-bridge] 配对 token: ${config.token}`);
-  console.log(`[ccc-bridge] 配置目录: ${configDir()}（config.json 里可配 allowedOrigins）`);
+  const server = await startServer({ config, sessions });
+  writeRuntime(configDir(), server.port);
+  releaseRuntimeOnExit(configDir());
+  console.log(`[ccc-bridge] 已启动 ws://127.0.0.1:${server.port}/ws`);
+  console.log(`[ccc-bridge] 配对串（粘贴到扩展配对框）: ${encodePairing({ h: "127.0.0.1", p: server.port, t: config.token })}`);
+  console.log(`[ccc-bridge] 配置目录: ${configDir()}（config.json 可改 port/allowedOrigins）`);
 }
 
 /** 等待某类型消息到达 */
@@ -49,9 +53,8 @@ async function cmdSelftest(live: boolean): Promise<void> {
   const config = loadOrCreateConfig();
   config.port = 0;
   const sessions = new SessionManager(path.join(configDir(), "sessions.json"));
-  const server = startServer({ config, sessions });
-  await new Promise((r) => server.wss.on("listening", r));
-  const port = (server.wss.address() as AddressInfo).port;
+  const server = await startServer({ config, sessions });
+  const port = server.port;
 
   const ws = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${config.token}`);
   const inbox: ServerMessage[] = [];
@@ -98,7 +101,10 @@ async function cmdSelftest(live: boolean): Promise<void> {
 }
 
 if (cmd === "start") {
-  cmdStart();
+  cmdStart().catch((e) => {
+    console.error("启动失败:", e instanceof Error ? e.message : e);
+    process.exit(1);
+  });
 } else if (cmd === "selftest") {
   cmdSelftest(process.argv.includes("--live")).catch((e) => {
     console.error("自检失败:", e instanceof Error ? e.message : e);
@@ -106,7 +112,10 @@ if (cmd === "start") {
   });
 } else if (cmd === "--print-token") {
   console.log(loadOrCreateConfig().token);
+} else if (cmd === "--print-pairing") {
+  const c = loadOrCreateConfig();
+  console.log(encodePairing({ h: "127.0.0.1", p: c.port, t: c.token }));
 } else {
-  console.error("用法: tsx src/index.ts [start|selftest [--live]|--print-token]");
+  console.error("用法: tsx src/index.ts [start|selftest [--live]|--print-token|--print-pairing]");
   process.exit(1);
 }

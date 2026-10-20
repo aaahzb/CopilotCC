@@ -4,6 +4,8 @@ import type { PermissionModeSetting, EffortLevelSetting } from "./protocol";
 export interface ExtSettings {
   token: string;
   port: number;
+  /** 桥接地址；默认本机回环。配对串里携带，界面不暴露编辑 */
+  host: string;
   folderHistory: string[];
   attachEnabled: boolean;
   permissionMode: PermissionModeSetting;
@@ -17,6 +19,7 @@ export interface ExtSettings {
 export const DEFAULTS: ExtSettings = {
   token: "",
   port: 19280,
+  host: "127.0.0.1",
   folderHistory: [],
   attachEnabled: true,
   permissionMode: "auto",

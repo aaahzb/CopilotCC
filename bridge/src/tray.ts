@@ -17,6 +17,8 @@ import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { loadOrCreateConfig, configDir } from "./config";
 import { startServer } from "./server";
+import { claimInstance, writeRuntime, releaseRuntimeOnExit } from "./runtime";
+import { encodePairing } from "./pairing";
 import { SessionManager } from "./session-manager";
 import { ICON_ICO_B64, ICON_PNG_B64 } from "./icon";
 
@@ -80,16 +82,19 @@ function copyToClipboard(text: string): void {
 /** 托盘主流程：读配置 → 起 WS 桥 → 定位托盘二进制 → 建托盘菜单 */
 async function main(): Promise<void> {
   const config = loadOrCreateConfig();
+  claimInstance(configDir()); // 单实例守卫：已有活实例直接抛错（落 tray-error.log）
   const sessions = new SessionManager(path.join(configDir(), "sessions.json"));
   sessions.load();
-  startServer({ config, sessions });
-  console.log(`[ccc-bridge] 已启动 ws://127.0.0.1:${config.port}/ws（托盘模式）`);
+  const server = await startServer({ config, sessions });
+  writeRuntime(configDir(), server.port);
+  releaseRuntimeOnExit(configDir());
+  console.log(`[ccc-bridge] 已启动 ws://127.0.0.1:${server.port}/ws（托盘模式）`);
 
   chdirToTraybinParent();
   const icon = writeIcon();
   const items: TrayItem[] = [
-    { title: `Claude Code 桥接运行中（端口 ${config.port}）`, tooltip: "", enabled: false },
-    { title: "复制配对 Token", tooltip: "复制到剪贴板，粘贴到扩展设置页", enabled: true, click: () => copyToClipboard(config.token) },
+    { title: `Claude Code 桥接运行中（端口 ${server.port}）`, tooltip: "", enabled: false },
+    { title: "复制配对串", tooltip: "地址+端口+Token 打包成一串，粘贴到扩展配对框", enabled: true, click: () => copyToClipboard(encodePairing({ h: "127.0.0.1", p: server.port, t: config.token })) },
     SysTray.separator,
     {
       title: "退出",
@@ -105,7 +110,7 @@ async function main(): Promise<void> {
       icon,
       isTemplateIcon: false, // 彩色图标，不做 macOS 模板剪影
       title: "",
-      tooltip: `Claude Code 桥接 · 端口 ${config.port}`,
+      tooltip: `Claude Code 桥接 · 端口 ${server.port}`,
       items,
     },
     debug: false,

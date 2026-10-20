@@ -43,7 +43,7 @@ export type ClientMessage =
   | { type: "settings.set"; permissionMode: PermissionModeSetting; model?: string; effort?: EffortLevelSetting };
 
 export type ServerMessage =
-  | { type: "auth.ok" }
+  | { type: "auth.ok"; instance?: string }
   | { type: "auth.fail"; reason: string }
   | { type: "folder.bound"; path: string; resumed: boolean; title: string; sessionId: string | null }
   | { type: "folder.error"; message: string }

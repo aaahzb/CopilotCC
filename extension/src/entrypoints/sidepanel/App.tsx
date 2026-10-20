@@ -4,6 +4,7 @@ import { loadSettings, saveSettings, pushFolderHistory, takePendingQuote, type E
 import { decideAttach, composeMessage, type PageSnapshot } from "../../lib/attach-policy";
 import { snapshotActiveTab } from "../../lib/page-extract";
 import type { ServerMessage, PermissionModeSetting, SessionInfo } from "../../lib/protocol";
+import type { PairingInfo } from "../../lib/pairing";
 import { TokenGate } from "../../components/TokenGate";
 import { FolderBar } from "../../components/FolderBar";
 import { MessageList, type UiMsg } from "../../components/MessageList";
@@ -22,6 +23,7 @@ export default function App(): React.ReactElement {
   const [permReq, setPermReq] = useState<{ requestId: string; tool: string; detail: string } | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null); // 当前会话 ID（folder.bound/session.list.data 携带或 chat.done 推送）
   const [sessions, setSessions] = useState<SessionInfo[]>([]); // 当前文件夹下的会话列表（切换会话下拉）
+  const [showGate, setShowGate] = useState(false); // 手动打开重新配对界面（中途改端口/换桥接）
   const clientRef = useRef<BridgeClient | null>(null);
   const lastUrlRef = useRef<string | null>(null);
   const prevFolderRef = useRef<string | null>(null); // 上次绑定的文件夹（识别"切换文件夹"）
@@ -95,7 +97,7 @@ export default function App(): React.ReactElement {
   function connect(s: ExtSettings): void {
     clientRef.current?.close();
     const c = new BridgeClient({
-      getUrl: () => `ws://127.0.0.1:${s.port}/ws?token=${s.token}`,
+      getUrl: () => `ws://${s.host}:${s.port}/ws?token=${encodeURIComponent(s.token)}`,
       onMessage: onServerMessage,
       onState: setConn,
     });
@@ -193,25 +195,41 @@ export default function App(): React.ReactElement {
     await applySettings({ permissionMode: m });
   }
 
+  /** 重新配对：保存新连接参数、清掉旧桥的界面状态并重连（conn-open 效应会自动回绑 lastFolder） */
+  async function handlePair(info: PairingInfo): Promise<void> {
+    await saveSettings({ token: info.t, port: info.p, host: info.h });
+    const s = await loadSettings();
+    setAuthError("");
+    setShowGate(false);
+    setSettings(s);
+    // 换桥 = 换世界：清掉旧桥留下的界面状态，由新桥的 folder.bound/history 重建
+    prevFolderRef.current = null;
+    prevBoundSidRef.current = null;
+    setBound(null);
+    setMessages([]);
+    setStreaming(null);
+    setSessions([]);
+    setSessionId(null);
+    connect(s);
+  }
+
   if (!settings) return <div className="loading">加载中…</div>;
-  if (!settings.token || authError) {
+  if (showGate || !settings.token || authError) {
     return (
       <TokenGate
         error={authError}
-        onSave={async (token, port) => {
-          await saveSettings({ token, port });
-          const s = await loadSettings();
-          setAuthError("");
-          setSettings(s);
-          connect(s);
-        }}
+        onCancel={settings.token ? () => setShowGate(false) : undefined}
+        onSave={(info) => void handlePair(info)}
       />
     );
   }
 
   return (
     <div className="app">
-      <div className={`conn ${conn}`}>{conn === "open" ? "● 已连接" : conn === "connecting" ? "● 连接中…" : "● 已断开（自动重连中）"}</div>
+      <div className={`conn ${conn}`}>
+        <span>{conn === "open" ? "● 已连接" : conn === "connecting" ? "● 连接中…" : "● 已断开（自动重连中）"}</span>
+        <button className="pair-btn" title="重新配对（改端口 / 换桥接）" onClick={() => setShowGate(true)}>⚙ 配对</button>
+      </div>
       <FolderBar
         history={settings.folderHistory}
         bound={bound}

@@ -3,7 +3,7 @@ import WebSocket from "ws";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { AddressInfo } from "node:net";
+import * as net from "node:net";
 import { startServer } from "../src/server";
 import { slugifyPath } from "../src/transcript";
 import { SessionManager } from "../src/session-manager";
@@ -22,7 +22,7 @@ function makeConfig(over: Partial<BridgeConfig> = {}): BridgeConfig {
 
 /** 启动服务并返回连接 URL */
 async function boot(config: BridgeConfig) {
-  const server = startServer({
+  const server = await startServer({
     config,
     sessions,
     createSession: ((cwd: string, opts: Record<string, unknown>) => {
@@ -30,9 +30,7 @@ async function boot(config: BridgeConfig) {
       return fakeHandle;
     }) as never,
   });
-  await new Promise((r) => server.wss.on("listening", r));
-  const port = (server.wss.address() as AddressInfo).port;
-  return { server, url: `ws://127.0.0.1:${port}/ws` };
+  return { server, url: `ws://127.0.0.1:${server.port}/ws` };
 }
 
 /** 连接并收第一条消息 */
@@ -244,5 +242,36 @@ describe("server 会话管理（一文件夹多会话）", () => {
     expect(sessions.get(dir)).toBeUndefined();
     ws.close();
     await server.close();
+  });
+});
+
+describe("端口占用处理", () => {
+  it("同 token 的第二个实例被拒绝（duplicate 探测）", async () => {
+    const a = await boot(makeConfig());
+    await expect(startServer({ config: makeConfig({ port: a.server.port }), sessions })).rejects.toThrow(/另一个 ccc-bridge 实例/);
+    await a.server.close();
+  });
+
+  it("被无关程序占用时顺延到下一可用端口", async () => {
+    // 占用者：收连接但永不回应（模拟无关的本地服务）；跟踪其 socket 便于清理
+    const socks = new Set<net.Socket>();
+    const block = net.createServer((s) => {
+      socks.add(s);
+      s.on("close", () => socks.delete(s));
+      s.on("error", () => {});
+    });
+    await new Promise<void>((r) => block.listen(0, "127.0.0.1", () => r()));
+    const taken = (block.address() as net.AddressInfo).port;
+    const server = await startServer({ config: makeConfig({ port: taken }), sessions });
+    try {
+      expect(server.port).toBeGreaterThan(taken);
+      const { ws, first } = await connect(`ws://127.0.0.1:${server.port}/ws`);
+      expect(first.type).toBe("auth.ok");
+      ws.close();
+    } finally {
+      await server.close();
+      for (const s of socks) s.destroy(); // 防御：即使探测连接泄漏也不让 close 干等
+      await new Promise<void>((r) => block.close(() => r()));
+    }
   });
 });

@@ -65,3 +65,9 @@ body { margin: 0; font-family: "Segoe UI", system-ui, sans-serif; font-size: 13p
 .mini-btn:hover { border-color: #666; }
 .mini-btn.danger:hover { border-color: #a55; color: #f0a0a0; }
 .mini-btn:disabled { opacity: 0.5; cursor: default; }
+
+/* 重新配对入口与配对框 */
+.conn { display: flex; justify-content: space-between; align-items: center; }
+.pair-btn { background: none; border: none; color: inherit; cursor: pointer; opacity: .55; font-size: 12px; padding: 0 2px; }
+.pair-btn:hover { opacity: 1; }
+.token-gate-actions { display: flex; gap: 8px; margin-top: 8px; }

@@ -26,7 +26,7 @@ npm i
 npm start
 ```
 
-启动后控制台打印三样：`ws://127.0.0.1:19280/ws`、**配对 token**、配置目录（默认 `~/.ccc-bridge/`）。
+启动后控制台打印三样：`ws://127.0.0.1:19280/ws`、**配对串**（`ccc1.` 开头，内含地址+端口+token）、配置目录（默认 `~/.ccc-bridge/`）。
 
 把扩展 Origin 写入 `~/.ccc-bridge/config.json` 的 `allowedOrigins` 后重启 bridge：
 
@@ -48,7 +48,7 @@ npm run build
 
 ### 3. 配对
 
-点击工具栏图标打开侧栏 → 粘贴 bridge 打印的 token → 状态灯变绿即连接成功。token 只需配一次（存 `chrome.storage.local`）。
+点击工具栏图标打开侧栏 → 粘贴配对串（托盘右键「复制配对串」；`npm start` 启动时也会打印）→ 状态灯变绿即连接成功。配对只需一次（存 `chrome.storage.local`）；兼容直接粘贴裸 token（默认 127.0.0.1:19280）。连接状态栏右侧的「⚙ 配对」可随时重新配对（改端口/换桥接）。
 
 ## 使用
 
@@ -79,7 +79,7 @@ npm i -g bun        # 一次性
 npm run build:exe   # 产物在 bridge/dist/
 ```
 
-产物布局：`ccc-bridge[.exe]` + `traybin/`（托盘原生二进制，需与 exe 同级）。运行后驻留系统托盘，右键菜单：复制配对 Token、退出。配置文件 `~/.ccc-bridge/config.json` 里可改的只有三项：token（改掉即换配对码）、port（默认 19280，端口冲突时改）、allowedOrigins（扩展来源白名单，默认空=仅本机放行）。开发态免打包直接跑托盘：`npm run tray`。
+产物布局：`ccc-bridge[.exe]` + `traybin/`（托盘原生二进制，需与 exe 同级）。运行后驻留系统托盘，右键菜单：复制配对串、退出。配置文件 `~/.ccc-bridge/config.json` 里可改的只有三项：token（改掉即换配对码）、port（默认 19280，端口冲突时改）、allowedOrigins（扩展来源白名单，默认空=仅本机放行）。端口被无关程序占用时自动顺延（最多 10 个），实际端口以托盘状态行/配对串为准；同配置的第二个实例会被拒绝启动（runtime.json 单实例守卫，退出自动清理）。开发态免打包直接跑托盘：`npm run tray`。
 
 **macOS（arm64）部署**：把整个 `ccc-bridge-darwin-arm64` 目录拷到 Mac，执行一次：
 
@@ -110,7 +110,7 @@ npm run selftest:live   # 端到端：向真实 claude 发一条消息（走本�
 
 - **中转 API 能用吗？** 能。桥接继承 spawn 时的环境变量，你本机 `claude` 能用，桥接就能用（`permissionMode: "auto"` 已在中转环境下实测通过）。
 - **auto 模式异常怎么办？** 切换为 `acceptEdits`（设计上就是 auto 的降级预案）。
-- **改端口？** 编辑 `~/.ccc-bridge/config.json` 的 `port`，侧栏配对界面填同一端口。
+- **改端口？** 编辑 `~/.ccc-bridge/config.json` 的 `port` 后重启桥接，侧栏点「⚙ 配对」粘贴新配对串即可（端口被占用时桥接也会自动顺延，配对串携带的总是实际端口）。
 - **chrome:// 等特权页无法提取？** 属浏览器限制，会在消息列表显示失败原因，不再静默降级。
 
 ## 开发
