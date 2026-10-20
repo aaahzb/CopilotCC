@@ -50,3 +50,5 @@
 - 渲染增强（2026-10-20）：消息气泡补 KaTeX 数学公式（remark-math + rehype-katex + katex css），表格/行内代码补暗色样式。GFM 与代码块此前已支持。
 - 新功能（2026-10-20）：代码块语法高亮（rehype-highlight + github-dark 主题）与右上角复制按钮；文件夹栏"切换聊天…"下拉（切换即绑定并回放对应历史）；聊天框上方模型（默认/fable/opus/sonnet/haiku）与 effort（默认/low/medium/high/xhigh/max）下拉，经 settings.set 推送桥接并带 resumeId 重建会话保上下文；消息区"⬇ 回到底部"按钮（离底超 120px 时出现）。
 - 桥接修复（2026-10-20）：src/index.ts 自检脚本误用服务端专用 encode() 发客户端消息（folder.bind/chat.send），改为 JSON.stringify；bridge 补上 tsc --noEmit 检查（此前只给扩展配了，该历史错误因此长期未被发现）。协议 settings.set 扩展 model/effort 字段并同步两端副本，新增 2 个协议测试（桥接共 28 个单测）。
+- 调整（2026-10-20）：模型/effort 选择栏从聊天框顶部移到输入框上方（贴近权限模式切换行），去掉与输入框叠压的分隔线。
+- 已知问题（2026-10-20，根因已定位）：在 cmd 里以小写路径 cd 进绑定文件夹后 `claude -c` 看不到桥接会话历史。原因：CLI 把 cwd 字面量大小写敏感地转成 projects slug（c:\users\… → c--users-…），而桥接经 SDK 落盘的是真实大小写目录（C--Users-…）。临时绕开：cmd 里用 Tab 补全出真实大小写路径再 claude --resume。根治方案（待确认）：绑定时用 fs.realpathSync.native 规范化为真实大小写路径。

@@ -195,6 +195,14 @@ export default function App(): React.ReactElement {
     <div className="app">
       <div className={`conn ${conn}`}>{conn === "open" ? "● 已连接" : conn === "connecting" ? "● 连接中…" : "● 已断开（自动重连中）"}</div>
       <FolderBar history={settings.folderHistory} bound={bound} resumed={resumed} onBind={handleBind} />
+      <MessageList messages={messages} streaming={streaming} />
+      <PermissionCard
+        request={permReq}
+        onRespond={(id, allow) => {
+          clientRef.current?.send({ type: "permission.response", requestId: id, allow });
+          setPermReq(null);
+        }}
+      />
       <div className="model-bar">
         <label>
           模型
@@ -218,14 +226,6 @@ export default function App(): React.ReactElement {
           </select>
         </label>
       </div>
-      <MessageList messages={messages} streaming={streaming} />
-      <PermissionCard
-        request={permReq}
-        onRespond={(id, allow) => {
-          clientRef.current?.send({ type: "permission.response", requestId: id, allow });
-          setPermReq(null);
-        }}
-      />
       <InputBox
         disabled={!bound || conn !== "open"}
         streaming={streaming !== null}

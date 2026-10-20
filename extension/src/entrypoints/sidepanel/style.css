@@ -50,7 +50,7 @@ body { margin: 0; font-family: "Segoe UI", system-ui, sans-serif; font-size: 13p
 .code-wrap { position: relative; }
 .code-wrap .code-copy { position: absolute; top: 4px; right: 4px; background: #2f4f7f; color: #fff; border: none; border-radius: 4px; padding: 2px 8px; font-size: 11px; cursor: pointer; opacity: .85; }
 .code-wrap .code-copy:hover { opacity: 1; }
-.model-bar { display: flex; gap: 14px; padding: 4px 10px; border-bottom: 1px solid #333; font-size: 12px; color: #9aa0a6; align-items: center; }
+.model-bar { display: flex; gap: 14px; padding: 4px 10px; font-size: 12px; color: #9aa0a6; align-items: center; }
 .model-bar select { background: #2a2b31; color: inherit; border: 1px solid #444; border-radius: 4px; margin-left: 4px; }
 .chat-switch { max-width: 140px; background: #2a2b31; color: inherit; border: 1px solid #444; border-radius: 4px; margin-left: 6px; }
 .message-wrap { position: relative; flex: 1; display: flex; flex-direction: column; min-height: 0; }
