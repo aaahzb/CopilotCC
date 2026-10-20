@@ -20,6 +20,7 @@ export default function App(): React.ReactElement {
   const [messages, setMessages] = useState<UiMsg[]>([]);
   const [streaming, setStreaming] = useState<string | null>(null);
   const [permReq, setPermReq] = useState<{ requestId: string; tool: string; detail: string } | null>(null);
+  const [sessionId, setSessionId] = useState<string | null>(null); // 当前会话 ID（folder.bound 携带或 chat.done 推送）
   const clientRef = useRef<BridgeClient | null>(null);
   const lastUrlRef = useRef<string | null>(null);
   const prevFolderRef = useRef<string | null>(null); // 上次绑定的文件夹（用于识别"切换聊天"）
@@ -44,6 +45,7 @@ export default function App(): React.ReactElement {
         prevFolderRef.current = m.path;
         setBound(m.path);
         setResumed(m.resumed);
+        setSessionId(m.sessionId);
         lastUrlRef.current = null; // 换文件夹后重新附带全文
         if (m.resumed) clientRef.current?.send({ type: "session.history" });
         break;
@@ -60,6 +62,7 @@ export default function App(): React.ReactElement {
         setMessages((ms) => [...ms, { id: crypto.randomUUID(), role: "tool", text: `🔧 ${m.name} ${m.summary}` }]);
         break;
       case "chat.done":
+        setSessionId(m.sessionId);
         setStreaming((s) => {
           if (s) setMessages((ms) => [...ms, { id: crypto.randomUUID(), role: "assistant", text: s }]);
           return null;
@@ -194,7 +197,7 @@ export default function App(): React.ReactElement {
   return (
     <div className="app">
       <div className={`conn ${conn}`}>{conn === "open" ? "● 已连接" : conn === "connecting" ? "● 连接中…" : "● 已断开（自动重连中）"}</div>
-      <FolderBar history={settings.folderHistory} bound={bound} resumed={resumed} onBind={handleBind} />
+      <FolderBar history={settings.folderHistory} bound={bound} resumed={resumed} sessionId={sessionId} onBind={handleBind} />
       <MessageList messages={messages} streaming={streaming} />
       <PermissionCard
         request={permReq}
@@ -203,36 +206,17 @@ export default function App(): React.ReactElement {
           setPermReq(null);
         }}
       />
-      <div className="model-bar">
-        <label>
-          模型
-          <select value={settings.model} onChange={(e) => void applySettings({ model: e.target.value })}>
-            <option value="">默认</option>
-            <option value="fable">fable</option>
-            <option value="opus">opus</option>
-            <option value="sonnet">sonnet</option>
-            <option value="haiku">haiku</option>
-          </select>
-        </label>
-        <label>
-          effort
-          <select value={settings.effort} onChange={(e) => void applySettings({ effort: e.target.value as ExtSettings["effort"] })}>
-            <option value="">默认</option>
-            <option value="low">low</option>
-            <option value="medium">medium</option>
-            <option value="high">high</option>
-            <option value="xhigh">xhigh</option>
-            <option value="max">max</option>
-          </select>
-        </label>
-      </div>
       <InputBox
         disabled={!bound || conn !== "open"}
         streaming={streaming !== null}
         attachEnabled={settings.attachEnabled}
         permissionMode={settings.permissionMode}
+        model={settings.model}
+        effort={settings.effort}
         onToggleAttach={async (v) => { await saveSettings({ attachEnabled: v }); setSettings(await loadSettings()); }}
         onModeChange={handleModeChange}
+        onModelChange={(v) => void applySettings({ model: v })}
+        onEffortChange={(v) => void applySettings({ effort: v })}
         onSend={handleSend}
         onStop={() => clientRef.current?.send({ type: "chat.abort" })}
       />
