@@ -53,6 +53,7 @@ npm run build
 ## 使用
 
 - **绑定文件夹**：顶部输入绝对路径回车。绑过会的文件夹显示“已续聊”徽标并回放历史（回放气泡只显示用户实际问题，页面上下文包装不进气泡；完整发送内容与 📄/📎 附带标记保留，右键气泡可溯源，重载前后行为一致）；绑定行右侧的“会话 …⧉”芯片点击即复制 `claude --resume <会话ID>` 命令，用于在 cmd/终端里续接当前侧边栏会话。
+- **多会话**：一个文件夹可有多个会话。文件夹栏第二行有「切换文件夹…」「切换会话…」两个下拉（会话按最近活跃排序，▶ 标记当前）以及「＋新会话」「🗑删会话」按钮；删除会弹确认并同时删除本地转录文件，不可恢复。
 - **附带网页**（默认开）：首次提问或 URL 变化时自动带页面全文（文章页走 Defuddle 正文提取并保留低评分内容块；提取结果过少或非文章页时自动改用页面全文纯文本；截断 30000 字符）；同页后续提问只带选中文字，靠会话上下文衔接；每次发送会在消息区显示附带结果（成功字符数或失败原因），不再静默失败。
 - **附带标记与溯源**：气泡右上角 📄 表示该条附带了页面全文，📎 表示只附带了选中文字；右键气泡可查看实际发给 Claude 的完整内容（含页面上下文），支持一键复制；也可以直接点击附带状态行（带 🔍），弹出浮层临时查看同一份内容，关闭即消失。
 - **Markdown 渲染**：回复按 GFM 渲染（表格、任务列表、删除线），代码块语法高亮（highlight.js）且右上角带复制按钮，数学公式（$...$ 与 $$...$$）用 KaTeX 渲染；附带状态行里的原始发送文本不渲染（保持原文核对）。
@@ -67,6 +68,27 @@ npm run build
   - `逐条审批`：每次工具调用在侧栏弹卡片，手动允许/拒绝（30 秒无操作默认拒绝）。
 - **停止**：生成中点"停止"发送 abort。
 
+
+## 托盘 exe（免 Node 环境运行）
+
+桥接可用 bun 编译为单文件托盘程序（Windows x64 / macOS arm64）：
+
+```bash
+cd bridge
+npm i -g bun        # 一次性
+npm run build:exe   # 产物在 bridge/dist/
+```
+
+产物布局：`ccc-bridge[.exe]` + `traybin/`（托盘原生二进制，需与 exe 同级）。运行后驻留系统托盘，右键菜单：复制配对 Token、打开配置目录、退出。开发态免打包直接跑托盘：`npm run tray`。
+
+**macOS（arm64）部署**：把整个 `ccc-bridge-darwin-arm64` 目录拷到 Mac，执行一次：
+
+```bash
+chmod +x ccc-bridge traybin/tray_darwin_release
+codesign --force -s - ccc-bridge && codesign --force -s - traybin/tray_darwin_release
+xattr -dr com.apple.quarantine . 2>/dev/null || true
+./ccc-bridge   # 常驻菜单栏；Mac 上同样需已装 claude CLI 并配好 ANTHROPIC_BASE_URL/TOKEN
+```
 ## 自检
 
 ```bash
