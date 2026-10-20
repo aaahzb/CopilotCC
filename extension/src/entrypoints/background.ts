@@ -18,6 +18,7 @@ export default defineBackground(() => {
   chrome.contextMenus.onClicked.addListener((info, tab) => {
     if (info.menuItemId !== "ccc-ask-selection" || !info.selectionText) return;
     void chrome.storage.session.set({ "ccc.pendingQuote": info.selectionText });
-    void chrome.sidePanel.open({ windowId: tab?.windowId });
+    const winId = tab?.windowId ?? chrome.windows.WINDOW_ID_CURRENT;
+    void chrome.sidePanel.open({ windowId: winId });
   });
 });

@@ -1,0 +1,34 @@
+:root { color-scheme: dark; }
+* { box-sizing: border-box; }
+body { margin: 0; font-family: "Segoe UI", system-ui, sans-serif; font-size: 13px; background: #1e1f24; color: #e4e6eb; }
+.app { display: flex; flex-direction: column; height: 100vh; }
+.conn { padding: 4px 10px; font-size: 12px; }
+.conn.open { color: #4caf50; } .conn.connecting { color: #ff9800; } .conn.closed { color: #f44336; }
+.folder-bar { padding: 6px 10px; border-bottom: 1px solid #333; }
+.folder-bar input { width: 70%; background: #2a2b31; color: inherit; border: 1px solid #444; border-radius: 4px; padding: 4px 6px; }
+.folder-bar button { margin-left: 6px; }
+.bound-info { margin-top: 4px; font-size: 12px; color: #9aa0a6; word-break: break-all; }
+.badge { background: #2e7d32; border-radius: 3px; padding: 1px 5px; margin-left: 6px; font-size: 11px; }
+.message-list { flex: 1; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+.msg { border-radius: 8px; padding: 8px 10px; max-width: 100%; word-break: break-word; }
+.msg.user { background: #2f4f7f; align-self: flex-end; }
+.msg.assistant { background: #2a2b31; align-self: flex-start; }
+.msg.streaming { opacity: 0.85; }
+.msg pre, .tool-card pre { background: #17181c; padding: 6px; border-radius: 4px; overflow-x: auto; }
+.tool-card { color: #9aa0a6; font-size: 12px; }
+.permission-card { border: 1px solid #ff9800; border-radius: 8px; margin: 6px 10px; padding: 8px 10px; }
+.permission-card .row { display: flex; gap: 8px; margin-top: 6px; }
+.permission-card .allow { background: #2e7d32; color: #fff; border: none; border-radius: 4px; padding: 4px 14px; }
+.permission-card .deny { background: #c62828; color: #fff; border: none; border-radius: 4px; padding: 4px 14px; }
+.input-box { border-top: 1px solid #333; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; }
+.input-box .toggles { display: flex; gap: 14px; align-items: center; font-size: 12px; color: #9aa0a6; }
+.input-box select { background: #2a2b31; color: inherit; border: 1px solid #444; border-radius: 4px; }
+.input-box textarea { width: 100%; background: #2a2b31; color: inherit; border: 1px solid #444; border-radius: 6px; padding: 6px 8px; resize: vertical; }
+.input-box button { align-self: flex-end; background: #2f4f7f; color: #fff; border: none; border-radius: 4px; padding: 5px 18px; }
+.input-box button:disabled { opacity: 0.4; }
+.token-gate { padding: 20px; display: flex; flex-direction: column; gap: 10px; }
+.token-gate input { background: #2a2b31; color: inherit; border: 1px solid #444; border-radius: 4px; padding: 6px 8px; }
+.token-gate .hint { color: #9aa0a6; font-size: 12px; }
+.token-gate .error { color: #f44336; }
+.token-gate code { background: #17181c; padding: 1px 5px; border-radius: 3px; }
+.loading { padding: 20px; color: #9aa0a6; }

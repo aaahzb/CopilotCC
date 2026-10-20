@@ -41,18 +41,18 @@ describe("BridgeClient", () => {
     const { c } = makeClient();
     c.connect();
     c.send({ type: "client.ready" });
-    expect(FakeWS.instances[0].sent.length).toBe(0);
-    FakeWS.instances[0].open();
-    expect(FakeWS.instances[0].sent.length).toBe(1);
-    expect(JSON.parse(FakeWS.instances[0].sent[0])).toEqual({ type: "client.ready" });
+    expect(FakeWS.instances[0]!.sent.length).toBe(0);
+    FakeWS.instances[0]!.open();
+    expect(FakeWS.instances[0]!.sent.length).toBe(1);
+    expect(JSON.parse(FakeWS.instances[0]!.sent[0]!)).toEqual({ type: "client.ready" });
     c.close();
   });
 
   it("收到帧解析为 ServerMessage 回调", () => {
     const { c, received } = makeClient();
     c.connect();
-    FakeWS.instances[0].open();
-    FakeWS.instances[0].push({ type: "auth.ok" });
+    FakeWS.instances[0]!.open();
+    FakeWS.instances[0]!.push({ type: "auth.ok" });
     expect(received).toEqual([{ type: "auth.ok" }]);
     c.close();
   });
@@ -60,13 +60,13 @@ describe("BridgeClient", () => {
   it("断线后指数退避重连，close() 后不再重连", () => {
     const { c, states } = makeClient();
     c.connect();
-    const first = FakeWS.instances[0];
+    const first = FakeWS.instances[0]!;
     first.open();
     first.close(); // 模拟断开
     expect(FakeWS.instances.length).toBe(1);
     vi.advanceTimersByTime(1000); // 第一次退避 1s
     expect(FakeWS.instances.length).toBe(2);
-    FakeWS.instances[1].close();
+    FakeWS.instances[1]!.close();
     vi.advanceTimersByTime(2000); // 第二次退避 2s
     expect(FakeWS.instances.length).toBe(3);
     c.close();
