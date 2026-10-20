@@ -25,7 +25,10 @@ export function MessageList(props: { messages: UiMsg[]; streaming: string | null
     <div className="message-list">
       {props.messages.map((m) =>
         m.role === "tool" ? (
-          <details key={m.id} className="tool-card"><summary>{m.text}</summary></details>
+          <details key={m.id} className="tool-card">
+            <summary>{m.text}</summary>
+            {m.sentText ? <pre>{m.sentText}</pre> : null}
+          </details>
         ) : (
           <div
             key={m.id}

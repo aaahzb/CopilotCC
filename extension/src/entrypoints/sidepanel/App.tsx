@@ -145,7 +145,7 @@ export default function App(): React.ReactElement {
           : undefined;
     setMessages((ms) => {
       const next: UiMsg[] = [...ms, { id: crypto.randomUUID(), role: "user", text, sentText: full, attachKind }];
-      if (attachNote) next.push({ id: crypto.randomUUID(), role: "tool", text: attachNote });
+      if (attachNote) next.push({ id: crypto.randomUUID(), role: "tool", text: attachNote, sentText: full });
       return next;
     });
     clientRef.current?.send({ type: "chat.send", text: full });
