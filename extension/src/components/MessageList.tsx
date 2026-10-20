@@ -25,10 +25,14 @@ export function MessageList(props: { messages: UiMsg[]; streaming: string | null
     <div className="message-list">
       {props.messages.map((m) =>
         m.role === "tool" ? (
-          <details key={m.id} className="tool-card">
-            <summary>{m.text}</summary>
-            {m.sentText ? <pre>{m.sentText}</pre> : null}
-          </details>
+          m.sentText ? (
+            // 附带状态行：平时一行折叠态，点击弹出临时浮层查看完整发送内容，关闭即消失
+            <div key={m.id} className="tool-card clickable" title="点击查看实际发送内容" onClick={() => setViewing(m)}>
+              {m.text} 🔍
+            </div>
+          ) : (
+            <div key={m.id} className="tool-card">{m.text}</div>
+          )
         ) : (
           <div
             key={m.id}
