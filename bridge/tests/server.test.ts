@@ -341,4 +341,23 @@ describe("在线改端口（/config 设置页）", () => {
     expect(refused).toBe(true);
     await server.close();
   }, 15000);
+
+  it("setPort（托盘弹窗路径）：直接在线切换并持久化，无需 HTTP", async () => {
+    const { server } = await boot(makeConfig(), { configDir: dir });
+    // 借系统分配拿一个空闲端口当目标（用完即放）
+    const probeSrv = net.createServer();
+    await new Promise<void>((r) => probeSrv.listen(0, "127.0.0.1", () => r()));
+    const target = (probeSrv.address() as net.AddressInfo).port;
+    await new Promise<void>((r) => probeSrv.close(() => r()));
+
+    const port = await server.setPort(target);
+    expect(port).toBe(target);
+    expect(server.port).toBe(target); // getter 跟随
+    const saved = JSON.parse(fs.readFileSync(path.join(dir, "config.json"), "utf-8")) as BridgeConfig;
+    expect(saved.port).toBe(target); // 已持久化
+    const { ws, first } = await connect(`ws://127.0.0.1:${target}/ws`);
+    expect(first.type).toBe("auth.ok");
+    ws.close();
+    await server.close();
+  });
 });

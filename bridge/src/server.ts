@@ -21,12 +21,19 @@ export interface ServerDeps {
   onPortChanged?: (port: number) => void;
 }
 
-/** 启动结果：wss/port 始终指向当前实例（在线改端口后跟随），close 关闭当前实例 */
+/** 启动结果：wss/port 始终指向当前实例（在线改端口后跟随），close 关闭当前实例，setPort 在线改端口 */
 export interface StartedServer {
   /** 当前 WS 服务实例 */
   readonly wss: WebSocketServer;
   /** 当前实际监听的端口（config.port=0 时为系统分配） */
   readonly port: number;
+  /**
+   * 在线改端口：先在新端口完成监听+自探测，成功后才拆旧服务（含写回 config.json、触发 onPortChanged）。
+   * @param target 目标端口（被无关程序占用时顺延，最多 10 个）
+   * @returns 实际生效的端口
+   * @throws 候选端口耗尽，或目标被同配置的另一个桥接实例占用
+   */
+  setPort: (target: number) => Promise<number>;
   close: () => Promise<void>;
 }
 
@@ -236,11 +243,10 @@ function readJsonBody(req: http.IncomingMessage): Promise<Record<string, unknown
   });
 }
 
-/** /config 请求上下文：配置、持久化目录、当前端口访问器与在线切换函数 */
+/** /config 请求上下文：配置、持久化目录（缺省=禁止保存）、当前端口访问器与在线切换函数 */
 interface ConfigHttpCtx {
   config: BridgeConfig;
   configDir?: string;
-  onPortChanged?: (port: number) => void;
   getPort: () => number;
   rebind: (target: number) => Promise<number>;
 }
@@ -299,10 +305,7 @@ async function handleConfigRequest(req: http.IncomingMessage, res: http.ServerRe
     return;
   }
   try {
-    const port = await ctx.rebind(p);
-    saveConfig(ctx.config, ctx.configDir); // 持久化：下次启动直接用新端口
-    ctx.onPortChanged?.(port);
-    console.log(`[ccc-bridge] 端口已在线切换到 ${port}`);
+    const port = await ctx.rebind(p); // 内含写回 config.json 与 onPortChanged 回调
     send(200, { ok: true, port, pairing: encodePairing({ h: "127.0.0.1", p: port, t: ctx.config.token }) });
   } catch (e) {
     send(500, { ok: false, error: e instanceof Error ? e.message : String(e) });
@@ -361,6 +364,9 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
       const old = current;
       current = r;
       config.port = port; // 配置对象原地更新：托盘等持有方读到的就是新端口
+      if (deps.configDir) saveConfig(config, deps.configDir); // 持久化：下次启动直接用新端口
+      deps.onPortChanged?.(port);
+      console.log(`[ccc-bridge] 端口已在线切换到 ${port}`);
       // 改端口的 POST 响应走旧服务发出，稍等它发完再拆旧服务（同时断开旧 WS 客户端）
       setTimeout(() => void closeRunning(old), 250).unref();
       return port;
@@ -373,7 +379,6 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
     void handleConfigRequest(req, res, {
       config,
       configDir: deps.configDir,
-      onPortChanged: deps.onPortChanged,
       getPort: () => current.port,
       rebind,
     });
@@ -388,6 +393,7 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
       get port() {
         return current.port;
       },
+      setPort: rebind,
       close: () => closeRunning(current),
     };
   }

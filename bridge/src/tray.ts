@@ -79,6 +79,123 @@ function copyToClipboard(text: string): void {
   }
 }
 
+/** 命令执行结果：ok=正常退出（text 为 trim 后输出）；exit=非零退出（如弹窗点取消）；error=进程未能启动（工具缺失） */
+type CmdResult = { kind: "ok"; text: string } | { kind: "exit" } | { kind: "error" };
+
+/**
+ * 运行系统命令并收集 stdout（utf8）。
+ * @param cmd 命令
+ * @param args 参数
+ * @returns 执行结果
+ */
+function runCmdCapture(cmd: string, args: string[]): Promise<CmdResult> {
+  return new Promise((resolve) => {
+    let out = "";
+    try {
+      const p = spawn(cmd, args, { stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
+      p.on("error", () => resolve({ kind: "error" }));
+      p.stdout.on("data", (d: Buffer) => (out += d.toString("utf-8")));
+      p.on("close", (code) => resolve(code === 0 ? { kind: "ok", text: out.trim() } : { kind: "exit" }));
+    } catch {
+      resolve({ kind: "error" });
+    }
+  });
+}
+
+/** PowerShell 单引号字符串转义（单引号双写） */
+function psQ(s: string): string {
+  return `'${s.replace(/'/g, "''")}'`;
+}
+
+/** PowerShell -EncodedCommand 参数（UTF-16LE base64）：避免 -Command 直传中文被控制台代码页搅乱 */
+function psEncoded(script: string): string {
+  return Buffer.from(script, "utf16le").toString("base64");
+}
+
+/** AppleScript 双引号字符串转义；字面量不能跨行，换行用 & return & 拼接 */
+function asQ(s: string): string {
+  const esc = (x: string): string => `"${x.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+  return s.split("\n").map(esc).join(" & return & ");
+}
+
+/** 弹窗输入结果：input=用户确认；cancel=取消；unavailable=系统没有可用弹窗工具（调用方回退网页设置页） */
+type PromptResult = { kind: "input"; text: string } | { kind: "cancel" } | { kind: "unavailable" };
+
+/**
+ * 弹系统原生输入框：win32=PowerShell VisualBasic InputBox，darwin=AppleScript display dialog，linux=zenity/kdialog。
+ * @param title 窗口标题
+ * @param prompt 提示语
+ * @param def 默认值（预填）
+ * @returns 输入结果
+ */
+async function promptText(title: string, prompt: string, def: string): Promise<PromptResult> {
+  const tries: Array<[string, string[]]> =
+    process.platform === "win32"
+      ? [
+          [
+            "powershell",
+            [
+              "-NoProfile",
+              "-WindowStyle",
+              "Hidden",
+              "-EncodedCommand",
+              psEncoded(
+                `[Console]::OutputEncoding=[Text.Encoding]::UTF8; Add-Type -AssemblyName Microsoft.VisualBasic; ` +
+                  `[Microsoft.VisualBasic.Interaction]::InputBox(${psQ(prompt)}, ${psQ(title)}, ${psQ(def)})`,
+              ),
+            ],
+          ],
+        ]
+      : process.platform === "darwin"
+        ? [["osascript", ["-e", `text returned of (display dialog ${asQ(prompt)} default answer ${asQ(def)} with title ${asQ(title)})`]]]
+        : [
+            ["zenity", ["--entry", `--title=${title}`, `--text=${prompt}`, `--entry-text=${def}`]],
+            ["kdialog", ["--inputbox", prompt, def]],
+          ];
+  for (const [cmd, args] of tries) {
+    const r = await runCmdCapture(cmd, args);
+    if (r.kind === "error") continue; // 工具不存在，试下一个
+    if (r.kind === "exit" || r.text === "") return { kind: "cancel" }; // 非零退出或空输入都视为取消
+    return { kind: "input", text: r.text };
+  }
+  return { kind: "unavailable" };
+}
+
+/** 弹系统原生消息框（结果/错误提示）。没有可用弹窗工具就静默 */
+function showMessage(title: string, text: string): void {
+  const tries: Array<[string, string[]]> =
+    process.platform === "win32"
+      ? [
+          [
+            "powershell",
+            [
+              "-NoProfile",
+              "-WindowStyle",
+              "Hidden",
+              "-EncodedCommand",
+              psEncoded(`Add-Type -AssemblyName Microsoft.VisualBasic; [void][Microsoft.VisualBasic.Interaction]::MsgBox(${psQ(text)}, 0, ${psQ(title)})`),
+            ],
+          ],
+        ]
+      : process.platform === "darwin"
+        ? [["osascript", ["-e", `display dialog ${asQ(text)} with title ${asQ(title)} buttons {"OK"} default button "OK"`]]]
+        : [
+            ["zenity", ["--info", `--title=${title}`, `--text=${text}`]],
+            ["kdialog", ["--title", title, "--msgbox", text]],
+          ];
+  const tryNext = (i: number): void => {
+    const t = tries[i];
+    if (!t) return;
+    try {
+      const p = spawn(t[0], t[1], { stdio: "ignore", windowsHide: true });
+      p.on("error", () => tryNext(i + 1)); // 工具缺失就换下一个
+    } catch {
+      tryNext(i + 1);
+    }
+  };
+  tryNext(0);
+}
+
 /** 用系统默认浏览器打开 URL：win32=cmd start（第一个引号参数是窗口标题，必须给空串），darwin=open，linux=xdg-open。失败静默 */
 function openUrl(url: string): void {
   try {
@@ -122,6 +239,31 @@ async function main(): Promise<void> {
   releaseRuntimeOnExit(configDir());
   console.log(`[ccc-bridge] 已启动 ws://127.0.0.1:${server.port}/ws（托盘模式）`);
 
+  /**
+   * 「修改端口…」完整流程：弹系统输入框 → 校验 → 在线切换（setPort 内含持久化与菜单刷新回调）
+   * → 新配对串复制到剪贴板并弹结果提示。系统弹窗不可用（如精简 Linux）时回退内置网页设置页。
+   */
+  const changePortFlow = async (): Promise<void> => {
+    const r = await promptText("Claude Code 桥接 · 修改端口", `当前端口 ${server.port}。输入新端口（1024-65535）：`, String(server.port));
+    if (r.kind === "unavailable") {
+      openUrl(`http://127.0.0.1:${server.port}/config?t=${config.token}`);
+      return;
+    }
+    if (r.kind === "cancel") return;
+    const p = Number(r.text);
+    if (!Number.isInteger(p) || p < 1024 || p > 65535) {
+      showMessage("Claude Code 桥接 · 修改端口", "端口需为 1024-65535 的整数");
+      return;
+    }
+    try {
+      const port = await server.setPort(p);
+      copyToClipboard(encodePairing({ h: "127.0.0.1", p: port, t: config.token })); // 顺手复制：用户下一步就是去扩展粘贴
+      showMessage("Claude Code 桥接 · 修改端口", `已切换到端口 ${port}。\n新配对串已复制到剪贴板，到扩展侧栏点「⚙ 配对」粘贴一次即可。`);
+    } catch (e) {
+      showMessage("Claude Code 桥接 · 修改端口失败", e instanceof Error ? e.message : String(e));
+    }
+  };
+
   chdirToTraybinParent();
   icon = writeIcon();
   // server.port 是 getter，在线改端口后始终返回当前值：配对串与设置页 URL 无需额外跟踪端口
@@ -135,9 +277,9 @@ async function main(): Promise<void> {
     },
     {
       title: "修改端口…",
-      tooltip: "在浏览器里改端口；改完复制新配对串，到扩展「⚙ 配对」粘贴一次",
+      tooltip: "弹窗输入新端口，保存即生效；新配对串自动复制，到扩展「⚙ 配对」粘贴一次",
       enabled: true,
-      click: () => openUrl(`http://127.0.0.1:${server.port}/config?t=${config.token}`),
+      click: () => void changePortFlow(),
     },
     SysTray.separator,
     {
