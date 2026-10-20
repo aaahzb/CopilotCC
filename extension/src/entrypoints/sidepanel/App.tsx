@@ -116,17 +116,30 @@ export default function App(): React.ReactElement {
     if (!s || !bound) return;
     let page: PageSnapshot | null = null;
     let attachFull = false;
+    let attachNote: string | null = null;
     if (s.attachEnabled) {
-      page = await snapshotActiveTab();
+      const snap = await snapshotActiveTab();
+      if (snap.page && (snap.page.markdown || snap.page.selection)) page = snap.page; // 无内容则不带
       if (page) {
         const d = decideAttach(lastUrlRef.current, page.url, true);
         attachFull = d.attachFull;
         if (d.attachFull) lastUrlRef.current = page.url;
-        if (!page.markdown && !page.selection) page = null; // 提取无内容则不带
       }
+      // 附带结果可见化：绝不允许静默降级
+      attachNote = !page
+        ? `⚠️ 未能附带页面：${snap.error ?? "页面无正文且无选中文字"}（本次仅发送问题）`
+        : attachFull && page.markdown
+          ? `📄 已附带页面《${page.title}》正文 ${page.markdown.length} 字符`
+          : page.selection
+            ? `📎 已附带选中文字${attachFull && !page.markdown ? `（正文提取失败${snap.error ? `：${snap.error}` : ""}）` : "（页面全文已在会话上下文）"}`
+            : "ℹ️ 同页追问：未重复附带全文（此前已进会话上下文）";
     }
     const full = composeMessage(text, page, attachFull);
-    setMessages((ms) => [...ms, { id: crypto.randomUUID(), role: "user", text }]);
+    setMessages((ms) => {
+      const next: UiMsg[] = [...ms, { id: crypto.randomUUID(), role: "user", text }];
+      if (attachNote) next.push({ id: crypto.randomUUID(), role: "tool", text: attachNote });
+      return next;
+    });
     clientRef.current?.send({ type: "chat.send", text: full });
   }
 

@@ -36,3 +36,10 @@
 10. 关侧栏重开、重新绑定同文件夹 → "已续聊"徽标 + 历史消息回放
 11. 杀掉 bridge → 状态灯变红；重启 bridge → 自动重连变绿且可继续对话（resume 生效）
 12. 全部通过后把顶部 Task 13 勾选并提交
+
+## 修复记录（2026-10-20）
+- 验收第 5 项失败：页面内容未附加且无任何提示（静默降级）。已修复：
+  - `page-extract.ts` 返回 `SnapshotResult{page,error}`，失败原因不再吞掉；
+  - `App.tsx` 发送后追加附带状态行（📄已附带/⚠️失败原因/ℹ️同页不重复附带）；
+  - `wxt.config.ts` 增加 http/https 全站 host_permissions，消除 activeTab 授权死角（切 tab 后侧栏仍可读当前页）。
+  - tsc 通过、扩展 12 测试全绿、已重新 build。待用户重载扩展后重测第 5 项。

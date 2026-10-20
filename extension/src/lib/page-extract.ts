@@ -1,17 +1,32 @@
 import Defuddle, { createMarkdownContent } from "defuddle/full";
 import type { PageSnapshot } from "./attach-policy";
 
+/** 页面提取结果：page 为 null 表示完全失败；error 描述失败或部分失败的原因 */
+export interface SnapshotResult {
+  page: PageSnapshot | null;
+  error: string | null;
+}
+
 /**
  * 提取当前活动 tab 的正文（Defuddle→Markdown）与选中文字。
  * 按需注入脚本，不装常驻 content script；DOM 解析在侧栏页面做（SW 无 DOM）。
- * @returns 页面快照；chrome:// 等不可注入页面返回 null
+ * 绝不静默失败：任何一步失败都把可读原因放进 error 返回，由 UI 展示。
+ * @returns 提取结果；chrome:// 等不可注入页面 page 为 null 且 error 说明原因
  */
-export async function snapshotActiveTab(): Promise<PageSnapshot | null> {
+export async function snapshotActiveTab(): Promise<SnapshotResult> {
+  let tabId: number;
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!tab?.id) return null;
+    if (!tab?.id) return { page: null, error: "找不到活动标签页" };
+    tabId = tab.id;
+  } catch (e) {
+    return { page: null, error: `查询标签页失败：${errText(e)}` };
+  }
+
+  let raw: { html?: string; url: string; title: string; selection: string };
+  try {
     const [res] = await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
+      target: { tabId },
       func: () => ({
         html: document.documentElement.outerHTML,
         url: location.href,
@@ -19,21 +34,31 @@ export async function snapshotActiveTab(): Promise<PageSnapshot | null> {
         selection: window.getSelection()?.toString() ?? "",
       }),
     });
-    const r = res?.result as { html?: string; url: string; title: string; selection: string } | undefined;
-    if (!r?.html) return null;
-    let markdown = "";
-    try {
-      const doc = new DOMParser().parseFromString(r.html, "text/html");
-      const parsed = new Defuddle(doc as unknown as Document, { url: r.url }).parse();
-      if (parsed?.content && parsed.content.trim().length > 0) {
-        markdown = createMarkdownContent(parsed.content, r.url).trim();
-      }
-    } catch {
-      // 正文提取失败不致命：仍保留选中文字可用
-      markdown = "";
-    }
-    return { url: r.url, title: r.title, markdown, selection: r.selection };
-  } catch {
-    return null; // 注入失败（特权页面等），静默降级
+    if (!res?.result) return { page: null, error: "注入脚本无返回（可能是特权页面）" };
+    raw = res.result as typeof raw;
+  } catch (e) {
+    // 常见于 chrome:// 特权页，或该页未被 activeTab 授权覆盖
+    return { page: null, error: `脚本注入失败：${errText(e)}` };
   }
+  if (!raw.html) return { page: null, error: "页面 HTML 为空" };
+
+  let markdown = "";
+  let extractErr: string | null = null;
+  try {
+    const doc = new DOMParser().parseFromString(raw.html, "text/html");
+    const parsed = new Defuddle(doc as unknown as Document, { url: raw.url }).parse();
+    if (parsed?.content && parsed.content.trim().length > 0) {
+      markdown = createMarkdownContent(parsed.content, raw.url).trim();
+    } else {
+      extractErr = "正文提取结果为空（该页可能不是文章型内容）";
+    }
+  } catch (e) {
+    extractErr = `正文解析失败：${errText(e)}`;
+  }
+  return { page: { url: raw.url, title: raw.title, markdown, selection: raw.selection }, error: extractErr };
+}
+
+/** 把异常对象转成可读文本 */
+function errText(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
 }
