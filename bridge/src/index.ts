@@ -18,11 +18,17 @@ async function cmdStart(): Promise<void> {
   claimInstance(configDir()); // 单实例守卫：已有活实例直接抛错退出，避免双桥抢端口
   const sessions = new SessionManager(path.join(configDir(), "sessions.json"));
   sessions.load();
-  const server = await startServer({ config, sessions });
+  const server = await startServer({
+    config,
+    sessions,
+    configDir: configDir(), // 在线改端口后写回 config.json
+    onPortChanged: (p) => writeRuntime(configDir(), p),
+  });
   writeRuntime(configDir(), server.port);
   releaseRuntimeOnExit(configDir());
   console.log(`[ccc-bridge] 已启动 ws://127.0.0.1:${server.port}/ws`);
   console.log(`[ccc-bridge] 配对串（粘贴到扩展配对框）: ${encodePairing({ h: "127.0.0.1", p: server.port, t: config.token })}`);
+  console.log(`[ccc-bridge] 修改端口（浏览器打开）: http://127.0.0.1:${server.port}/config?t=${config.token}`);
   console.log(`[ccc-bridge] 配置目录: ${configDir()}（config.json 可改 port/allowedOrigins）`);
 }
 

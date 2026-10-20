@@ -11,6 +11,16 @@ export interface BridgeConfig {
   createdAt: string;
 }
 
+/**
+ * 把配置写回 config.json（0600 权限）。在线改端口后持久化用。
+ * @param config 完整配置对象（token/allowedOrigins/createdAt 原样保留）
+ * @param dir 配置目录，默认 configDir()
+ */
+export function saveConfig(config: BridgeConfig, dir: string = configDir()): void {
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "config.json"), JSON.stringify(config, null, 2), { encoding: "utf-8", mode: 0o600 });
+}
+
 export const DEFAULT_PORT = 19280;
 
 /**

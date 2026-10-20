@@ -4,7 +4,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as net from "node:net";
-import { startServer } from "../src/server";
+import { startServer, type ServerDeps } from "../src/server";
+import { decodePairing } from "../src/pairing";
 import { slugifyPath } from "../src/transcript";
 import { SessionManager } from "../src/session-manager";
 import type { BridgeConfig } from "../src/config";
@@ -20,8 +21,8 @@ function makeConfig(over: Partial<BridgeConfig> = {}): BridgeConfig {
   return { token: "tok", port: 0, allowedOrigins: [], createdAt: "", ...over };
 }
 
-/** 启动服务并返回连接 URL */
-async function boot(config: BridgeConfig) {
+/** 启动服务并返回连接 URL；extra 可传 configDir 等附加依赖（在线改端口测试用） */
+async function boot(config: BridgeConfig, extra: Partial<ServerDeps> = {}) {
   const server = await startServer({
     config,
     sessions,
@@ -29,6 +30,7 @@ async function boot(config: BridgeConfig) {
       sentClientMessages.push({ cwd, opts });
       return fakeHandle;
     }) as never,
+    ...extra,
   });
   return { server, url: `ws://127.0.0.1:${server.port}/ws` };
 }
@@ -274,4 +276,69 @@ describe("端口占用处理", () => {
       await new Promise<void>((r) => block.close(() => r()));
     }
   });
+});
+
+describe("在线改端口（/config 设置页）", () => {
+  it("GET：无 token 403、带 token 返回设置页、其他路径 404", async () => {
+    const { server } = await boot(makeConfig(), { configDir: dir });
+    const base = `http://127.0.0.1:${server.port}`;
+    expect((await fetch(`${base}/config`)).status).toBe(403);
+    const page = await fetch(`${base}/config?t=tok`);
+    expect(page.status).toBe(200);
+    expect(await page.text()).toContain("修改端口");
+    expect((await fetch(`${base}/other?t=tok`)).status).toBe(404);
+    await server.close();
+  });
+
+  it("POST：鉴权/校验拒绝不动现状；成功后新端口可连、config.json 写回、旧端口关闭、返回配对串", async () => {
+    const { server } = await boot(makeConfig(), { configDir: dir });
+    const oldPort = server.port;
+    // 先借一个系统分配的空闲端口当目标（用完即放，降低撞车概率）
+    const probeSrv = net.createServer();
+    await new Promise<void>((r) => probeSrv.listen(0, "127.0.0.1", () => r()));
+    const target = (probeSrv.address() as net.AddressInfo).port;
+    await new Promise<void>((r) => probeSrv.close(() => r()));
+
+    const post = (port: number, body: unknown): Promise<Response> =>
+      fetch(`http://127.0.0.1:${port}/config`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+    expect((await post(oldPort, { t: "wrong", p: target })).status).toBe(403); // token 错
+    expect((await post(oldPort, { t: "tok", p: 80 })).status).toBe(400); // 端口非法
+    expect(server.port).toBe(oldPort); // 被拒绝的请求不影响现状
+
+    const res = await post(oldPort, { t: "tok", p: target });
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as { ok: boolean; port: number; pairing: string };
+    expect(data.ok).toBe(true);
+    expect(data.port).toBe(target);
+    expect(decodePairing(data.pairing)).toEqual({ h: "127.0.0.1", p: target, t: "tok" });
+    expect(server.port).toBe(target); // StartedServer.port 跟随在线切换
+    const saved = JSON.parse(fs.readFileSync(path.join(dir, "config.json"), "utf-8")) as BridgeConfig;
+    expect(saved.port).toBe(target); // 新端口已写回 config.json
+
+    // 新端口握手正常
+    const { ws, first } = await connect(`ws://127.0.0.1:${target}/ws`);
+    expect(first.type).toBe("auth.ok");
+    ws.close();
+
+    // 旧端口在切换后 ~250ms 拆除：轮询等它拒连
+    let refused = false;
+    for (let i = 0; i < 30 && !refused; i++) {
+      refused = await new Promise<boolean>((resolve) => {
+        const s = net.connect(oldPort, "127.0.0.1");
+        s.once("connect", () => {
+          s.destroy();
+          resolve(false);
+        });
+        s.once("error", () => resolve(true));
+      });
+      if (!refused) await new Promise((r) => setTimeout(r, 100));
+    }
+    expect(refused).toBe(true);
+    await server.close();
+  }, 15000);
 });

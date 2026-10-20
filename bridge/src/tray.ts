@@ -1,4 +1,4 @@
-/** 托盘入口：WS 桥 + 系统托盘图标（右键菜单：复制 token / 退出）。跨平台：win32 / darwin(arm64) / linux。 */
+/** 托盘入口：WS 桥 + 系统托盘图标（右键菜单：复制配对串 / 修改端口 / 退出）。跨平台：win32 / darwin(arm64) / linux。 */
 import systray2 from "systray2";
 import type { MenuItem } from "systray2";
 
@@ -26,7 +26,7 @@ import { ICON_ICO_B64, ICON_PNG_B64 } from "./icon";
 type TrayItem = MenuItem & { click?: () => void };
 
 /**
- * systray2 只认 CWD 下的 ./traybin/<平台二进制>：chdir 到包含 traybin 的目录。
+ * systray2 只认 CWD 下 ./traybin/<平台二进制>：chdir 到包含 traybin 的目录。
  * 编译分发形态 = exe 旁的 traybin/；开发形态 = node_modules/systray2/（内含 traybin/）。
  * @throws 所有候选都找不到时抛错
  */
@@ -79,33 +79,77 @@ function copyToClipboard(text: string): void {
   }
 }
 
-/** 托盘主流程：读配置 → 起 WS 桥 → 定位托盘二进制 → 建托盘菜单 */
+/** 用系统默认浏览器打开 URL：win32=cmd start（第一个引号参数是窗口标题，必须给空串），darwin=open，linux=xdg-open。失败静默 */
+function openUrl(url: string): void {
+  try {
+    const [cmd, args] =
+      process.platform === "win32" ? ["cmd", ["/c", "start", "", url]] : process.platform === "darwin" ? ["open", [url]] : ["xdg-open", [url]];
+    // 托盘 exe 是 GUI 程序：不给子进程窗口，避免闪黑框
+    const p = spawn(cmd, args, { stdio: "ignore", windowsHide: true });
+    p.on("error", () => {});
+  } catch {
+    // 没有可用的浏览器入口就静默
+  }
+}
+
+/** 托盘主流程：读配置 → 起 WS 桥（含 /config 设置页）→ 定位托盘二进制 → 建托盘菜单 */
 async function main(): Promise<void> {
   const config = loadOrCreateConfig();
   claimInstance(configDir()); // 单实例守卫：已有活实例直接抛错（落 tray-error.log）
   const sessions = new SessionManager(path.join(configDir(), "sessions.json"));
   sessions.load();
-  const server = await startServer({ config, sessions });
+
+  // 在线改端口的回调在 startServer 之前就注册，但触发一定在托盘建好之后（用户从托盘菜单进设置页）；
+  // 回调里复用同一份 items 对象（systray2 按 init 时分配的 __id 映射点击，对象不换引用就不会失配）
+  let systray: InstanceType<SysTrayCtor> | null = null;
+  let items: TrayItem[] = [];
+  let icon = "";
+
+  /** 端口在线切换后：写 runtime.json，并推 update-menu 刷新托盘状态行与 tooltip */
+  const onPortChanged = (p: number): void => {
+    writeRuntime(configDir(), p);
+    const status = items[0];
+    if (!systray || !status) return;
+    status.title = `Claude Code 桥接运行中（端口 ${p}）`;
+    void systray.sendAction({
+      type: "update-menu",
+      menu: { icon, title: "", tooltip: `Claude Code 桥接 · 端口 ${p}`, items, isTemplateIcon: false },
+    });
+  };
+
+  const server = await startServer({ config, sessions, configDir: configDir(), onPortChanged });
   writeRuntime(configDir(), server.port);
   releaseRuntimeOnExit(configDir());
   console.log(`[ccc-bridge] 已启动 ws://127.0.0.1:${server.port}/ws（托盘模式）`);
 
   chdirToTraybinParent();
-  const icon = writeIcon();
-  const items: TrayItem[] = [
+  icon = writeIcon();
+  // server.port 是 getter，在线改端口后始终返回当前值：配对串与设置页 URL 无需额外跟踪端口
+  items = [
     { title: `Claude Code 桥接运行中（端口 ${server.port}）`, tooltip: "", enabled: false },
-    { title: "复制配对串", tooltip: "地址+端口+Token 打包成一串，粘贴到扩展配对框", enabled: true, click: () => copyToClipboard(encodePairing({ h: "127.0.0.1", p: server.port, t: config.token })) },
+    {
+      title: "复制配对串",
+      tooltip: "地址+端口+Token 打包成一串，粘贴到扩展配对框",
+      enabled: true,
+      click: () => copyToClipboard(encodePairing({ h: "127.0.0.1", p: server.port, t: config.token })),
+    },
+    {
+      title: "修改端口…",
+      tooltip: "在浏览器里改端口；改完复制新配对串，到扩展「⚙ 配对」粘贴一次",
+      enabled: true,
+      click: () => openUrl(`http://127.0.0.1:${server.port}/config?t=${config.token}`),
+    },
     SysTray.separator,
     {
       title: "退出",
       tooltip: "",
       enabled: true,
       click: () => {
-        void systray.kill(false).then(() => process.exit(0));
+        void systray?.kill(false).then(() => process.exit(0));
       },
     },
   ];
-  const systray = new SysTray({
+  systray = new SysTray({
     menu: {
       icon,
       isTemplateIcon: false, // 彩色图标，不做 macOS 模板剪影
