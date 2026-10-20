@@ -72,3 +72,35 @@ export async function takePendingQuote(): Promise<string | null> {
   }
   return null;
 }
+
+/** 桥接上报的实际生效模型/effort（chrome.storage.local 键 ccc.runtime）：跨重载缓存，换桥时清空 */
+export interface RuntimeCache {
+  /** 实际生效的模型 ID（原始值，如 claude-fable-5-1） */
+  model?: string;
+  /** 实际生效的 effort；null = 该会话不下发 effort 参数 */
+  effort?: EffortLevelSetting | null;
+}
+
+const RUNTIME_KEY = "ccc.runtime";
+
+/**
+ * 读取运行时信息缓存。
+ * @returns 上次桥接上报的实际生效模型/effort；无缓存为空对象
+ */
+export async function loadRuntimeCache(): Promise<RuntimeCache> {
+  const raw = await chrome.storage.local.get(RUNTIME_KEY);
+  return (raw[RUNTIME_KEY] ?? {}) as RuntimeCache;
+}
+
+/**
+ * 写入运行时信息缓存（整体覆盖）。
+ * @param rt 本次 chat.done 上报的实际生效值
+ */
+export async function saveRuntimeCache(rt: RuntimeCache): Promise<void> {
+  await chrome.storage.local.set({ [RUNTIME_KEY]: rt });
+}
+
+/** 清空运行时信息缓存（换桥时调用：新桥的实际生效值未知，不能沿用旧桥的） */
+export async function clearRuntimeCache(): Promise<void> {
+  await chrome.storage.local.remove(RUNTIME_KEY);
+}

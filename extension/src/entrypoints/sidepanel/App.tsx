@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { BridgeClient, type ConnState } from "../../lib/ws-client";
-import { loadSettings, saveSettings, pushFolderHistory, takePendingQuote, type ExtSettings } from "../../lib/storage";
+import { loadSettings, saveSettings, pushFolderHistory, takePendingQuote, loadRuntimeCache, saveRuntimeCache, clearRuntimeCache, type ExtSettings, type RuntimeCache } from "../../lib/storage";
 import { decideAttach, composeMessage, type PageSnapshot } from "../../lib/attach-policy";
 import { snapshotActiveTab } from "../../lib/page-extract";
 import type { ServerMessage, PermissionModeSetting, SessionInfo } from "../../lib/protocol";
@@ -9,6 +9,7 @@ import { TokenGate } from "../../components/TokenGate";
 import { FolderBar } from "../../components/FolderBar";
 import { MessageList, type UiMsg } from "../../components/MessageList";
 import { InputBox } from "../../components/InputBox";
+import { shortModelName } from "../../lib/format";
 import { PermissionCard } from "../../components/PermissionCard";
 
 /** 侧栏主界面 */
@@ -22,6 +23,7 @@ export default function App(): React.ReactElement {
   const [streaming, setStreaming] = useState<string | null>(null);
   const [permReq, setPermReq] = useState<{ requestId: string; tool: string; detail: string } | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null); // 当前会话 ID（folder.bound/session.list.data 携带或 chat.done 推送）
+  const [runtime, setRuntime] = useState<RuntimeCache>({}); // 桥接上报的实际生效模型/effort（chat.done 携带，本地缓存跨重载）
   const [sessions, setSessions] = useState<SessionInfo[]>([]); // 当前文件夹下的会话列表（切换会话下拉）
   const [showGate, setShowGate] = useState(false); // 手动打开重新配对界面（中途改端口/换桥接）
   const clientRef = useRef<BridgeClient | null>(null);
@@ -78,6 +80,12 @@ export default function App(): React.ReactElement {
       case "chat.done":
         setSessionId(m.sessionId);
         prevBoundSidRef.current = m.sessionId;
+        if (typeof m.model === "string" && m.model.length > 0) {
+          // 桥接上报实际生效的模型/effort：更新指示并落缓存（重载扩展后首轮回复前也有真值可显示）
+          const rt: RuntimeCache = { model: m.model, ...(m.effort !== undefined ? { effort: m.effort } : {}) };
+          setRuntime(rt);
+          void saveRuntimeCache(rt);
+        }
         setStreaming((s) => {
           if (s) setMessages((ms) => [...ms, { id: crypto.randomUUID(), role: "assistant", text: s }]);
           return null;
@@ -109,6 +117,7 @@ export default function App(): React.ReactElement {
     void (async () => {
       const s = await loadSettings();
       setSettings(s);
+      setRuntime(await loadRuntimeCache()); // 上次会话的实际生效模型/effort（首轮回复前的占位真值）
       if (s.token) connect(s);
       // 右键菜单带入的选中文字：预填一条引用消息
       const quote = await takePendingQuote();
@@ -210,6 +219,8 @@ export default function App(): React.ReactElement {
     setStreaming(null);
     setSessions([]);
     setSessionId(null);
+    setRuntime({}); // 新桥的实际生效值未知，连缓存一起清，等首轮 chat.done 重建
+    void clearRuntimeCache();
     connect(s);
   }
 
@@ -256,6 +267,8 @@ export default function App(): React.ReactElement {
         permissionMode={settings.permissionMode}
         model={settings.model}
         effort={settings.effort}
+        effectiveModel={runtime.model ? shortModelName(runtime.model) : undefined}
+        effectiveEffort={runtime.effort ?? undefined}
         onToggleAttach={async (v) => { await saveSettings({ attachEnabled: v }); setSettings(await loadSettings()); }}
         onModeChange={handleModeChange}
         onModelChange={(v) => void applySettings({ model: v })}

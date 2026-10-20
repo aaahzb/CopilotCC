@@ -2,13 +2,13 @@ import { describe, it, expect, vi } from "vitest";
 import { createClaudeSession, type SessionEvents } from "../src/claude-session";
 
 /** 收集事件的 events 桩 */
-function stubEvents(): SessionEvents & { log: Array<[string, unknown]> } {
-  const log: Array<[string, unknown]> = [];
+function stubEvents(): SessionEvents & { log: Array<[string, ...unknown[]]> } {
+  const log: Array<[string, ...unknown[]]> = [];
   return {
     log,
     onDelta: (t) => log.push(["delta", t]),
     onTool: (n, s) => log.push(["tool", `${n}:${s}`]),
-    onDone: (s) => log.push(["done", s]),
+    onDone: (s, info) => log.push(["done", s, info]),
     onError: (m) => log.push(["error", m]),
     onPermission: (r) => log.push(["permission", r]),
     onSessionId: (id) => log.push(["sid", id]),
@@ -42,7 +42,7 @@ describe("createClaudeSession", () => {
       ["sid", "sid-1"],
       ["delta", "你好"],
       ["tool", "Write:a.md"],
-      ["done", "sid-1"],
+      ["done", "sid-1", { model: undefined, effort: undefined }], // INIT 未带 model/effort 字段（老 CLI 形态）
     ]);
     await s.close();
   });
@@ -114,6 +114,27 @@ describe("createClaudeSession", () => {
     await vi.waitFor(() => expect(ev.log.map(([k]) => k)).toContain("done"), { timeout: 2000 });
     expect(firstSessionId).toBe(""); // 新会话首条用空 session_id，init 到达后由 CLI 分配
     expect(ev.log).toContainEqual(["sid", "sid-real"]);
+    await s.close();
+  });
+
+  it("init 上报的实际模型/effort 随 onDone 传出，runtimeInfo 可查", async () => {
+    const INIT_RT = { type: "system", subtype: "init", session_id: "sid-2", model: "claude-fable-5-1", effort: "high" };
+    const { fn } = fakeQuery([INIT_RT, DONE]);
+    const ev = stubEvents();
+    const s = createClaudeSession("D:\\notes", { permissionMode: "auto", events: ev, queryFn: fn });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(ev.log).toContainEqual(["done", "sid-2", { model: "claude-fable-5-1", effort: "high" }]);
+    expect(s.runtimeInfo()).toEqual({ model: "claude-fable-5-1", effort: "high" });
+    await s.close();
+  });
+
+  it("effort 为 null（该会话不下发 effort 参数）时原样传出", async () => {
+    const INIT_NULL = { type: "system", subtype: "init", session_id: "sid-3", model: "claude-opus-4-5", effort: null };
+    const { fn } = fakeQuery([INIT_NULL, DONE]);
+    const ev = stubEvents();
+    const s = createClaudeSession("D:\\notes", { permissionMode: "auto", events: ev, queryFn: fn });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(ev.log).toContainEqual(["done", "sid-3", { model: "claude-opus-4-5", effort: null }]);
     await s.close();
   });
 });

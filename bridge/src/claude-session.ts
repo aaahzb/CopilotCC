@@ -1,11 +1,20 @@
 import { query as sdkQuery } from "@anthropic-ai/claude-agent-sdk";
+import { isEffortLevel } from "./protocol";
 import type { PermissionModeSetting, EffortLevelSetting } from "./protocol";
+
+/** 会话运行时信息（SDK system/init 每轮开头重发，取最新一帧为准） */
+export interface SessionRuntimeInfo {
+  /** 实际生效的模型 ID（如 claude-fable-5-1）；init 到达前为 undefined */
+  model?: string;
+  /** 实际生效的 effort（CLI 上报值，null=该会话不下发 effort 参数）；老 CLI 不带该字段时为 undefined */
+  effort?: EffortLevelSetting | null;
+}
 
 /** 会话事件回调集（server.ts 把它们转成 WS 消息） */
 export interface SessionEvents {
   onDelta(text: string): void;
   onTool(name: string, summary: string): void;
-  onDone(sessionId: string): void;
+  onDone(sessionId: string, info: SessionRuntimeInfo): void;
   onError(message: string): void;
   onPermission(req: { requestId: string; tool: string; detail: string }): void;
   onSessionId(id: string): void;
@@ -16,6 +25,8 @@ export interface ClaudeSessionLike {
   send(text: string): void;
   abort(): void;
   respondPermission(requestId: string, allow: boolean): void;
+  /** 最近一次 init 上报的运行时信息（模型/effort 实际生效值） */
+  runtimeInfo(): SessionRuntimeInfo;
   close(): Promise<void>;
 }
 
@@ -54,6 +65,8 @@ export function createClaudeSession(cwd: string, opts: SessionOptions): ClaudeSe
   const queryFn = opts.queryFn ?? (sdkQuery as unknown as NonNullable<SessionOptions["queryFn"]>);
   let closed = false;
   let sessionId = opts.resumeId ?? "";
+  let rtModel: string | undefined; // init 上报的实际模型
+  let rtEffort: EffortLevelSetting | null | undefined; // init 上报的实际 effort（null=不下发）
   let guardPending = !opts.resumeId; // 仅全新会话需要注入防护前缀
   const pending = new Map<string, PendingPermission>();
   const inbox: string[] = [];
@@ -106,6 +119,9 @@ export function createClaudeSession(cwd: string, opts: SessionOptions): ClaudeSe
   function handle(msg: Record<string, unknown>): void {
     if (msg.type === "system" && msg.subtype === "init" && typeof msg.session_id === "string") {
       sessionId = msg.session_id;
+      // init 每轮开头重发：模型/effort 实际生效值取最新一帧；effort 缺字段（老 CLI 不上报）不覆盖旧值
+      if (typeof msg.model === "string" && msg.model.length > 0) rtModel = msg.model;
+      if (msg.effort === null || isEffortLevel(msg.effort)) rtEffort = msg.effort;
       events.onSessionId(sessionId);
       return;
     }
@@ -126,7 +142,7 @@ export function createClaudeSession(cwd: string, opts: SessionOptions): ClaudeSe
       return;
     }
     if (msg.type === "result") {
-      if (msg.subtype === "success") events.onDone(sessionId);
+      if (msg.subtype === "success") events.onDone(sessionId, { model: rtModel, effort: rtEffort });
       else events.onError(`会话异常结束: ${String(msg.subtype)}`);
     }
   }
@@ -171,6 +187,9 @@ export function createClaudeSession(cwd: string, opts: SessionOptions): ClaudeSe
         pending.delete(requestId);
         p.resolve(allow);
       }
+    },
+    runtimeInfo(): SessionRuntimeInfo {
+      return { model: rtModel, effort: rtEffort };
     },
     async close(): Promise<void> {
       closed = true;

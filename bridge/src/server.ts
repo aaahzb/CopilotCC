@@ -508,8 +508,9 @@ function attachHandlers(wss: WebSocketServer, deps: ServerDeps, instanceId: stri
         events: {
           onDelta: (text) => send({ type: "chat.delta", text }),
           onTool: (name, summary) => send({ type: "chat.tool", name, summary }),
-          onDone: (sessionId) => {
-            send({ type: "chat.done", sessionId });
+          onDone: (sessionId, info) => {
+            // info 字段为 undefined 时 JSON 序列化自动省略；effort 为 null 时显式下发（表示该会话无 effort 参数）
+            send({ type: "chat.done", sessionId, model: info?.model, effort: info?.effort });
             if (folder === f) sendSessionList(); // 一轮结束后转录已落盘，刷新列表（新会话此刻才有文件）
           },
           onError: (message) => send({ type: "chat.error", message }),

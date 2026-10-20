@@ -11,6 +11,10 @@ export function InputBox(props: {
   model: string;
   /** 推理强度；空串 = 默认 */
   effort: EffortLevelSetting | "";
+  /** 桥接上报的实际生效模型（已压短）；优先于手动选择显示，未知 = undefined */
+  effectiveModel?: string;
+  /** 桥接上报的实际生效 effort；null/undefined = 不显示 */
+  effectiveEffort?: EffortLevelSetting | null;
   onToggleAttach(v: boolean): void;
   onModeChange(m: PermissionModeSetting): void;
   onModelChange(v: string): void;
@@ -24,6 +28,10 @@ export function InputBox(props: {
     props.onSend(text.trim());
     setText("");
   };
+  // 指示文本：手动选择优先（刚改下拉时上报值还是旧会话的），其次桥接上报的实际生效值；都不知道就不显示（绝不显示"默认"二字）
+  const modelText = props.model || props.effectiveModel || "";
+  const effortText = props.effort || (props.effectiveEffort ?? "");
+  const hint = [modelText ? `模型 ${modelText}` : "", effortText ? `effort ${effortText}` : ""].filter(Boolean).join(" · ");
   return (
     <div className="input-box">
       <div className="toggles">
@@ -68,9 +76,7 @@ export function InputBox(props: {
       />
       {/* 发送行：最左只读显示当前生效的模型·effort（改动入口是上方下拉），发送/停止按钮靠右 */}
       <div className="send-row">
-        <span className="model-effort" title="当前生效的模型与推理强度（在上方下拉修改）">
-          模型 {props.model || "默认"} · effort {props.effort || "默认"}
-        </span>
+        <span className="model-effort" title="当前生效的模型与推理强度（首轮回复后显示实际值；在上方下拉修改）">{hint}</span>
         {props.streaming ? (
           <button onClick={props.onStop}>停止</button>
         ) : (

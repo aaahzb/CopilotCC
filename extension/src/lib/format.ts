@@ -1,0 +1,12 @@
+/**
+ * 把 SDK 上报的完整模型 ID 压短显示：claude-fable-5-1 → "fable 5.1"、
+ * claude-sonnet-4-5-20250929 → "sonnet 4.5"；不认识的格式（别名、中转自定义 ID）原样返回。
+ * @param id 模型 ID 或别名
+ * @returns 短名称
+ */
+export function shortModelName(id: string): string {
+  let s = id.replace(/^claude-/, "");
+  s = s.replace(/-20\d{6}$/, ""); // 旧版 ID 的日期后缀（如 -20250929）
+  s = s.replace(/-(\d+)-(\d+)$/, " $1.$2"); // 结尾版本号横杠转点：fable-5-1 → fable 5.1
+  return s;
+}

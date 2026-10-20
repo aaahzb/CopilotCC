@@ -49,7 +49,7 @@ export type ServerMessage =
   | { type: "folder.error"; message: string }
   | { type: "chat.delta"; text: string }
   | { type: "chat.tool"; name: string; summary: string }
-  | { type: "chat.done"; sessionId: string }
+  | { type: "chat.done"; sessionId: string; model?: string; effort?: EffortLevelSetting | null }
   | { type: "chat.error"; message: string }
   | { type: "permission.request"; requestId: string; tool: string; detail: string }
   | { type: "session.history.data"; messages: HistoryMessage[] }

@@ -49,7 +49,7 @@ function b64urlDecode(s: string): string {
   let out = "";
   for (let i = 0; i < s.length; i += 4) {
     // 越界位置记 -1 作 padding；范围内的 -1 是非法字符
-    const v = [0, 1, 2, 3].map((k) => (i + k < s.length ? B64_ALPHABET.indexOf(s[i + k]) : -1));
+    const v = [0, 1, 2, 3].map((k) => (i + k < s.length ? B64_ALPHABET.indexOf(s.charAt(i + k)) : -1)) as [number, number, number, number];
     if (v.some((x, k) => x === -1 && i + k < s.length)) throw new Error("非法 base64 字符");
     const [a, b, c, d] = v;
     out += String.fromCharCode((a << 2) | ((b < 0 ? 0 : b) >> 4));
