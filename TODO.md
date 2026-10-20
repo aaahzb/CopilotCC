@@ -1,7 +1,7 @@
 # Chrome Claude Code 侧边栏助手 — TODO
 
 - [x] Task 1: 仓库脚手架与协议同步/密钥脚本
-- [ ] Task 2: bridge 骨架 + config.ts
+- [x] Task 2: bridge 骨架 + config.ts
 - [ ] Task 3: shared/protocol.ts + 校验函数
 - [ ] Task 4: session-manager.ts
 - [ ] Task 5: transcript.ts
