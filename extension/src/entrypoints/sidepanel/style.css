@@ -32,3 +32,11 @@ body { margin: 0; font-family: "Segoe UI", system-ui, sans-serif; font-size: 13p
 .token-gate .error { color: #f44336; }
 .token-gate code { background: #17181c; padding: 1px 5px; border-radius: 3px; }
 .loading { padding: 20px; color: #9aa0a6; }
+.msg.user { position: relative; }
+.attach-mark { position: absolute; top: -7px; right: -7px; font-size: 11px; background: #17181c; border: 1px solid #444; border-radius: 50%; padding: 1px 3px; }
+.sent-viewer { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; z-index: 99; }
+.sent-viewer-box { background: #26272d; border: 1px solid #444; border-radius: 8px; width: 92%; max-height: 85vh; display: flex; flex-direction: column; }
+.sent-viewer-head { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid #333; font-size: 12px; color: #9aa0a6; }
+.sent-viewer-head span { flex: 1; }
+.sent-viewer-head button { background: #2f4f7f; color: #fff; border: none; border-radius: 4px; padding: 3px 10px; cursor: pointer; }
+.sent-viewer-box pre { margin: 0; padding: 10px; overflow: auto; white-space: pre-wrap; word-break: break-word; font-size: 12px; color: #c9cdd4; }

@@ -135,8 +135,16 @@ export default function App(): React.ReactElement {
             : "ℹ️ 同页追问：未重复附带全文（此前已进会话上下文）";
     }
     const full = composeMessage(text, page, attachFull);
+    // 附带标记：📄 全文 / 📎 仅选中文字；未附带则无标记
+    const attachKind: UiMsg["attachKind"] = !page
+      ? undefined
+      : attachFull && page.markdown
+        ? "full"
+        : page.selection
+          ? "selection"
+          : undefined;
     setMessages((ms) => {
-      const next: UiMsg[] = [...ms, { id: crypto.randomUUID(), role: "user", text }];
+      const next: UiMsg[] = [...ms, { id: crypto.randomUUID(), role: "user", text, sentText: full, attachKind }];
       if (attachNote) next.push({ id: crypto.randomUUID(), role: "tool", text: attachNote });
       return next;
     });

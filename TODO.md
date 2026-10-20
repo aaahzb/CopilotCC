@@ -44,3 +44,4 @@
   - `wxt.config.ts` 增加 http/https 全站 host_permissions，消除 activeTab 授权死角（切 tab 后侧栏仍可读当前页）。
 - `page-extract.ts` 增加回退：Defuddle 提不出正文时（非文章型页面，如 GitHub 列表页）退化为页面纯文本，保证任何页面都能附带。
   - tsc 通过、扩展 12 测试全绿、已重新 build。待用户重载扩展后重测第 5 项。
+- 新需求（2026-10-20）：附带标记 + 右键查看实际发送内容。已实现：`UiMsg` 增加 `sentText`/`attachKind`，用户气泡角标 📄(全文)/📎(选中)，右键弹层展示完整发送文本并支持复制；发送失败/部分失败仍保留 ⚠️ 状态行。
