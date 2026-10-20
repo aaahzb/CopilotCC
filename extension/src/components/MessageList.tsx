@@ -1,6 +1,9 @@
 import React, { useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
+import "katex/dist/katex.min.css";
 
 /** 界面消息：user/assistant 聊天气泡，tool 为折叠工具卡片 */
 export interface UiMsg {
@@ -45,13 +48,13 @@ export function MessageList(props: { messages: UiMsg[]; streaming: string | null
                 {m.attachKind === "full" ? "📄" : "📎"}
               </span>
             ) : null}
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.text}</ReactMarkdown>
+            <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>{m.text}</ReactMarkdown>
           </div>
         ),
       )}
       {props.streaming !== null ? (
         <div className="msg assistant streaming">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{props.streaming}</ReactMarkdown>
+          <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>{props.streaming}</ReactMarkdown>
         </div>
       ) : null}
       {viewing ? (
