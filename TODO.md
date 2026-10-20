@@ -48,3 +48,5 @@
 - 易用性修复（2026-10-20）：附带状态行可点击展开查看实际发送全文（details 内嵌 pre），与右键气泡等效。
 - 交互修正（2026-10-20）：附带状态行从 details 内联展开改为点击弹出临时浮层（复用右键查看器），看完即关，不在消息区留长文。
 - 渲染增强（2026-10-20）：消息气泡补 KaTeX 数学公式（remark-math + rehype-katex + katex css），表格/行内代码补暗色样式。GFM 与代码块此前已支持。
+- 新功能（2026-10-20）：代码块语法高亮（rehype-highlight + github-dark 主题）与右上角复制按钮；文件夹栏"切换聊天…"下拉（切换即绑定并回放对应历史）；聊天框上方模型（默认/fable/opus/sonnet/haiku）与 effort（默认/low/medium/high/xhigh/max）下拉，经 settings.set 推送桥接并带 resumeId 重建会话保上下文；消息区"⬇ 回到底部"按钮（离底超 120px 时出现）。
+- 桥接修复（2026-10-20）：src/index.ts 自检脚本误用服务端专用 encode() 发客户端消息（folder.bind/chat.send），改为 JSON.stringify；bridge 补上 tsc --noEmit 检查（此前只给扩展配了，该历史错误因此长期未被发现）。协议 settings.set 扩展 model/effort 字段并同步两端副本，新增 2 个协议测试（桥接共 28 个单测）。

@@ -7,7 +7,7 @@ import type { AddressInfo } from "node:net";
 import { loadOrCreateConfig, configDir } from "./config";
 import { SessionManager } from "./session-manager";
 import { startServer } from "./server";
-import { encode, type ServerMessage } from "./protocol";
+import { type ServerMessage } from "./protocol";
 
 const cmd = process.argv[2] ?? "start";
 
@@ -71,13 +71,13 @@ async function cmdSelftest(live: boolean): Promise<void> {
   console.log("✓ 握手认证", auth.type);
 
   const folder = fs.mkdtempSync(path.join(os.tmpdir(), "ccc-notes-"));
-  ws.send(encode({ type: "folder.bind", path: folder }));
+  ws.send(JSON.stringify({ type: "folder.bind", path: folder }));
   const bound = await waitFor("folder.bound");
   console.log("✓ 文件夹绑定", JSON.stringify(bound));
 
   if (live) {
     console.log("… 正在向真实 claude 发送测试消息（走你本机的中转配置）");
-    ws.send(encode({ type: "chat.send", text: "只回复这四个字: bridge-ok" }));
+    ws.send(JSON.stringify({ type: "chat.send", text: "只回复这四个字: bridge-ok" }));
     // chat.error 到达即失败，不再傻等超时把真实错误吞掉
     await Promise.race([
       waitFor("chat.done", 120_000),
