@@ -5,7 +5,7 @@
 - [x] Task 3: shared/protocol.ts + 校验函数
 - [x] Task 4: session-manager.ts
 - [ ] Task 5: transcript.ts
-- [ ] Task 6: claude-session.ts
+- [x] Task 6: claude-session.ts
 - [ ] Task 7: server.ts
 - [ ] Task 8: index.ts CLI + selftest 验证
 - [ ] Task 9: extension 骨架（WXT + background）
