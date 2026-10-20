@@ -66,11 +66,17 @@ export function InputBox(props: {
           }
         }}
       />
-      {props.streaming ? (
-        <button onClick={props.onStop}>停止</button>
-      ) : (
-        <button disabled={props.disabled || !text.trim()} onClick={submit}>发送</button>
-      )}
+      {/* 发送行：最左只读显示当前生效的模型·effort（改动入口是上方下拉），发送/停止按钮靠右 */}
+      <div className="send-row">
+        <span className="model-effort" title="当前生效的模型与推理强度（在上方下拉修改）">
+          模型 {props.model || "默认"} · effort {props.effort || "默认"}
+        </span>
+        {props.streaming ? (
+          <button onClick={props.onStop}>停止</button>
+        ) : (
+          <button disabled={props.disabled || !text.trim()} onClick={submit}>发送</button>
+        )}
+      </div>
     </div>
   );
 }
