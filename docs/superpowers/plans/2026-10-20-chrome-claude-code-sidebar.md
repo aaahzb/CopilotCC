@@ -932,14 +932,10 @@ export function createClaudeSession(cwd: string, opts: SessionOptions): ClaudeSe
   const pending = new Map<string, PendingPermission>();
   const inbox: string[] = [];
   let wake: (() => void) | null = null;
-  // 首条用户消息必须等 init 拿到 session_id 后再发（SDK 流式输入要求）
-  let markInit: (() => void) | null = null;
-  const initDone = opts.resumeId
-    ? Promise.resolve()
-    : new Promise<void>((r) => (markInit = r));
+  // 【已修正 2026-10-20】真实 CLI 时序（probe 实证）：收到首条用户输入后才发 system/init，
+  // 等 init 再发会死锁。新会话首条用 session_id: ""，init 到达后更新为真实 id；resume 会话直接用 resumeId。
 
   async function* userStream(): AsyncIterable<unknown> {
-    await initDone;
     while (!closed) {
       while (inbox.length > 0) {
         let text = inbox.shift()!;

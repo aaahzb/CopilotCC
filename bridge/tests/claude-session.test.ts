@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { createClaudeSession, type SessionEvents } from "../src/claude-session";
 
 /** 收集事件的 events 桩 */
@@ -84,7 +84,7 @@ describe("createClaudeSession", () => {
     await s.close();
   });
 
-  it("新会话首轮用户消息带防注入前缀，且带 session_id", async () => {
+  it("新会话首轮用户消息带防注入前缀", async () => {
     const { fn, calls } = fakeQuery([INIT, DONE]);
     const ev = stubEvents();
     const s = createClaudeSession("D:\\notes", { permissionMode: "auto", events: ev, queryFn: fn });
@@ -94,7 +94,26 @@ describe("createClaudeSession", () => {
     const first = await stream[Symbol.asyncIterator]().next();
     expect(first.value.message.content).toContain("防注入");
     expect(first.value.message.content).toContain("你好");
-    expect(first.value.session_id).toBe("sid-1");
+    await s.close();
+  });
+
+  it("首条消息不等 init：真实 CLI 收到首条输入才发 init（等则死锁）", async () => {
+    // 假 SDK 复刻真实 CLI 时序（probe2 实证）：先从 prompt 拉到一条用户消息，才回 init
+    let firstSessionId: string | undefined;
+    const fn = (args: { prompt: AsyncIterable<unknown>; options: Record<string, unknown> }) =>
+      (async function* () {
+        const it = args.prompt[Symbol.asyncIterator]();
+        const first = await it.next(); // bridge 若等 init 再发，这里永久挂起 → 测试超时失败
+        firstSessionId = (first.value as { session_id?: string }).session_id;
+        yield { type: "system", subtype: "init", session_id: "sid-real" };
+        yield { type: "result", subtype: "success", session_id: "sid-real" };
+      })();
+    const ev = stubEvents();
+    const s = createClaudeSession("D:\\notes", { permissionMode: "auto", events: ev, queryFn: fn });
+    s.send("你好");
+    await vi.waitFor(() => expect(ev.log.map(([k]) => k)).toContain("done"), { timeout: 2000 });
+    expect(firstSessionId).toBe(""); // 新会话首条用空 session_id，init 到达后由 CLI 分配
+    expect(ev.log).toContainEqual(["sid", "sid-real"]);
     await s.close();
   });
 });
