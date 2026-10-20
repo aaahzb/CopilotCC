@@ -137,4 +137,14 @@ describe("createClaudeSession", () => {
     expect(ev.log).toContainEqual(["done", "sid-3", { model: "claude-opus-4-5", effort: null }]);
     await s.close();
   });
+
+  it("compact_boundary 帧置位后 onDone 携带 compacted:true（未发生则不下发该字段）", async () => {
+    const COMPACT = { type: "system", subtype: "compact_boundary", compact_metadata: {} };
+    const { fn } = fakeQuery([INIT, COMPACT, DONE]);
+    const ev = stubEvents();
+    const s = createClaudeSession("D:\\notes", { permissionMode: "auto", events: ev, queryFn: fn });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(ev.log).toContainEqual(["done", "sid-1", { model: undefined, effort: undefined, compacted: true }]);
+    await s.close();
+  });
 });

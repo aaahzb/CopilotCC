@@ -24,6 +24,7 @@ export default function App(): React.ReactElement {
   const [permReq, setPermReq] = useState<{ requestId: string; tool: string; detail: string } | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null); // 当前会话 ID（folder.bound/session.list.data 携带或 chat.done 推送）
   const [runtime, setRuntime] = useState<RuntimeCache>({}); // 桥接上报的实际生效模型/effort（chat.done 携带，本地缓存跨重载）
+  const [forceAttach, setForceAttach] = useState(false); // 本次强制看页面（下一条消息强制附带全文；compact 后自动续一轮）
   const [sessions, setSessions] = useState<SessionInfo[]>([]); // 当前文件夹下的会话列表（切换会话下拉）
   const [showGate, setShowGate] = useState(false); // 手动打开重新配对界面（中途改端口/换桥接）
   const clientRef = useRef<BridgeClient | null>(null);
@@ -86,6 +87,7 @@ export default function App(): React.ReactElement {
           setRuntime(rt);
           void saveRuntimeCache(rt);
         }
+        setForceAttach(m.compacted === true); // compact 后下一轮强制带页面（上下文里的页面内容已被压缩掉）
         setStreaming((s) => {
           if (s) setMessages((ms) => [...ms, { id: crypto.randomUUID(), role: "assistant", text: s }]);
           return null;
@@ -93,6 +95,7 @@ export default function App(): React.ReactElement {
         break;
       case "chat.error":
         setStreaming(null);
+        setForceAttach(false); // 本轮异常结束：强制附带随之失效
         setMessages((ms) => [...ms, { id: crypto.randomUUID(), role: "assistant", text: `⚠️ ${m.message}` }]);
         break;
       case "permission.request":
@@ -153,22 +156,25 @@ export default function App(): React.ReactElement {
     let page: PageSnapshot | null = null;
     let attachFull = false;
     let attachNote: string | null = null;
-    if (s.attachEnabled) {
+    const force = forceAttach; // 本次强制看页面：无视附带开关与同页去重
+    if (s.attachEnabled || force) {
       const snap = await snapshotActiveTab();
       if (snap.page && (snap.page.markdown || snap.page.selection)) page = snap.page; // 无内容则不带
       if (page) {
         const d = decideAttach(lastUrlRef.current, page.url, true);
-        attachFull = d.attachFull;
-        if (d.attachFull) lastUrlRef.current = page.url;
+        attachFull = force || d.attachFull;
+        if (attachFull) lastUrlRef.current = page.url;
       }
       // 附带结果可见化：绝不允许静默降级
       attachNote = !page
         ? `⚠️ 未能附带页面：${snap.error ?? "页面无正文且无选中文字"}（本次仅发送问题）`
-        : attachFull && page.markdown
-          ? `📄 已附带页面《${page.title}》正文 ${page.markdown.length} 字符`
-          : page.selection
-            ? `📎 已附带选中文字${attachFull && !page.markdown ? `（正文提取失败${snap.error ? `：${snap.error}` : ""}）` : "（页面全文已在会话上下文）"}`
-            : "ℹ️ 同页追问：未重复附带全文（此前已进会话上下文）";
+        : force && page.markdown
+          ? `📄 已强制附带页面《${page.title}》正文 ${page.markdown.length} 字符`
+          : attachFull && page.markdown
+            ? `📄 已附带页面《${page.title}》正文 ${page.markdown.length} 字符`
+            : page.selection
+              ? `📎 已附带选中文字${attachFull && !page.markdown ? `（正文提取失败${snap.error ? `：${snap.error}` : ""}）` : "（页面全文已在会话上下文）"}`
+              : "ℹ️ 同页追问：未重复附带全文（此前已进会话上下文）";
     }
     const full = composeMessage(text, page, attachFull);
     // 附带标记：📄 全文 / 📎 仅选中文字；未附带则无标记
@@ -269,6 +275,8 @@ export default function App(): React.ReactElement {
         effort={settings.effort}
         effectiveModel={runtime.model ? shortModelName(runtime.model) : undefined}
         effectiveEffort={runtime.effort ?? undefined}
+        forceAttach={forceAttach}
+        onToggleForceAttach={() => setForceAttach((v) => !v)}
         onToggleAttach={async (v) => { await saveSettings({ attachEnabled: v }); setSettings(await loadSettings()); }}
         onModeChange={handleModeChange}
         onModelChange={(v) => void applySettings({ model: v })}

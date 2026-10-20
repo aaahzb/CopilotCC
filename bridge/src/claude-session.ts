@@ -1,13 +1,16 @@
 import { query as sdkQuery } from "@anthropic-ai/claude-agent-sdk";
 import { isEffortLevel } from "./protocol";
+import { readTranscriptEffort } from "./transcript";
 import type { PermissionModeSetting, EffortLevelSetting } from "./protocol";
 
 /** 会话运行时信息（SDK system/init 每轮开头重发，取最新一帧为准） */
 export interface SessionRuntimeInfo {
   /** 实际生效的模型 ID（如 claude-fable-5-1）；init 到达前为 undefined */
   model?: string;
-  /** 实际生效的 effort（CLI 上报值，null=该会话不下发 effort 参数）；老 CLI 不带该字段时为 undefined */
+  /** 实际生效的 effort（init 上报值或转录最近一次请求的真值，null=该会话不下发 effort 参数）；均无证据时为 undefined */
   effort?: EffortLevelSetting | null;
+  /** 最近一轮是否发生过 compact（仅 onDone 携带时有意义：扩展据此在下一轮强制附带页面） */
+  compacted?: boolean;
 }
 
 /** 会话事件回调集（server.ts 把它们转成 WS 消息） */
@@ -67,6 +70,7 @@ export function createClaudeSession(cwd: string, opts: SessionOptions): ClaudeSe
   let sessionId = opts.resumeId ?? "";
   let rtModel: string | undefined; // init 上报的实际模型
   let rtEffort: EffortLevelSetting | null | undefined; // init 上报的实际 effort（null=不下发）
+  let compactPending = false; // 本轮是否出现过 compact 帧
   let guardPending = !opts.resumeId; // 仅全新会话需要注入防护前缀
   const pending = new Map<string, PendingPermission>();
   const inbox: string[] = [];
@@ -125,6 +129,10 @@ export function createClaudeSession(cwd: string, opts: SessionOptions): ClaudeSe
       events.onSessionId(sessionId);
       return;
     }
+    if (msg.type === "system" && (msg.subtype === "compact_boundary" || (msg.subtype === "status" && msg.compact_result !== undefined))) {
+      compactPending = true; // compact 会把页面上下文压缩掉：本轮 done 时上报，扩展下一轮强制重新附带
+      return;
+    }
     if (msg.type === "stream_event") {
       const ev = msg.event as { type?: string; delta?: { type?: string; text?: string } } | undefined;
       if (ev?.type === "content_block_delta" && ev.delta?.type === "text_delta" && typeof ev.delta.text === "string") {
@@ -142,8 +150,15 @@ export function createClaudeSession(cwd: string, opts: SessionOptions): ClaudeSe
       return;
     }
     if (msg.type === "result") {
-      if (msg.subtype === "success") events.onDone(sessionId, { model: rtModel, effort: rtEffort });
-      else events.onError(`会话异常结束: ${String(msg.subtype)}`);
+      if (msg.subtype === "success") {
+        // effort 真值：SDK 流不下发（探针实证 init/assistant/result 均无），但 CLI 会把每次请求参数
+        // 持久化进转录 jsonl 的 api-request-blob —— 以最近一次请求为准（每回答粒度）
+        const tEffort = sessionId ? readTranscriptEffort(cwd, sessionId) : undefined;
+        if (tEffort !== undefined) rtEffort = tEffort; // 转录有证据（值或 null）时覆盖 init 上报值
+        // compacted 仅在 true 时下发（undefined 序列化省略），减少帧噪音
+        events.onDone(sessionId, { model: rtModel, effort: rtEffort, ...(compactPending ? { compacted: true } : {}) });
+        compactPending = false;
+      } else events.onError(`会话异常结束: ${String(msg.subtype)}`);
     }
   }
 

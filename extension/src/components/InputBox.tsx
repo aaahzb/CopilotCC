@@ -15,6 +15,9 @@ export function InputBox(props: {
   effectiveModel?: string;
   /** 桥接上报的实际生效 effort；null/undefined = 不显示 */
   effectiveEffort?: EffortLevelSetting | null;
+  /** 本次强制看页面：下一条消息强制附带页面全文（一次性，compact 后自动续一轮） */
+  forceAttach: boolean;
+  onToggleForceAttach(): void;
   onToggleAttach(v: boolean): void;
   onModeChange(m: PermissionModeSetting): void;
   onModelChange(v: string): void;
@@ -61,19 +64,30 @@ export function InputBox(props: {
           <option value="max">max</option>
         </select>
       </div>
-      <textarea
-        rows={3}
-        placeholder={props.disabled ? "先绑定文件夹…" : "针对当前网页提问，Enter 发送 / Shift+Enter 换行"}
-        value={text}
-        disabled={props.disabled}
-        onChange={(e) => setText(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" && !e.shiftKey) {
-            e.preventDefault();
-            submit();
-          }
-        }}
-      />
+      {/* 悬浮层包裹：强制看页面按钮绝对定位悬浮在输入框右上角，不占布局位置 */}
+      <div className="ta-wrap">
+        <textarea
+          rows={3}
+          placeholder={props.disabled ? "先绑定文件夹…" : "针对当前网页提问，Enter 发送 / Shift+Enter 换行"}
+          value={text}
+          disabled={props.disabled}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              submit();
+            }
+          }}
+        />
+        <button
+          type="button"
+          className={`force-attach${props.forceAttach ? " on" : ""}`}
+          title="本次强制看页面：下一条消息强制附带页面全文（不受同页去重限制），用后自动失效；本轮若发生 compact 会自动续到下一轮"
+          onClick={props.onToggleForceAttach}
+        >
+          📄 强制看页面
+        </button>
+      </div>
       {/* 发送行：最左只读显示当前生效的模型·effort（改动入口是上方下拉），发送/停止按钮靠右 */}
       <div className="send-row">
         <span className="model-effort" title="当前生效的模型与推理强度（首轮回复后显示实际值；在上方下拉修改）">{hint}</span>

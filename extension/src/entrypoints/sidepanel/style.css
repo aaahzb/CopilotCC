@@ -24,6 +24,10 @@ body { margin: 0; font-family: "Segoe UI", system-ui, sans-serif; font-size: 13p
 .input-box .toggles { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; font-size: 12px; color: #9aa0a6; }
 .input-box select { background: #2a2b31; color: inherit; border: 1px solid #444; border-radius: 4px; }
 .input-box textarea { width: 100%; background: #2a2b31; color: inherit; border: 1px solid #444; border-radius: 6px; padding: 6px 8px; resize: vertical; }
+.input-box .ta-wrap { position: relative; }
+.input-box .ta-wrap textarea { display: block; }
+.input-box .force-attach { position: absolute; top: 5px; right: 8px; font-size: 11px; line-height: 1.6; padding: 0 8px; border-radius: 10px; border: 1px solid #444; background: rgba(38, 39, 45, 0.88); color: #9aa0a6; cursor: pointer; }
+.input-box .force-attach.on { background: #2f4f7f; border-color: #4a6fa5; color: #fff; }
 .input-box .send-row { display: flex; justify-content: space-between; align-items: center; }
 .input-box .send-row .model-effort { font-size: 11px; color: #9aa0a6; opacity: 0.85; }
 .input-box .send-row button { background: #2f4f7f; color: #fff; border: none; border-radius: 4px; padding: 5px 18px; }

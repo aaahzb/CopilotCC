@@ -1,16 +1,18 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { HistoryMessage, SessionInfo } from "./protocol";
+import type { EffortLevelSetting, HistoryMessage, SessionInfo } from "./protocol";
 import { GUARD_PREFIX } from "./claude-session";
 
 /**
  * Claude 项目转录根目录。测试可用 CCC_FAKE_HOME 环境变量替换 home。
+ * CLAUDE_CONFIG_DIR 覆盖默认 ~/.claude（CLI 同一规则），自定义配置目录下转录随之迁移。
  * @returns ~/.claude/projects 绝对路径
  */
 function projectsDir(): string {
-  const home = process.env.CCC_FAKE_HOME ?? os.homedir();
-  return path.join(home, ".claude", "projects");
+  if (process.env.CCC_FAKE_HOME) return path.join(process.env.CCC_FAKE_HOME, ".claude", "projects");
+  const base = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude");
+  return path.join(base, "projects");
 }
 
 /**
@@ -168,5 +170,52 @@ export function deleteTranscript(cwd: string, sessionId: string): boolean {
     return true;
   } catch {
     return false;
+  }
+}
+
+/** 只读转录末尾窗口大小（最近一次 api-request-blob 必在末尾附近；8MB 足以覆盖巨型工具输出） */
+const TAIL_BYTES = 8 * 1024 * 1024;
+
+/**
+ * 从转录文本提取最近一次 API 请求实际携带的 effort。
+ * SDK 流不下发 effort（init/assistant/result 帧均无该字段，probe-frames 探针实证 CLI 2.1.301），
+ * 但 CLI 会把每次请求参数以 api-request-blob 条目落盘 —— 最近一个 blob 即本轮回答的请求（每回答粒度）。
+ * @param text 转录（或其尾部窗口）文本
+ * @returns 五档值 = 最近请求实发 effort；null = 最近 blob 无 effort 字段（该会话不下发 effort 参数）；
+ *          undefined = 窗口内无 api-request-blob（无证据，调用方不应覆盖已有值）
+ */
+export function extractEffortFromTranscript(text: string): EffortLevelSetting | null | undefined {
+  const lines = text.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const ln = lines[i];
+    if (!ln.includes('"type":"api-request-blob"')) continue;
+    const m = /"effort"\s*:\s*"(low|medium|high|xhigh|max)"/.exec(ln);
+    return m ? (m[1] as EffortLevelSetting) : null;
+  }
+  return undefined;
+}
+
+/**
+ * 读取会话转录末尾并提取最近一次请求的 effort（每回答一次；仅读末尾 8MB，同步 IO 毫秒级）。
+ * @param cwd 会话工作目录（与 readTranscript 同一 slug 规则定位项目目录）
+ * @param sessionId 会话 ID
+ * @returns 同 extractEffortFromTranscript；任何 IO 失败返回 undefined（不阻断对话主流程）
+ */
+export function readTranscriptEffort(cwd: string, sessionId: string): EffortLevelSetting | null | undefined {
+  if (!SAFE_SESSION_ID.test(sessionId)) return undefined; // 与 deleteTranscript 同一防穿越校验
+  const file = path.join(projectsDir(), slugifyPath(path.resolve(cwd)), `${sessionId}.jsonl`);
+  try {
+    const size = fs.statSync(file).size;
+    const start = Math.max(0, size - TAIL_BYTES);
+    const fd = fs.openSync(file, "r");
+    try {
+      const buf = Buffer.alloc(size - start);
+      fs.readSync(fd, buf, 0, buf.length, start);
+      return extractEffortFromTranscript(buf.toString("utf-8"));
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return undefined;
   }
 }

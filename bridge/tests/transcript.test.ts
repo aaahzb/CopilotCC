@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { slugifyPath, readTranscript, listSessions, deleteTranscript } from "../src/transcript";
+import { slugifyPath, readTranscript, listSessions, deleteTranscript, extractEffortFromTranscript, readTranscriptEffort } from "../src/transcript";
 
 describe("slugifyPath", () => {
   it("Windows 路径转为 Claude 项目目录名", () => {
@@ -120,5 +120,55 @@ describe("listSessions / deleteTranscript", () => {
     expect(listSessions(cwd).map((s) => s.sessionId)).toEqual(["sid-b"]);
     expect(deleteTranscript(cwd, "sid-a")).toBe(false); // 已不存在
     expect(deleteTranscript(cwd, "../evil")).toBe(false); // 路径穿越被拒
+  });
+});
+
+describe("extractEffortFromTranscript", () => {
+  it("最近一次 api-request-blob 带 effort 时返回该值（最后一处为准，每回答粒度）", () => {
+    const t = [
+      `{"type":"api-request-blob","body":{"effort":"high"}}`,
+      `{"type":"assistant","message":{}}`,
+      `{"type":"api-request-blob","body":{"effort":"max"}}`,
+      `{"type":"result","subtype":"success"}`,
+    ].join("\n");
+    expect(extractEffortFromTranscript(t)).toBe("max");
+  });
+
+  it("最近一次 blob 无 effort 字段时返回 null（该会话不下发 effort 参数）", () => {
+    const t = [
+      `{"type":"api-request-blob","body":{"effort":"high"}}`,
+      `{"type":"api-request-blob","body":{"model":"claude-fable-5-1"}}`,
+    ].join("\n");
+    expect(extractEffortFromTranscript(t)).toBeNull();
+  });
+
+  it("全文没有 api-request-blob 时返回 undefined（无证据，不覆盖 init 值）", () => {
+    expect(extractEffortFromTranscript(`{"type":"assistant"}`)).toBeUndefined();
+  });
+});
+
+describe("readTranscriptEffort", () => {
+  const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ccc-home-"));
+  const cwd = path.join("proj", "笔记");
+  const sid = "sess-eff";
+
+  beforeEach(() => {
+    process.env.CCC_FAKE_HOME = fakeHome;
+    const dir = path.join(fakeHome, ".claude", "projects", slugifyPath(path.resolve(cwd)));
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, `${sid}.jsonl`), `{"type":"api-request-blob","body":{"effort":"low"}}\n`, "utf-8");
+  });
+
+  afterEach(() => {
+    delete process.env.CCC_FAKE_HOME;
+  });
+
+  it("按 cwd+sessionId 定位转录并读取末尾 effort", () => {
+    expect(readTranscriptEffort(cwd, sid)).toBe("low");
+  });
+
+  it("会话不存在 / 非法 sessionId 返回 undefined", () => {
+    expect(readTranscriptEffort(cwd, "no-such")).toBeUndefined();
+    expect(readTranscriptEffort(cwd, "../evil")).toBeUndefined(); // 路径穿越被拒
   });
 });
