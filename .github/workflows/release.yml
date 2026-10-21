@@ -116,6 +116,8 @@ jobs:
     needs: [build-win, build-mac, build-ext]
     runs-on: ubuntu-latest
     steps:
+      # gh release create 需要 git 仓库上下文解析远端仓库，漏了 checkout 会报 "not a git repository"
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           pattern: "*"
