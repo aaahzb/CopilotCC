@@ -7,9 +7,9 @@ export function InputBox(props: {
   streaming: boolean;
   attachEnabled: boolean;
   permissionMode: PermissionModeSetting;
-  /** 模型别名；空串 = 跟随 CLI 配置 */
+  /** 模型别名；空串 = 自动（跟随 CLI 配置，界面用 effectiveModel 呈现实际生效值） */
   model: string;
-  /** 推理强度；空串 = 默认 */
+  /** 推理强度；空串 = 自动（同上，界面呈现 effectiveEffort 真值） */
   effort: EffortLevelSetting | "";
   /** 桥接上报的实际生效模型（已压短）；优先于手动选择显示，未知 = undefined */
   effectiveModel?: string;
@@ -48,15 +48,16 @@ export function InputBox(props: {
           <option value="plan">plan</option>
           <option value="approve-each">逐条审批</option>
         </select>
-        <select value={props.model} title="模型" onChange={(e) => props.onModelChange(e.target.value)}>
-          <option value="">模型默认</option>
+        <select value={props.model} title="模型（自动 = 跟随本机 CLI 配置，· 后为当前实际生效值）" onChange={(e) => props.onModelChange(e.target.value)}>
+          {/* 不显示"默认"伪状态：自动档直接呈现实际生效模型，真值未到（尚未聊过）时如实说明跟随 CLI */}
+          <option value="">{props.effectiveModel ? `自动 · ${props.effectiveModel}` : "自动（跟随 CLI 配置）"}</option>
           <option value="fable">fable</option>
           <option value="opus">opus</option>
           <option value="sonnet">sonnet</option>
           <option value="haiku">haiku</option>
         </select>
-        <select value={props.effort} title="推理强度（effort）" onChange={(e) => props.onEffortChange(e.target.value as EffortLevelSetting | "")}>
-          <option value="">effort 默认</option>
+        <select value={props.effort} title="推理强度（自动 = 跟随本机 CLI 配置，· 后为当前实际生效值）" onChange={(e) => props.onEffortChange(e.target.value as EffortLevelSetting | "")}>
+          <option value="">{props.effectiveEffort ? `自动 · ${props.effectiveEffort}` : "自动（跟随 CLI 配置）"}</option>
           <option value="low">low</option>
           <option value="medium">medium</option>
           <option value="high">high</option>
