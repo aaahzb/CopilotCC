@@ -59,4 +59,19 @@ describe("AliasManager", () => {
     expect(() => m.load()).not.toThrow();
     expect(m.all()).toHaveLength(0);
   });
+
+  it("pageRichness 随创建落盘、可更新、改其他字段时保留；未设置不落字段", () => {
+    const f = tmpFile();
+    const m = new AliasManager(f);
+    const rec = m.create("a", "/tmp/x", "sid-1", "rich");
+    expect(rec.pageRichness).toBe("rich");
+    const m2 = new AliasManager(f); // 新实例重载：验证持久化
+    m2.load();
+    expect(m2.get(rec.id)?.pageRichness).toBe("rich");
+    m2.update(rec.id, { sessionId: null }); // 改其他字段不影响丰富度
+    expect(m2.get(rec.id)?.pageRichness).toBe("rich");
+    m2.update(rec.id, { pageRichness: "brief" });
+    expect(m2.get(rec.id)?.pageRichness).toBe("brief");
+    expect(m.create("b", "/tmp/y", null).pageRichness).toBeUndefined(); // 未设置 = 标准档（不落字段）
+  });
 });

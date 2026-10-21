@@ -1,3 +1,5 @@
+import type { PageRichness } from "./protocol";
+
 /** 页面快照（page-extract 产出） */
 export interface PageSnapshot {
   url: string;
@@ -12,8 +14,11 @@ export interface AttachDecision {
   reason: "disabled" | "first" | "url-changed" | "same-url";
 }
 
-/** 页面全文进上下文的最大字符数（超出截断） */
+/** 页面全文进上下文的最大字符数（超出截断）；即标准档上限，各档位见 PAGE_RICHNESS_CAPS */
 export const MAX_PAGE_CHARS = 30_000;
+
+/** 页面信息丰富度档位 → 附带全文的最大字符数：精简 5 千（省 token 适合快问）/ 标准 3 万（默认）/ 丰富 10 万（长文求全） */
+export const PAGE_RICHNESS_CAPS: Record<PageRichness, number> = { brief: 5_000, standard: 30_000, rich: 100_000 };
 
 /**
  * 按 URL 智能附带决策：首次提问或 URL 变化才带全文；同页后续消息只靠会话上下文。
@@ -34,12 +39,13 @@ export function decideAttach(lastUrl: string | null, currentUrl: string, enabled
  * @param question 用户输入
  * @param page 页面快照（提取失败为 null）
  * @param attachFull 是否附带全文
+ * @param richness 页面信息丰富度（当前别名配置；决定附带全文的截断上限，缺省标准档）
  * @returns 最终消息文本
  */
-export function composeMessage(question: string, page: PageSnapshot | null, attachFull: boolean): string {
+export function composeMessage(question: string, page: PageSnapshot | null, attachFull: boolean, richness: PageRichness = "standard"): string {
   const parts: string[] = [];
   if (page && attachFull && page.markdown) {
-    parts.push(`[页面上下文 url=${page.url} 标题=${page.title}]\n${page.markdown.slice(0, MAX_PAGE_CHARS)}`);
+    parts.push(`[页面上下文 url=${page.url} 标题=${page.title}]\n${page.markdown.slice(0, PAGE_RICHNESS_CAPS[richness])}`);
   }
   if (page?.selection) {
     parts.push(`[选中文字]\n${page.selection}`);

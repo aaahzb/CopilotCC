@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { normalizeFolder } from "./session-manager";
+import type { PageRichness } from "./protocol";
 
 /** 别名记录：文件夹+会话组合的命名快捷方式 */
 export interface AliasRecord {
@@ -10,6 +11,8 @@ export interface AliasRecord {
   folder: string;
   /** 绑定的会话 ID；null = 选中别名时在该文件夹开新会话 */
   sessionId: string | null;
+  /** 页面信息丰富度；未设置 = standard（标准档） */
+  pageRichness?: PageRichness;
   createdAt: string;
 }
 
@@ -65,14 +68,16 @@ export class AliasManager {
    * @param name 用户起的别名（首尾空白会被裁掉）
    * @param folder 绑定文件夹
    * @param sessionId 绑定会话 ID；null = 选中时开新会话
+   * @param pageRichness 页面信息丰富度（可选；缺省不落字段，视为标准档）
    * @returns 新记录（id 为随机 16 位 hex）
    */
-  create(name: string, folder: string, sessionId: string | null): AliasRecord {
+  create(name: string, folder: string, sessionId: string | null, pageRichness?: PageRichness): AliasRecord {
     const rec: AliasRecord = {
       id: randomBytes(8).toString("hex"),
       name: name.trim(),
       folder,
       sessionId,
+      ...(pageRichness ? { pageRichness } : {}),
       createdAt: new Date().toISOString(),
     };
     this.list.push(rec);
@@ -86,12 +91,13 @@ export class AliasManager {
    * @param patch 要改的字段；sessionId 可显式传 null（改为"新会话"）
    * @returns 更新后的记录；ID 不存在返回 undefined
    */
-  update(id: string, patch: Partial<Pick<AliasRecord, "name" | "folder" | "sessionId">>): AliasRecord | undefined {
+  update(id: string, patch: Partial<Pick<AliasRecord, "name" | "folder" | "sessionId" | "pageRichness">>): AliasRecord | undefined {
     const rec = this.get(id);
     if (!rec) return undefined;
     if (patch.name !== undefined) rec.name = patch.name.trim();
     if (patch.folder !== undefined) rec.folder = patch.folder;
     if (patch.sessionId !== undefined) rec.sessionId = patch.sessionId;
+    if (patch.pageRichness !== undefined) rec.pageRichness = patch.pageRichness;
     this.save();
     return rec;
   }

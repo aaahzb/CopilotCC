@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { decideAttach, composeMessage, MAX_PAGE_CHARS, type PageSnapshot } from "../src/lib/attach-policy";
+import { decideAttach, composeMessage, MAX_PAGE_CHARS, PAGE_RICHNESS_CAPS, type PageSnapshot } from "../src/lib/attach-policy";
 
 const page: PageSnapshot = { url: "https://a.com/x", title: "标题", markdown: "正文内容", selection: "选中片段" };
 
@@ -35,5 +35,15 @@ describe("composeMessage", () => {
     const big: PageSnapshot = { ...page, markdown: "x".repeat(MAX_PAGE_CHARS + 100), selection: "" };
     const out = composeMessage("q", big, true);
     expect(out.length).toBeLessThan(MAX_PAGE_CHARS + 500);
+  });
+
+  it("丰富度档位决定截断上限：精简 5 千 / 标准 3 万（缺省）/ 丰富 10 万", () => {
+    const big: PageSnapshot = { ...page, markdown: "x".repeat(120_000), selection: "" };
+    const brief = composeMessage("q", big, true, "brief");
+    expect(brief).toContain("[页面上下文");
+    expect(brief.length).toBeLessThan(PAGE_RICHNESS_CAPS.brief + 500);
+    const rich = composeMessage("q", big, true, "rich");
+    expect(rich.length).toBeGreaterThan(MAX_PAGE_CHARS); // 丰富档放行了超过标准档的内容
+    expect(rich.length).toBeLessThan(PAGE_RICHNESS_CAPS.rich + 500);
   });
 });

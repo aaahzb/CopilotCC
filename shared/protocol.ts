@@ -35,6 +35,8 @@ export interface AliasInfo {
   folder: string;
   /** 绑定的会话 ID；null = 选中别名时在该文件夹开新会话 */
   sessionId: string | null;
+  /** 页面信息丰富度（附带网页时注入正文的字符量档位）；未设置 = standard */
+  pageRichness?: PageRichness;
 }
 
 /** 聊天随附的上传文件（base64 内容；桥接落盘到绑定文件夹的 copilotUploads 目录） */
@@ -64,8 +66,8 @@ export type ClientMessage =
   | { type: "session.switch"; sessionId: string }
   | { type: "session.delete"; sessionId: string }
   | { type: "alias.list" }
-  | { type: "alias.create"; name: string; folder: string; sessionId: string | null }
-  | { type: "alias.update"; id: string; name?: string; folder?: string; sessionId?: string | null }
+  | { type: "alias.create"; name: string; folder: string; sessionId: string | null; pageRichness?: PageRichness }
+  | { type: "alias.update"; id: string; name?: string; folder?: string; sessionId?: string | null; pageRichness?: PageRichness }
   | { type: "alias.delete"; id: string }
   | { type: "alias.select"; id: string }
   | { type: "settings.set"; permissionMode: PermissionModeSetting; model?: string; effort?: EffortLevelSetting };
@@ -86,6 +88,18 @@ export type ServerMessage =
   | { type: "session.history.data"; messages: HistoryMessage[] }
   | { type: "session.list.data"; sessions: SessionInfo[]; currentId: string | null }
   | { type: "alias.list.data"; aliases: AliasInfo[]; currentId: string | null };
+
+/** 页面信息丰富度档位：brief 精简 / standard 标准 / rich 丰富（对应附带网页时注入正文的最大字符数，档位上限见扩展 attach-policy） */
+export type PageRichness = "brief" | "standard" | "rich";
+
+/**
+ * 校验页面信息丰富度档位字符串。
+ * @param v 任意值
+ * @returns 是否为合法 PageRichness
+ */
+export function isPageRichness(v: unknown): v is PageRichness {
+  return v === "brief" || v === "standard" || v === "rich";
+}
 
 /**
  * 校验权限模式字符串。
@@ -149,16 +163,22 @@ export function parseClientMessage(raw: string): ClientMessage | null {
       case "session.switch":
       case "session.delete":
         return typeof m.sessionId === "string" && m.sessionId.length > 0 ? m : null;
-      case "alias.create":
-        return typeof m.name === "string" && m.name.trim().length > 0
-          && typeof m.folder === "string" && m.folder.length > 0
-          && (typeof m.sessionId === "string" || m.sessionId === null) ? m : null;
+      case "alias.create": {
+        if (typeof m.name !== "string" || m.name.trim().length === 0
+          || typeof m.folder !== "string" || m.folder.length === 0
+          || (typeof m.sessionId !== "string" && m.sessionId !== null)) return null;
+        // pageRichness 为可选字段：只接受合法档位，非法值剥掉（与 settings.set 的 model/effort 同一策略）
+        const out: Extract<ClientMessage, { type: "alias.create" }> = { type: "alias.create", name: m.name, folder: m.folder, sessionId: m.sessionId };
+        if (isPageRichness(m.pageRichness)) out.pageRichness = m.pageRichness;
+        return out;
+      }
       case "alias.update": {
         if (typeof m.id !== "string" || m.id.length === 0) return null;
         // 逐字段校验组装：可选字段只带合法值；sessionId 出现时必须显式是 string 或 null（允许改成"新会话"）
         const out: Extract<ClientMessage, { type: "alias.update" }> = { type: "alias.update", id: m.id };
         if (typeof m.name === "string" && m.name.trim().length > 0) out.name = m.name;
         if (typeof m.folder === "string" && m.folder.length > 0) out.folder = m.folder;
+        if (isPageRichness(m.pageRichness)) out.pageRichness = m.pageRichness;
         if ("sessionId" in m) {
           if (typeof m.sessionId !== "string" && m.sessionId !== null) return null;
           out.sessionId = m.sessionId;

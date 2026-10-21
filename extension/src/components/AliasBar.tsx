@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import type { AliasInfo, SessionInfo } from "../lib/protocol";
+import type { AliasInfo, PageRichness, SessionInfo } from "../lib/protocol";
 import { FolderBar } from "./FolderBar";
 
 /**
@@ -16,7 +16,9 @@ export function AliasBar(props: {
   sessionId: string | null;
   sessions: SessionInfo[];
   onAliasSelect(id: string): void;
-  onAliasCreate(name: string, folder: string, sessionId: string | null): void;
+  onAliasCreate(name: string, folder: string, sessionId: string | null, pageRichness: PageRichness): void;
+  /** 更新当前别名配置（页面丰富度；改文件夹/会话绑定仍走 folder.bind/session.switch） */
+  onAliasUpdate(id: string, patch: { pageRichness?: PageRichness }): void;
   onAliasDelete(id: string): void;
   /** 弹系统文件夹选择框；用户取消返回 null */
   onPickFolder(): Promise<string | null>;
@@ -31,6 +33,7 @@ export function AliasBar(props: {
   const [folder, setFolder] = useState("");
   const [sessionId, setSessionId] = useState(""); // "" = 新会话
   const [picking, setPicking] = useState(false);
+  const [richness, setRichness] = useState<PageRichness>("standard"); // 新建表单的页面丰富度选择
     const [manualSid, setManualSid] = useState(false); // 手动输入会话 ID 模式（绑定外部会话的通道）
     const [sidInput, setSidInput] = useState("");
   const current = props.aliases.find((a) => a.id === props.currentAliasId) ?? null;
@@ -41,6 +44,7 @@ export function AliasBar(props: {
     setFolder(props.bound ?? "");
     setSessionId(props.sessionId ?? "");
     setManualSid(false); setSidInput(""); // 每次打开表单复位输入模式
+    setRichness("standard"); // 丰富度复位默认档
     setExpanded(false); // 新建与详情互斥：表单自带文件夹+会话选择，避免两套控件重叠
     setCreating(true);
   }
@@ -61,7 +65,7 @@ export function AliasBar(props: {
     const f = folder.trim();
     if (!name.trim() || !f) return;
     const sid = manualSid ? sidInput.trim().replace(/^claude\s+--resume\s+/i, "").trim() || null : f === props.bound ? sessionId || null : null; // 手动模式容忍直接粘贴整行 resume 命令
-    props.onAliasCreate(name.trim(), f, sid);
+    props.onAliasCreate(name.trim(), f, sid, richness);
     setCreating(false);
     setManualSid(false); setSidInput(""); // 提交后复位输入模式
   }
@@ -159,6 +163,15 @@ export function AliasBar(props: {
               onKeyDown={(e) => e.key === "Enter" && submit()}
             />
           ) : null}
+          <select
+            value={richness}
+            title="页面信息丰富度：附带网页时注入正文的最大字符数（该别名每次提问生效）"
+            onChange={(e) => setRichness(e.target.value as PageRichness)}
+          >
+            <option value="brief">页面丰富度：精简（约 5 千字）</option>
+            <option value="standard">页面丰富度：标准（约 3 万字）</option>
+            <option value="rich">页面丰富度：丰富（约 10 万字）</option>
+          </select>
           <div className="alias-create-actions">
             <button className="primary" disabled={!name.trim() || !folder.trim()} onClick={submit}>创建并切换</button>
             <button className="mini-btn" onClick={() => setCreating(false)}>取消</button>
@@ -167,6 +180,18 @@ export function AliasBar(props: {
       ) : null}
       {expanded ? (
         <div className="alias-detail">
+          <div className="richness-row" title="页面信息丰富度：附带网页时注入正文的最大字符数，按别名各自保存在桥接">
+            <span>页面丰富度</span>
+            <select
+              value={current?.pageRichness ?? "standard"}
+              disabled={!current}
+              onChange={(e) => { if (current) props.onAliasUpdate(current.id, { pageRichness: e.target.value as PageRichness }); }}
+            >
+              <option value="brief">精简（约 5 千字）</option>
+              <option value="standard">标准（约 3 万字）</option>
+              <option value="rich">丰富（约 10 万字）</option>
+            </select>
+          </div>
           <FolderBar
             history={props.history}
             bound={props.bound}

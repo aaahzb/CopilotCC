@@ -75,3 +75,16 @@ describe("chat.send 上传附件", () => {
     expect(parseClientMessage(JSON.stringify({ type: "chat.send", text: "hi", uploads: "x" }))).toBeNull();
   });
 });
+
+describe("别名页面丰富度", () => {
+  it("alias.create / alias.update 携带合法 pageRichness 透传，非法值剥掉", () => {
+    expect(parseClientMessage(JSON.stringify({ type: "alias.create", name: "n", folder: "/tmp/x", sessionId: null, pageRichness: "rich" })))
+      .toEqual({ type: "alias.create", name: "n", folder: "/tmp/x", sessionId: null, pageRichness: "rich" });
+    expect(parseClientMessage(JSON.stringify({ type: "alias.create", name: "n", folder: "/tmp/x", sessionId: null, pageRichness: "mega" })))
+      .toEqual({ type: "alias.create", name: "n", folder: "/tmp/x", sessionId: null });
+    expect(parseClientMessage(JSON.stringify({ type: "alias.update", id: "a1", pageRichness: "brief" })))
+      .toEqual({ type: "alias.update", id: "a1", pageRichness: "brief" });
+    expect(parseClientMessage(JSON.stringify({ type: "alias.update", id: "a1", pageRichness: "mega" })))
+      .toEqual({ type: "alias.update", id: "a1" });
+  });
+});

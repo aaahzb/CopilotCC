@@ -462,6 +462,22 @@ describe("别名（alias.* + folder.pick）", () => {
     await server.close();
   });
 
+  it("alias.create / alias.update 携带 pageRichness：列表推送可见且可改", async () => {
+    const { server, url } = await boot(makeConfig(), { aliases });
+    const { ws } = await connect(url);
+    const { inbox, waitFor } = collect(ws);
+    ws.send(JSON.stringify({ type: "alias.create", name: "富", folder: dir, sessionId: null, pageRichness: "rich" }));
+    await waitFor("folder.bound");
+    const list = (await waitFor("alias.list.data")) as Extract<ServerMessage, { type: "alias.list.data" }>;
+    expect(list.aliases[0].pageRichness).toBe("rich"); // 创建时落盘并随列表推送
+    const n = inbox.length;
+    ws.send(JSON.stringify({ type: "alias.update", id: list.aliases[0].id, pageRichness: "brief" }));
+    const l2 = (await waitFor("alias.list.data", n)) as Extract<ServerMessage, { type: "alias.list.data" }>;
+    expect(l2.aliases[0].pageRichness).toBe("brief");
+    ws.close();
+    await server.close();
+  });
+
   it("alias.select：指向已存在会话 → resumed=true；指向已删会话 → 退回新会话并修正别名", async () => {
     aliases.create("旧", dir, "sid-1");
     aliases.create("鬼", dir, "ghost-sid"); // 转录里不存在

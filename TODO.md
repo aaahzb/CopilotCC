@@ -107,3 +107,10 @@
 - 防注入：GUARD_PREFIX 扩展覆盖 [上传文件] 块（文件名是数据不是指令）；transcript.test.ts 的 GUARD 字面量夹具改 import claude-session 同源常量，前缀文案再改不拖垮测试。
 - shared 单源：upload-note.ts（UPLOAD_DIR + composeUploadNote）经 sync-protocol.mjs 逐字同步两端。
 - 验证：桥接 83 + 扩展 29 测试全绿，双端 typecheck/构建通过；隔离 exe 端到端探针（CCC_BRIDGE_HOME 隔离 + 临时绑定目录 + 带 txt 上传发问）实测文件落盘一致、Claude 经 Read 读出内容、桥接存活。探针心得：WS 握手即鉴权——URL 必须 /ws?token=...（auth 消息是空操作）；握手后服务器会推 session.list.data 等帧，等特定帧须按类型过滤。
+
+### 2026-10-22：新功能——页面信息丰富度（按别名配置）
+
+- 协议：PageRichness = brief/standard/rich + isPageRichness 守卫；AliasInfo 与 alias.create/update 增加可选 pageRichness（非法值剥掉不下发）；alias.list.data 随别名下发扩展。
+- 桥接：AliasRecord 持久化 pageRichness（aliases.json；未设置不落字段 = 标准档）；create/update 透传；syncCurrentAlias 部分更新天然保留该字段。
+- 扩展：attach-policy 新增 PAGE_RICHNESS_CAPS（精简 5 千 / 标准 3 万 / 丰富 10 万字符），composeMessage 按当前别名档位截断；附带状态行显示实际注入字符数（截断时标注原文字数）；AliasBar 新建表单与详情区顶部都加丰富度下拉，详情区改动即发 alias.update 落盘。
+- 验证：桥接 86 + 扩展 30 测试全绿（协议校验/管理器持久化/路由透传/组装截断四层用例），双端 typecheck、扩展 wxt build、桥接 exe 构建通过。

@@ -718,7 +718,7 @@ function attachHandlers(wss: WebSocketServer, deps: ServerDeps, instanceId: stri
             send({ type: "folder.error", message: `路径不存在或不是文件夹: ${m.folder}` });
             break;
           }
-          const rec = aliases.create(m.name, m.folder, m.sessionId);
+          const rec = aliases.create(m.name, m.folder, m.sessionId, m.pageRichness);
           currentAliasId = rec.id; // 新别名立即成为当前：创建即绑定
           bindFolder(rec.folder, rec.sessionId);
           break;
@@ -740,7 +740,7 @@ function attachHandlers(wss: WebSocketServer, deps: ServerDeps, instanceId: stri
         }
         case "alias.update": {
           if (!aliases) break;
-          aliases.update(m.id, { name: m.name, folder: m.folder, sessionId: m.sessionId });
+          aliases.update(m.id, { name: m.name, folder: m.folder, sessionId: m.sessionId, pageRichness: m.pageRichness });
           // 只改数据不重绑：换文件夹/会话的实际行为走 folder.bind/session.switch，粘性同步会写回别名
           sendAliasList();
           break;

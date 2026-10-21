@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { BridgeClient, type ConnState } from "../../lib/ws-client";
 import { loadSettings, saveSettings, pushFolderHistory, takePendingQuote, loadRuntimeCache, saveRuntimeCache, clearRuntimeCache, type ExtSettings, type RuntimeCache } from "../../lib/storage";
-import { decideAttach, composeMessage, type PageSnapshot } from "../../lib/attach-policy";
+import { decideAttach, composeMessage, PAGE_RICHNESS_CAPS, type PageSnapshot } from "../../lib/attach-policy";
 import { composeUploadNote, UPLOAD_DIR } from "../../lib/upload-note";
 import type { PendingUpload } from "../../lib/upload-files";
 import { snapshotActiveTab } from "../../lib/page-extract";
@@ -178,6 +178,9 @@ export default function App(): React.ReactElement {
     let page: PageSnapshot | null = null;
     let attachFull = false;
     let attachNote: string | null = null;
+    // 页面信息丰富度：取当前别名配置（无别名或未设置 = 标准档）；决定附带全文的截断上限
+    const richness = aliases.find((a) => a.id === currentAliasId)?.pageRichness ?? "standard";
+    const pageCap = PAGE_RICHNESS_CAPS[richness];
     const force = forceAttach; // 本次强制看页面：无视附带开关与同页去重
     if (s.attachEnabled || force) {
       const snap = await snapshotActiveTab();
@@ -191,14 +194,14 @@ export default function App(): React.ReactElement {
       attachNote = !page
         ? `⚠️ 未能附带页面：${snap.error ?? "页面无正文且无选中文字"}（本次仅发送问题）`
         : force && page.markdown
-          ? `📄 已强制附带页面《${page.title}》正文 ${page.markdown.length} 字符`
+          ? `📄 已强制附带页面《${page.title}》正文 ${Math.min(page.markdown.length, pageCap)} 字符${page.markdown.length > pageCap ? `（原文 ${page.markdown.length}，按丰富度截断）` : ""}`
           : attachFull && page.markdown
-            ? `📄 已附带页面《${page.title}》正文 ${page.markdown.length} 字符`
+            ? `📄 已附带页面《${page.title}》正文 ${Math.min(page.markdown.length, pageCap)} 字符${page.markdown.length > pageCap ? `（原文 ${page.markdown.length}，按丰富度截断）` : ""}`
             : page.selection
               ? `📎 已附带选中文字${attachFull && !page.markdown ? `（正文提取失败${snap.error ? `：${snap.error}` : ""}）` : "（页面全文已在会话上下文）"}`
               : "ℹ️ 同页追问：未重复附带全文（此前已进会话上下文）";
     }
-    const full = composeMessage(text, page, attachFull);
+    const full = composeMessage(text, page, attachFull, richness);
     const hasUp = uploads.length > 0;
     // 展示用上传说明块与桥接实际发送同一模板（桥接落盘后按真实路径再拼；重名加 -1 后缀时以桥接为准）
     const upNote = hasUp ? composeUploadNote(uploads.map((u) => `${bound}/${UPLOAD_DIR}/${u.name}`)) : null;
@@ -287,7 +290,8 @@ export default function App(): React.ReactElement {
         sessionId={sessionId}
         sessions={sessions}
         onAliasSelect={(id) => clientRef.current?.send({ type: "alias.select", id })}
-        onAliasCreate={(name, folder, sid) => clientRef.current?.send({ type: "alias.create", name, folder, sessionId: sid })}
+        onAliasCreate={(name, folder, sid, richness) => clientRef.current?.send({ type: "alias.create", name, folder, sessionId: sid, pageRichness: richness })}
+        onAliasUpdate={(id, patch) => clientRef.current?.send({ type: "alias.update", id, ...patch })}
         onAliasDelete={(id) => clientRef.current?.send({ type: "alias.delete", id })}
         onPickFolder={handlePickFolder}
         onBind={handleBind}
