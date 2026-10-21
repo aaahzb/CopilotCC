@@ -22,18 +22,44 @@ import { encodePairing } from "./pairing";
 import { SessionManager } from "./session-manager";
 import { AliasManager } from "./alias-manager";
 import { ICON_ICO_B64, ICON_PNG_B64 } from "./icon";
+import { TRAYBIN_WIN_B64 } from "./traybin-win-b64";
 
 /** systray2 的 MenuItem 没有 click 字段（那是它的自定义扩展属性），本地扩一个 */
 type TrayItem = MenuItem & { click?: () => void };
 
 /**
+ * win 单文件分发：把内嵌的托盘组件释放到配置目录下的 traybin/（systray2 只认文件路径，且要求 CWD/traybin 布局）。
+ * 内嵌串为空（开发态占位 / mac 包仍走 exe 旁 traybin）时不做释放。
+ * @returns 释放出的 traybin 父目录；未内嵌或非 win32 返回 null
+ */
+function extractEmbeddedTraybin(): string | null {
+  if (process.platform !== "win32" || TRAYBIN_WIN_B64.length === 0) return null;
+  const dir = configDir();
+  const bin = path.join(dir, "traybin", "tray_windows_release.exe");
+  const buf = Buffer.from(TRAYBIN_WIN_B64, "base64");
+  // 已释放且大小一致即视为同版本，跳过重写；托盘组件随主程序一起升级，大小变即重写
+  let stale = true;
+  try {
+    stale = fs.statSync(bin).size !== buf.length;
+  } catch {
+    // 还没释放过
+  }
+  if (stale) {
+    fs.mkdirSync(path.dirname(bin), { recursive: true });
+    fs.writeFileSync(bin, buf);
+  }
+  return dir;
+}
+
+/**
  * systray2 只认 CWD 下 ./traybin/<平台二进制>：chdir 到包含 traybin 的目录。
- * 编译分发形态 = exe 旁的 traybin/；开发形态 = node_modules/systray2/（内含 traybin/）。
+ * 候选顺序：内嵌释放目录（win 单文件分发）→ exe 旁 traybin/（mac 包与旧版 win 包）→ CWD → node_modules/systray2（开发态）。
  * @throws 所有候选都找不到时抛错
  */
 function chdirToTraybinParent(): void {
   const exe =
     process.platform === "win32" ? "tray_windows_release.exe" : process.platform === "darwin" ? "tray_darwin_release" : "tray_linux_release";
+  const embedded = extractEmbeddedTraybin();
   let here = "";
   try {
     here = path.dirname(fileURLToPath(import.meta.url)); // bun 编译态是虚拟路径，fileURLToPath 会抛，跳过即可
@@ -41,7 +67,8 @@ function chdirToTraybinParent(): void {
     // 编译态没有开发候选
   }
   const candidates = [
-    path.dirname(process.execPath), // 编译分发：exe 旁
+    ...(embedded ? [embedded] : []), // win 单文件：释放到配置目录的组件（与当前 exe 同版本，优先）
+    path.dirname(process.execPath), // mac 包与旧版 win 包：exe 旁
     process.cwd(), // 已在正确 CWD
     ...(here ? [path.join(here, "..", "node_modules", "systray2")] : []), // 开发：包目录
   ];

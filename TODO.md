@@ -84,3 +84,9 @@
 - 修复（release.yml）：扩展 zip 先 `cp extension/.output/*-chrome.zip .` 拷到仓库根（非隐藏路径）再上传，path 改为 `ccc-extension-*-chrome.zip`；三个 upload-artifact 全部加 `if-no-files-found: error`（今后静默缺包直接变红）；publish 创建 Release 前加 `ls -la assets/` 让收集结果日志可见。
 - 教训：CI 步骤绿色不等于产物真的上传了，artifact 上传必须配 `if-no-files-found: error` 兜底；点开头目录（.output/.next/.wxt 等）下的文件 upload-artifact 默认不收，要么拷出来要么 `include-hidden-files: true`。
 - 验证：本地 `npx wxt zip` 产物为 `extension/.output/ccc-extension-<version>-chrome.zip`（1.35 MB），路径文件名与预期一致；v2026.10.21.6 流水线需确认 build-ext 上传步骤不再 warn、Release 资产含扩展 zip。
+
+### 2026-10-21：mac 包改 dmg、win 包改单文件 exe
+
+- 背景：用户预期 mac 是 dmg 包；win zip 里两个 exe（ccc-bridge.exe + traybin/tray_windows_release.exe）令人困惑，预期单文件。托盘组件是 systray2 的平台进程（主程序拉起的子进程，不能单独运行），它硬性要求 CWD/traybin 布局。
+- win 单文件：托盘组件（3.6 MB）base64 内嵌进 exe——build-exe.mjs 编译前把 src/traybin-win-b64.ts 临时覆盖为真实内容、编完还原占位（仓库只存占位，脚本内 TRAYBIN_B64_PLACEHOLDER 与入库占位须逐字一致）；tray.ts 首跑释放到 ~/.ccc-bridge/traybin/（大小不一致即重写=升级跟随），chdirToTraybinParent 候选顺序：内嵌释放目录 → exe 旁（mac 包/旧版 win 包）→ CWD → node_modules（开发态）。与图标内嵌（icon.ts）同一模式。
+- mac dmg：release.yml 的 ditto zip 改 hdiutil create（-volname CopilotCC -format UDZO），dmg 是真实文件系统，天然保留可执行位；README 强调 dmg 只读，须先把文件夹拷出来再跑 setup.command（codesign 要往二进制写签名）。

@@ -10,13 +10,13 @@
 
 ## 快速开始（下载 Release 使用）
 
-到 [Releases](../../releases) 页下载最新版的两个包：
+到 [Releases](../../releases) 页下载最新版的安装包：
 
 | 文件 | 平台 | 说明 |
 | --- | --- | --- |
 | `ccc-extension-x.y.z-chrome.zip` | Chrome / Edge | 浏览器扩展 |
 | `ccc-bridge-win-x64.zip` | Windows 64 位 | 本地桥接（系统托盘程序） |
-| `ccc-bridge-darwin-arm64.zip` | macOS（Apple Silicon） | 本地桥接（菜单栏程序） |
+| `ccc-bridge-darwin-arm64.dmg` | macOS（Apple Silicon） | 本地桥接（菜单栏程序） |
 
 > macOS Intel / Linux 暂无预编译产物，请走「开发者 → 从源码运行」。
 
@@ -28,8 +28,8 @@
 
 ### 2. 运行桥接
 
-- **Windows**：解压 `ccc-bridge-win-x64.zip`，双击 `ccc-bridge.exe`，图标出现在系统托盘。
-- **macOS**：解压 `ccc-bridge-darwin-arm64.zip`，对 `setup.command` **右键 → 打开**（仅首次需要，自动完成赋权与签名），之后双击 `ccc-bridge` 常驻菜单栏。
+- **Windows**：解压 `ccc-bridge-win-x64.zip`，双击 `ccc-bridge.exe`，图标出现在系统托盘（单文件 exe，首次运行自动把托盘组件释放到 `~/.ccc-bridge/traybin/`）。
+- **macOS**：打开 `ccc-bridge-darwin-arm64.dmg`，把里面的 `ccc-bridge-darwin-arm64` 文件夹**先拷到 dmg 外面**（如「应用程序」或家目录——dmg 只读，初始化要往二进制写签名，不能直接在 dmg 里跑），对拷出来的 `setup.command` **右键 → 打开**（仅首次需要，自动完成赋权与签名），之后双击 `ccc-bridge` 常驻菜单栏。
 
 ### 3. 配对
 
@@ -139,4 +139,4 @@ extension/              # Chrome MV3 扩展（WXT + React）
   git tag v0.2.0 && git push origin v0.2.0
   ```
 
-  流程：测试门禁 → Windows runner 编 `ccc-bridge-win-x64.zip`（bun 单文件 exe，内嵌桥形图标）、macOS runner 编 `ccc-bridge-darwin-arm64.zip`（本机原生编译，附 `setup.command` 一键初始化，ditto 打包保留可执行位）、ubuntu runner 出扩展 zip（`wxt zip`，manifest 版本号自动取 tag）→ 汇总创建带自动更新说明的 GitHub Release。
+  流程：测试门禁 → Windows runner 编 `ccc-bridge-win-x64.zip`（bun 单文件 exe，内嵌桥形图标与托盘组件）、macOS runner 编 `ccc-bridge-darwin-arm64.dmg`（本机原生编译，附 `setup.command` 一键初始化，hdiutil 出 dmg）、ubuntu runner 出扩展 zip（`wxt zip`，manifest 版本号自动取 tag）→ 汇总创建带自动更新说明的 GitHub Release。
