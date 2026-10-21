@@ -82,6 +82,8 @@ npm run build:exe   # 产物在 bridge/dist/
 
 产物布局：`ccc-bridge[.exe]` + `traybin/`（托盘原生二进制，需与 exe 同级）。运行后驻留系统托盘，右键菜单：复制配对串、修改端口…（浏览器打开本机设置页直接改，与 WS 同一端口不占额外端口，保存即在线生效，页面给出新配对串一键复制）、退出。配置文件 `~/.ccc-bridge/config.json` 里可改的只有三项：token（改掉即换配对码）、port（默认 19280，端口冲突时改）、allowedOrigins（扩展来源白名单，默认空=仅本机放行）。端口被无关程序占用时自动顺延（最多 10 个），实际端口以托盘状态行/配对串为准；同配置的第二个实例会被拒绝启动（runtime.json 单实例守卫，退出自动清理）。开发态免打包直接跑托盘：`npm run tray`。
 
+托盘图标与 exe 文件图标同源，由 `bridge/scripts/gen-icon.mjs` 生成：Claude 橙桥形图案，6x 超采样抗锯齿，ICO 内嵌 16/32/48/256 四档；当前用悬索桥变体（c），另有 a 拱桥 / b 拱桥+桥墩可选——`node scripts/gen-icon.mjs a|b` 后重新 `npm run build:exe` 生效（脚本同时输出浅/深底预览条到 `%TEMP%/ccc-icon-preview.png` 供挑选）。
+
 **macOS（arm64）部署**：把整个 `ccc-bridge-darwin-arm64` 目录拷到 Mac，执行一次：
 
 ```bash

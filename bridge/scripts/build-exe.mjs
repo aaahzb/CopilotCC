@@ -10,10 +10,16 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const dist = path.join(root, "dist");
+/** exe 图标（scripts/gen-icon.mjs 生成的多尺寸 ICO；已入库，缺失时报错提示重生） */
+const iconPath = path.join(root, "assets", "icon.ico");
+if (!fs.existsSync(iconPath)) {
+  console.error("缺少 assets/icon.ico，请先运行 node scripts/gen-icon.mjs");
+  process.exit(1);
+}
 
-/** 构建目标。--windows-hide 让 win 版双击不弹黑窗；darwin 目标在 Windows 上交叉编译 */
+/** 构建目标。--windows-hide-console 让 win 版双击不弹黑窗；--windows-icon 内嵌 exe 图标；darwin 目标在 Windows 上交叉编译 */
 const targets = [
-  { target: "bun-windows-x64", dir: "ccc-bridge-win-x64", exe: "ccc-bridge.exe", trayBin: "tray_windows_release.exe", extra: ["--windows-hide-console"] },
+  { target: "bun-windows-x64", dir: "ccc-bridge-win-x64", exe: "ccc-bridge.exe", trayBin: "tray_windows_release.exe", extra: ["--windows-hide-console", `--windows-icon "${iconPath}"`] },
   { target: "bun-darwin-arm64", dir: "ccc-bridge-darwin-arm64", exe: "ccc-bridge", trayBin: "tray_darwin_release", extra: [] },
 ];
 
