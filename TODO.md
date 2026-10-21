@@ -1,4 +1,4 @@
-# Chrome Claude Code 侧边栏助手 — TODO
+# CopilotCC — TODO
 
 - [x] Task 1: 仓库脚手架与协议同步/密钥脚本
 - [x] Task 2: bridge 骨架 + config.ts

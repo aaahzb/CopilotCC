@@ -1,5 +1,5 @@
 #!/bin/bash
-# Claude Code 侧边栏 · macOS 桥接一键初始化
+# CopilotCC · macOS 桥接一键初始化
 # 首次使用请对 本文件「右键 → 打开」（浏览器下载的文件带隔离标记，直接双击会被 Gatekeeper 拦截）。
 cd "$(dirname "$0")" || exit 1
 set -e
