@@ -3,3 +3,6 @@ dist/
 .output/
 .wxt/
 *.log
+
+# 用户截图，永不提交
+/捕获.JPG
