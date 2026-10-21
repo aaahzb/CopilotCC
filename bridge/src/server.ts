@@ -595,6 +595,7 @@ function attachHandlers(wss: WebSocketServer, deps: ServerDeps, instanceId: stri
           sessions.delete(folder);
           openSession(undefined);
           send({ type: "folder.bound", path: folder, resumed: false, title: "", sessionId: null });
+          send({ type: "folder.error", message: `会话 ${forceSessionId} 在该文件夹下没有转录，已改为开新会话` }); // 必须在 folder.bound 之后发：客户端收 bound 会清屏，先发警告会被抹掉
         }
       }
       sendSessionList();

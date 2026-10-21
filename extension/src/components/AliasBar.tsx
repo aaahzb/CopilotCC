@@ -31,6 +31,8 @@ export function AliasBar(props: {
   const [folder, setFolder] = useState("");
   const [sessionId, setSessionId] = useState(""); // "" = 新会话
   const [picking, setPicking] = useState(false);
+    const [manualSid, setManualSid] = useState(false); // 手动输入会话 ID 模式（绑定外部会话的通道）
+    const [sidInput, setSidInput] = useState("");
   const current = props.aliases.find((a) => a.id === props.currentAliasId) ?? null;
 
   /** 打开新建表单：预填当前绑定状态（未绑定时留空等用户选） */
@@ -38,6 +40,7 @@ export function AliasBar(props: {
     setName("");
     setFolder(props.bound ?? "");
     setSessionId(props.sessionId ?? "");
+    setManualSid(false); setSidInput(""); // 每次打开表单复位输入模式
     setCreating(true);
   }
 
@@ -56,9 +59,10 @@ export function AliasBar(props: {
   function submit(): void {
     const f = folder.trim();
     if (!name.trim() || !f) return;
-    const sid = f === props.bound ? sessionId || null : null;
+    const sid = manualSid ? sidInput.trim().replace(/^claude\s+--resume\s+/i, "").trim() || null : f === props.bound ? sessionId || null : null; // 手动模式容忍直接粘贴整行 resume 命令
     props.onAliasCreate(name.trim(), f, sid);
     setCreating(false);
+    setManualSid(false); setSidInput(""); // 提交后复位输入模式
   }
 
   /** 删除当前别名（只删别名，文件夹与会话记录全部保留） */
@@ -82,6 +86,7 @@ export function AliasBar(props: {
 
   // 文件夹框仍是当前绑定路径时，会话下拉可选（否则该文件夹的会话列表无从预知）
   const folderIsBound = folder.trim() !== "" && folder.trim() === props.bound;
+  const MANUAL = "__manual__"; // 会话下拉"手动输入 ID…"占位选项值
 
   return (
     <div className="alias-bar">
@@ -132,16 +137,27 @@ export function AliasBar(props: {
             </button>
           </div>
           <select
-            value={folderIsBound ? sessionId : ""}
-            disabled={!folderIsBound}
-            title={folderIsBound ? "绑定该文件夹下的会话" : "文件夹已改为新路径，创建时将开新会话"}
-            onChange={(e) => setSessionId(e.target.value)}
+            value={manualSid ? MANUAL : folderIsBound ? sessionId : ""}
+            title={folderIsBound ? "绑定该文件夹下的会话，或手动输入会话 ID" : "新文件夹：开新会话，或手动输入会话 ID 续聊"}
+            onChange={(e) => {
+              if (e.target.value === MANUAL) setManualSid(true);
+              else { setManualSid(false); setSessionId(e.target.value); }
+            }}
           >
             <option value="">＋新会话</option>
-            {props.sessions.map((s) => (
+            {folderIsBound ? props.sessions.map((s) => (
               <option key={s.sessionId} value={s.sessionId}>{sessionLabel(s)}</option>
-            ))}
+            )) : null}
+            <option value={MANUAL}>手动输入 ID…</option>
           </select>
+          {manualSid ? (
+            <input
+              placeholder="会话 ID（可直接粘贴 claude --resume 整行命令）"
+              value={sidInput}
+              onChange={(e) => setSidInput(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && submit()}
+            />
+          ) : null}
           <div className="alias-create-actions">
             <button className="primary" disabled={!name.trim() || !folder.trim()} onClick={submit}>创建并切换</button>
             <button className="mini-btn" onClick={() => setCreating(false)}>取消</button>

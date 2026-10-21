@@ -425,6 +425,8 @@ describe("别名（alias.* + folder.pick）", () => {
     ws.send(JSON.stringify({ type: "alias.select", id: ghostId }));
     const bound2 = (await waitFor("folder.bound", n)) as Extract<ServerMessage, { type: "folder.bound" }>;
     expect(bound2).toMatchObject({ resumed: false, sessionId: null });
+    const warn = await waitFor("folder.error", n); // 鬼会话警告：告知用户被退回新会话
+    expect(JSON.stringify(warn)).toContain("ghost-sid");
     // 退回新会话后粘性同步把别名的 sessionId 修成 null
     const l2 = (await waitFor("alias.list.data", n)) as Extract<ServerMessage, { type: "alias.list.data" }>;
     expect(l2.aliases.find((a) => a.id === ghostId)?.sessionId).toBeNull();
