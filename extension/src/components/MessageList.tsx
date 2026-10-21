@@ -1,4 +1,4 @@
-import React, { useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
@@ -67,16 +67,38 @@ export function MessageList(props: { messages: UiMsg[]; streaming: string | null
   const [viewing, setViewing] = useState<UiMsg | null>(null); // 浮层查看中的消息
   const [showBottom, setShowBottom] = useState(false); // 是否显示回到底部按钮
   const listRef = useRef<HTMLDivElement>(null);
+  const followRef = useRef(true); // 跟随模式：钉在底部随新内容/流式滚动；用户上滚离底即退出
+  const prevUserCountRef = useRef(0); // 上次渲染的用户消息数（识别"我刚发送了一条"）
 
-  /** 滚动监听：离底部较远时显示回到底部按钮 */
+  /** 距底在阈值内视为"在底部" */
+  function atBottom(el: HTMLDivElement): boolean {
+    return el.scrollHeight - el.scrollTop - el.clientHeight <= BOTTOM_THRESHOLD;
+  }
+
+  /** 滚动监听：在底部=进入跟随并藏按钮；离底=退出跟随并显示按钮（用户主动上滚看历史） */
   function onScroll(): void {
     const el = listRef.current;
     if (!el) return;
-    setShowBottom(el.scrollHeight - el.scrollTop - el.clientHeight > BOTTOM_THRESHOLD);
+    const b = atBottom(el);
+    followRef.current = b;
+    setShowBottom(!b);
   }
 
-  /** 平滑滚动到底部 */
+  // 新内容（落地消息或流式增量）到达时：跟随中→即时贴底；非跟随→重估按钮。
+  // 内容增长本身不触发 scroll 事件，所以流式第一个字到达时若用户在看历史，这里让按钮立即出现。
+  useEffect(() => {
+    const el = listRef.current;
+    if (!el) return;
+    const userCount = props.messages.reduce((n, m) => n + (m.role === "user" ? 1 : 0), 0);
+    if (userCount > prevUserCountRef.current) followRef.current = true; // 我刚发送（或历史回放整批落地）：强制跟随
+    prevUserCountRef.current = userCount;
+    if (followRef.current) el.scrollTop = el.scrollHeight; // 直接赋值贴底（smooth 动画追不上流式增量）
+    else setShowBottom(!atBottom(el));
+  }, [props.messages, props.streaming]);
+
+  /** 回到底部：平滑滚到底；落地后由 onScroll 恢复跟随，流式继续时持续贴底 */
   function scrollToBottom(): void {
+    setShowBottom(false);
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" });
   }
 
