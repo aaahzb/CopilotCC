@@ -24,6 +24,14 @@ export function saveConfig(config: BridgeConfig, dir: string = configDir()): voi
 export const DEFAULT_PORT = 19280;
 
 /**
+ * 发布版扩展的固定 Origin，首次生成 config.json 时预置进白名单。
+ * 由 extension/wxt.config.ts 的固定 manifest key 派生（算法：公钥 DER 的 SHA-256 前 16 字节，
+ * 每半字节映射 a-p，见 scripts/gen-extension-key.mjs），所有用户装出来的扩展 ID 都是它。
+ * 换 key 时必须同步改这里——bridge/tests/config.test.ts 有一致性校验把关。
+ */
+export const DEFAULT_EXTENSION_ORIGIN = "chrome-extension://cnalihjaacpahpjkpneacjcfbhboglno";
+
+/**
  * 配置目录。默认 ~/.ccc-bridge，可用 CCC_BRIDGE_HOME 环境变量覆盖（测试与 selftest 用）。
  * @returns 配置目录绝对路径
  */
@@ -33,6 +41,8 @@ export function configDir(): string {
 
 /**
  * 读取配置；不存在则生成随机 token 并落盘（0600 权限）。
+ * 首次生成的白名单预置发布版扩展 Origin（DEFAULT_EXTENSION_ORIGIN），新用户零配置；
+ * 已存在的配置原样读取，不擅自迁移（空数组是刻意的开发模式，放行并警告）。
  * @param dir 配置目录，默认 configDir()
  * @returns 完整配置对象
  * @throws 配置文件存在但 JSON 损坏或缺关键字段时抛错
@@ -54,7 +64,7 @@ export function loadOrCreateConfig(dir: string = configDir()): BridgeConfig {
   const cfg: BridgeConfig = {
     token: randomBytes(32).toString("hex"),
     port: DEFAULT_PORT,
-    allowedOrigins: [],
+    allowedOrigins: [DEFAULT_EXTENSION_ORIGIN], // 出厂预置：新用户免手抄扩展 Origin
     createdAt: new Date().toISOString(),
   };
   fs.mkdirSync(dir, { recursive: true });

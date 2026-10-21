@@ -87,6 +87,15 @@ describe("server 安全校验", () => {
     ws.close();
     await server.close();
   });
+
+  it("白名单非空时，无 Origin 头的本机进程（selftest/CLI）放行", async () => {
+    const { server, url } = await boot(makeConfig({ allowedOrigins: ["chrome-extension://abcdefgh"] }));
+    // 浏览器 WebSocket 必发 Origin 头；无头 = 非浏览器本机进程，白名单不该误杀
+    const { ws, first } = await connect(url);
+    expect(first.type).toBe("auth.ok");
+    ws.close();
+    await server.close();
+  });
 });
 
 describe("server 消息路由", () => {

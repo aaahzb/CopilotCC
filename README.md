@@ -31,17 +31,7 @@
 - **Windows**：解压 `ccc-bridge-win-x64.zip`，双击 `ccc-bridge.exe`，图标出现在系统托盘。
 - **macOS**：解压 `ccc-bridge-darwin-arm64.zip`，对 `setup.command` **右键 → 打开**（仅首次需要，自动完成赋权与签名），之后双击 `ccc-bridge` 常驻菜单栏。
 
-### 3. 配置白名单（一次性）
-
-用记事本/编辑器打开桥接配置文件（Windows：`%USERPROFILE%\.ccc-bridge\config.json`，macOS：`~/.ccc-bridge/config.json`），把扩展 Origin 加进白名单，然后从托盘菜单退出桥接并重新启动：
-
-```json
-{ "allowedOrigins": ["chrome-extension://cnalihjaacpahpjkpneacjcfbhboglno"] }
-```
-
-（扩展 ID 由固定的 manifest key 决定，每个用户装出来都是这个 ID，照抄即可。）
-
-### 4. 配对
+### 3. 配对
 
 托盘/菜单栏图标右键 →「复制配对串」→ 点 Chrome 工具栏的扩展图标打开侧栏 → 粘贴配对串 → 状态灯变绿即完成。之后在侧栏顶部输入一个本地文件夹的绝对路径完成绑定，就能开始边浏览边提问了。
 
@@ -79,7 +69,7 @@ Chrome 侧栏(React)  ⇄  ws://127.0.0.1:19280  ⇄  ccc-bridge(Node)  ⇄  Age
 
 - WS 只绑 `127.0.0.1`，并校验 Host 头防 DNS rebinding。
 - token 配对：首连常量时间比较，失败即断开。
-- Origin 白名单：配置后只接受本扩展的连接。
+- Origin 白名单：首次生成 config.json 即预置本扩展固定 Origin，只接受本扩展连接；空数组 = 开发模式放行并警告。
 - 页面读取权限：扩展声明了 http/https 全站权限，仅用于发消息时按需注入脚本读取当前页正文（无常驻 content script，不后台收集任何数据）。
 - 防 prompt injection：新会话首条消息自动注入前缀，声明网页内容是数据不是指令。
 - 配置文件在 `~/.ccc-bridge/`（token 随机生成 64 位 hex）。
@@ -88,7 +78,7 @@ Chrome 侧栏(React)  ⇄  ws://127.0.0.1:19280  ⇄  ccc-bridge(Node)  ⇄  Age
 ## FAQ
 
 - **中转 API 能用吗？** 能。桥接继承 spawn 时的环境变量，你本机 `claude` 能用，桥接就能用（`permissionMode: "auto"` 已在中转环境下实测通过）。
-- **配对失败/一直连不上？** 先确认桥接在跑（托盘图标在），再检查 `~/.ccc-bridge/config.json` 的 `allowedOrigins` 是否已加入扩展 Origin 并重启过桥接（见快速开始第 3 步）。
+- **配对失败/一直连不上？** 先确认桥接在跑（托盘图标在）。白名单出厂已预置本扩展 Origin；若手动改过 `~/.ccc-bridge/config.json` 的 `allowedOrigins`，确认包含 `chrome-extension://cnalihjaacpahpjkpneacjcfbhboglno` 并重启过桥接。
 - **auto 模式异常怎么办？** 切换为 `acceptEdits`（设计上就是 auto 的降级预案）。
 - **改端口？** 托盘右键「修改端口…」用浏览器打开本机设置页（与 WS 同一端口，不额外占端口），输入新端口保存即在线生效（写回 config.json，进行中的会话连接会断开），页面直接给出新配对串，到侧栏「⚙ 配对」粘贴一次即可。也可手改 `~/.ccc-bridge/config.json` 的 `port` 后重启桥接。端口被占用时桥接自动顺延（最多 10 个），配对串携带的总是实际端口。
 - **chrome:// 等特权页无法提取？** 属浏览器限制，会在消息列表显示失败原因，不再静默降级。

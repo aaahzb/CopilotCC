@@ -465,7 +465,8 @@ function attachHandlers(wss: WebSocketServer, deps: ServerDeps, instanceId: stri
     // 自探测连接（probe=自己的实例 ID）跳过 Origin 校验：它来自本进程，没有扩展 Origin
     const selfProbe = url.searchParams.get("probe") === instanceId;
     const origin = req.headers.origin ?? "";
-    if (!selfProbe && config.allowedOrigins.length > 0 && !config.allowedOrigins.includes(origin)) {
+    // 无 Origin 头 = 非浏览器进程（selftest/探针/CLI），放行；浏览器 WS 必发 Origin，白名单只挡浏览器侧
+    if (!selfProbe && origin && config.allowedOrigins.length > 0 && !config.allowedOrigins.includes(origin)) {
       ws.send(encode({ type: "auth.fail", reason: `origin 不允许: ${origin}` }));
       ws.close(4403);
       return;
