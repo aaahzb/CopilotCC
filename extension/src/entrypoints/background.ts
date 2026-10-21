@@ -9,7 +9,7 @@ export default defineBackground(() => {
   chrome.runtime.onInstalled.addListener(() => {
     chrome.contextMenus.create({
       id: "ccc-ask-selection",
-      title: "用 Claude Code 询问选中内容",
+      title: "用 CopilotCC 询问选中内容",
       contexts: ["selection"],
     });
   });

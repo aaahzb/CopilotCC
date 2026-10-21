@@ -165,7 +165,7 @@ function configPage(port: number): string {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Claude Code 桥接 · 修改端口</title>
+<title>CopilotCC 桥接 · 修改端口</title>
 <style>
  body{font-family:system-ui,sans-serif;max-width:460px;margin:2.5em auto;padding:0 1em;color:#222}
  h1{font-size:1.25rem}
@@ -179,7 +179,7 @@ function configPage(port: number): string {
 </style>
 </head>
 <body>
-<h1>Claude Code 桥接 · 修改端口</h1>
+<h1>CopilotCC 桥接 · 修改端口</h1>
 <p class="muted">当前端口：<b id="cur">${port}</b>。保存后桥接立即切换到新端口（当前会话连接会断开），需重新配对一次：复制新配对串 → 扩展侧栏「⚙ 配对」粘贴。</p>
 <div class="row">
   <label for="p">新端口</label>

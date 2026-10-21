@@ -113,10 +113,10 @@ async function main(): Promise<void> {
     writeRuntime(configDir(), p);
     const status = items[0];
     if (!systray || !status) return;
-    status.title = `Claude Code 桥接运行中（端口 ${p}）`;
+    status.title = `CopilotCC 桥接运行中（端口 ${p}）`;
     void systray.sendAction({
       type: "update-menu",
-      menu: { icon, title: "", tooltip: `Claude Code 桥接 · 端口 ${p}`, items, isTemplateIcon: false },
+      menu: { icon, title: "", tooltip: `CopilotCC 桥接 · 端口 ${p}`, items, isTemplateIcon: false },
     });
   };
 
@@ -129,7 +129,7 @@ async function main(): Promise<void> {
   icon = writeIcon();
   // server.port 是 getter，在线改端口后始终返回当前值：配对串与设置页 URL 无需额外跟踪端口
   items = [
-    { title: `Claude Code 桥接运行中（端口 ${server.port}）`, tooltip: "", enabled: false },
+    { title: `CopilotCC 桥接运行中（端口 ${server.port}）`, tooltip: "", enabled: false },
     {
       title: "复制配对串",
       tooltip: "地址+端口+Token 打包成一串，粘贴到扩展配对框",
@@ -160,7 +160,7 @@ async function main(): Promise<void> {
       icon,
       isTemplateIcon: false, // 彩色图标，不做 macOS 模板剪影
       title: "",
-      tooltip: `Claude Code 桥接 · 端口 ${server.port}`,
+      tooltip: `CopilotCC 桥接 · 端口 ${server.port}`,
       items,
     },
     debug: false,

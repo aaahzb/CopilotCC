@@ -180,6 +180,7 @@ function encodeIco(pngsBySize) {
 }
 
 /* ---------------- 主流程 ---------------- */
+function main() {
 
 const tests = VARIANTS[VARIANT];
 if (!tests) {
@@ -249,3 +250,10 @@ fs.writeFileSync(preview, encodePng(canvas, PW, PH));
 
 console.log(`变体 ${VARIANT} → src/icon.ts + assets/icon.ico（png64=${png64.length}B ico=${ico.length}B）`);
 console.log("预览:", preview, "（a 拱桥 / b 拱桥+桥墩 / c 悬索桥；每变体 96·32·16，上浅底下深底）");
+
+}
+
+// 直接执行（node gen-icon.mjs）时才跑主流程；被 import 时只取形状库与编码函数
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();
+
+export { render, encodePng, encodeIco, VARIANTS };

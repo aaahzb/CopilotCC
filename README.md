@@ -1,4 +1,4 @@
-# Claude Code 侧边栏助手
+# CopilotCC
 
 > 把**网页信息**和 **Claude Code 的系统操作能力**结合起来的浏览器 copilot：侧边栏里边浏览网页边向 Claude 提问（页面内容自动进入上下文，无需复制粘贴），并让 Claude 直接把笔记、代码写进你绑定的本地文件夹。
 
@@ -83,7 +83,7 @@ Chrome 侧栏(React)  ⇄  ws://127.0.0.1:19280  ⇄  ccc-bridge(Node)  ⇄  Age
 - **auto 模式异常怎么办？** 切换为 `acceptEdits`（设计上就是 auto 的降级预案）。
 - **改端口？** 托盘右键「修改端口…」用浏览器打开本机设置页（与 WS 同一端口，不额外占端口），输入新端口保存即在线生效（写回 config.json，进行中的会话连接会断开），页面直接给出新配对串，到侧栏「⚙ 配对」粘贴一次即可。也可手改 `~/.ccc-bridge/config.json` 的 `port` 后重启桥接。端口被占用时桥接自动顺延（最多 10 个），配对串携带的总是实际端口。
 - **chrome:// 等特权页无法提取？** 属浏览器限制，会在消息列表显示失败原因，不再静默降级。
-- **想换托盘/ exe 图标？** 图标由 `bridge/scripts/gen-icon.mjs` 生成（Claude 橙桥形，a 拱桥 / b 拱桥+桥墩 / c 悬索桥三变体，当前用 c），`node bridge/scripts/gen-icon.mjs a|b` 后重新 `npm run build:exe` 生效；脚本输出浅/深底预览条到 `%TEMP%/ccc-icon-preview.png` 供挑选。
+- **想换托盘/ exe 图标？** 图标由 `bridge/scripts/gen-icon.mjs` 生成（Claude 橙桥形，a 拱桥 / b 拱桥+桥墩 / c 悬索桥三变体，当前用 c），`node bridge/scripts/gen-icon.mjs a|b` 后重新 `npm run build:exe` 生效；脚本输出浅/深底预览条到 `%TEMP%/ccc-icon-preview.png` 供挑选；扩展图标由 `scripts/gen-ext-icon.mjs` 复用同一形状库生成（extension/public/icon/，改后重新 `npm run build` 生效）。
 
 ## 开发者
 
