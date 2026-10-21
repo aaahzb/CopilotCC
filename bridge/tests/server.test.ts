@@ -110,6 +110,26 @@ describe("server 消息路由", () => {
     await server.close();
   });
 
+  it("createSession 同步抛异常 → chat.error 且桥接存活（WS 不断、后续消息正常）", async () => {
+    // v2026.10.21.7 秒断事故回归：SDK 初始化同步抛错曾沿消息处理器冒泡打崩整个进程
+    const { server, url } = await boot(makeConfig(), {
+      createSession: (() => {
+        throw new Error("boom-测试异常");
+      }) as never,
+    });
+    const { ws } = await connect(url);
+    ws.send(JSON.stringify({ type: "folder.bind", path: dir }));
+    const err = await new Promise<ServerMessage>((r) => ws.on("message", (d) => r(JSON.parse(d.toString()))));
+    expect(err.type).toBe("chat.error");
+    expect(err.type === "chat.error" && err.message).toContain("boom-测试异常");
+    // 进程与连接都活着：再发一条消息仍能得到正常响应
+    ws.send(JSON.stringify({ type: "folder.bind", path: path.join(dir, "nope") }));
+    const alive = await new Promise<ServerMessage>((r) => ws.on("message", (d) => r(JSON.parse(d.toString()))));
+    expect(alive.type).toBe("folder.error");
+    ws.close();
+    await server.close();
+  });
+
   it("folder.bind 有效路径 → folder.bound（resumed=false）并创建会话；chat.send 转发到会话", async () => {
     const { server, url } = await boot(makeConfig());
     const { ws } = await connect(url);

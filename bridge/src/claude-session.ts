@@ -1,4 +1,7 @@
 import { query as sdkQuery } from "@anthropic-ai/claude-agent-sdk";
+import { spawnSync } from "node:child_process";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { isEffortLevel } from "./protocol";
 import { readTranscriptEffort } from "./transcript";
 import type { PermissionModeSetting, EffortLevelSetting } from "./protocol";
@@ -51,6 +54,32 @@ export const GUARD_PREFIX =
 
 /** 权限审批超时（毫秒）：侧栏 30 秒无响应默认拒绝 */
 const PERMISSION_TIMEOUT_MS = 30_000;
+
+/**
+ * 解析本机 claude CLI 的真实可执行路径，显式传给 SDK（结果缓存，只解析一次）。
+ * SDK 缺省沿 import.meta.url / CWD 向上找 node_modules 里的原生 CLI 包——开发态碰巧命中项目
+ * node_modules 能跑，编译分发的 exe 放在任意目录就找不到并同步抛错（v2026.10.21.7 秒断事故：
+ * 异常逃出 WS 消息处理器直接打崩进程）。显式解析绕开这条路径。
+ * @returns claude 可执行路径；找不到返回 undefined（交回 SDK 默认解析，行为与之前一致）
+ */
+let cachedCliPath: string | null | undefined;
+function resolveClaudeExecutable(): string | undefined {
+  if (cachedCliPath !== undefined) return cachedCliPath ?? undefined;
+  cachedCliPath = ((): string | null => {
+    if (process.env.CLAUDE_CODE_PATH) return process.env.CLAUDE_CODE_PATH; // 显式覆盖优先
+    const r = spawnSync(process.platform === "win32" ? "where.exe" : "which", ["claude"], { encoding: "utf-8", windowsHide: true });
+    if (r.status !== 0 || !r.stdout) return null;
+    const first = r.stdout.split(/\r?\n/)[0]?.trim() ?? "";
+    if (!first) return null;
+    if (process.platform === "win32") {
+      // npm 全局 shim（…\npm\claude.cmd 等）无法直接 spawn；优先用同目录 node_modules 里的原生二进制
+      const native = path.join(path.dirname(first), "node_modules", "@anthropic-ai", "claude-code", "bin", "claude.exe");
+      return fs.existsSync(native) ? native : first.endsWith(".exe") ? first : null;
+    }
+    return first; // unix 的 shim 是带 shebang 的可执行脚本，可直接 spawn
+  })();
+  return cachedCliPath ?? undefined;
+}
 
 interface PendingPermission {
   resolve: (allow: boolean) => void;
@@ -173,6 +202,7 @@ export function createClaudeSession(cwd: string, opts: SessionOptions): ClaudeSe
     }
   }
 
+  const cliPath = resolveClaudeExecutable(); // 编译分发形态下 SDK 默认解析必崩，显式给真值
   const stream = queryFn({
     prompt: userStream(),
     options: {
@@ -182,6 +212,7 @@ export function createClaudeSession(cwd: string, opts: SessionOptions): ClaudeSe
       includePartialMessages: true,
       stderr: (line: string) => console.error("[claude-stderr]", line),
       canUseTool,
+      ...(cliPath ? { pathToClaudeCodeExecutable: cliPath } : {}),
       ...(opts.model ? { model: opts.model } : {}),
       ...(opts.effort ? { effort: opts.effort } : {}),
     },

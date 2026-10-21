@@ -50,7 +50,7 @@ jobs:
         working-directory: bridge
         run: |
           npm ci
-          npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version
+          node -e "const fs=require('fs');const f='package.json';const j=JSON.parse(fs.readFileSync(f,'utf8'));j.version=process.argv[1];fs.writeFileSync(f,JSON.stringify(j,null,2)+'\n')" "${GITHUB_REF_NAME#v}" # npm version 会做 semver 规范化，把 2026.10.21.7 改写成 2026.10.2-1.7（.7 扩展 zip 文件名事故）；node 直写 JSON 不校验
       - name: 编译托盘 exe（内嵌桥形图标、GUI 子系统）
         working-directory: bridge
         run: node scripts/build-exe.mjs win
@@ -76,7 +76,7 @@ jobs:
         working-directory: bridge
         run: |
           npm ci
-          npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version
+          node -e "const fs=require('fs');const f='package.json';const j=JSON.parse(fs.readFileSync(f,'utf8'));j.version=process.argv[1];fs.writeFileSync(f,JSON.stringify(j,null,2)+'\n')" "${GITHUB_REF_NAME#v}" # npm version 会做 semver 规范化，把 2026.10.21.7 改写成 2026.10.2-1.7（.7 扩展 zip 文件名事故）；node 直写 JSON 不校验
       - name: 编译 darwin-arm64
         working-directory: bridge
         run: node scripts/build-exe.mjs darwin
@@ -104,7 +104,7 @@ jobs:
         working-directory: extension
         run: |
           npm ci
-          npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version
+          node -e "const fs=require('fs');const f='package.json';const j=JSON.parse(fs.readFileSync(f,'utf8'));j.version=process.argv[1];fs.writeFileSync(f,JSON.stringify(j,null,2)+'\n')" "${GITHUB_REF_NAME#v}" # npm version 会做 semver 规范化，把 2026.10.21.7 改写成 2026.10.2-1.7（.7 扩展 zip 文件名事故）；node 直写 JSON 不校验
       - name: 构建并打包扩展 zip
         working-directory: extension
         run: npx wxt zip

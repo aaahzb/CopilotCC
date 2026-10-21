@@ -604,6 +604,9 @@ function attachHandlers(wss: WebSocketServer, deps: ServerDeps, instanceId: stri
     }
 
     ws.on("message", (raw) => {
+      // 处理器内任何同步异常都不能逃出：会冒泡成 uncaughtException 打崩整个桥接进程
+      // （v2026.10.21.7 秒断事故：SDK 初始化抛错 → 进程死 → WS 1006）。switch 体保持原缩进，避免整段重排刷屏 diff。
+      try {
       const m = parseClientMessage(raw.toString());
       if (!m) return;
       switch (m.type) {
@@ -752,6 +755,11 @@ function attachHandlers(wss: WebSocketServer, deps: ServerDeps, instanceId: stri
           }
           break;
         }
+      }
+      } catch (e) {
+        // 会话创建/重建等同步异常（如 CLI 路径解析失败）：告知侧栏并保活，进程与连接都不死
+        console.error("[ccc-bridge] 消息处理异常:", e);
+        send({ type: "chat.error", message: `桥接内部错误: ${e instanceof Error ? e.message : String(e)}` });
       }
     });
 

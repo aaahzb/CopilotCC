@@ -90,3 +90,10 @@
 - 背景：用户预期 mac 是 dmg 包；win zip 里两个 exe（ccc-bridge.exe + traybin/tray_windows_release.exe）令人困惑，预期单文件。托盘组件是 systray2 的平台进程（主程序拉起的子进程，不能单独运行），它硬性要求 CWD/traybin 布局。
 - win 单文件：托盘组件（3.6 MB）base64 内嵌进 exe——build-exe.mjs 编译前把 src/traybin-win-b64.ts 临时覆盖为真实内容、编完还原占位（仓库只存占位，脚本内 TRAYBIN_B64_PLACEHOLDER 与入库占位须逐字一致）；tray.ts 首跑释放到 ~/.ccc-bridge/traybin/（大小不一致即重写=升级跟随），chdirToTraybinParent 候选顺序：内嵌释放目录 → exe 旁（mac 包/旧版 win 包）→ CWD → node_modules（开发态）。与图标内嵌（icon.ts）同一模式。
 - mac dmg：release.yml 的 ditto zip 改 hdiutil create（-volname CopilotCC -format UDZO），dmg 是真实文件系统，天然保留可执行位；README 强调 dmg 只读，须先把文件夹拷出来再跑 setup.command（codesign 要往二进制写签名）。
+
+### 2026-10-21：修复 exe 进聊天秒断（SDK 原生 CLI 解析靠 CWD 侥幸命中）
+
+- 根因：Agent SDK 未显式传 `pathToClaudeCodeExecutable` 时，沿 import.meta.url/CWD 向上找 node_modules 里的原生 CLI 包。此前 exe 的 CWD 在项目树内（dist/ 位于 bridge/ 之下），侥幸命中 bridge/node_modules 所以一直能跑；单文件改动把 CWD 挪到 ~/.ccc-bridge 后搜索落空，SDK 在 query() 初始化同步抛 "Native CLI binary for win32-x64 not found"，异常沿 bindFolder 冲出无 try/catch 的 WS 消息处理器 → 进程死亡 → WS 1006 → 侧栏"秒断"。推论：历来所有 Release zip 在没有项目树的机器上进聊天必崩，此前只跑本地构建所以从未暴露。
+- 修复：① claude-session.ts 新增 resolveClaudeExecutable()——`CLAUDE_CODE_PATH` 环境变量优先，其次 where/which claude（win 下 shim 是同目录 .cmd/.ps1 无法直接 spawn，优先取相邻 node_modules 里的原生 bin/claude.exe），结果只解析一次并缓存，显式传给 SDK；解析不到则回退 SDK 默认行为。② server.ts 消息分发整体裹 try/catch：处理器内同步异常转 chat.error 发侧栏并 console.error 留痕，进程与连接保活。③ 回归测试：createSession 同步抛异常 → chat.error 且后续消息正常（72→73 全绿）。
+- 顺带修复：release.yml 三处 `npm version` 改 node 直写 package.json——npm version 会做 semver 规范化，把 4 段版本号 2026.10.21.7 改写成 2026.10.2-1.7（.7 扩展 zip 文件名被改写事故）。
+- 教训：编译分发形态下一切"沿 CWD/相对路径找资源"的 SDK 默认行为都是定时炸弹（托盘组件、CLI 解析同型，须全部显式化）；exe 的端到端验证必须在项目树外的隔离目录做（CCC_BRIDGE_HOME 隔离配置 + stderr 重定向 + WS 探针脚本复现，本次靠它抓到确定根因）。

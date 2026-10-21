@@ -79,6 +79,7 @@ Chrome 侧栏(React)  ⇄  ws://127.0.0.1:19280  ⇄  ccc-bridge(Node)  ⇄  Age
 ## FAQ
 
 - **中转 API 能用吗？** 能。桥接继承 spawn 时的环境变量，你本机 `claude` 能用，桥接就能用（`permissionMode: "auto"` 已在中转环境下实测通过）。
+- **桥接怎么找 claude CLI？** 按 `CLAUDE_CODE_PATH` 环境变量 → PATH 查找的顺序解析（win 下自动取 npm 全局包里的原生 claude.exe，.cmd shim 无法直接拉起）。CLI 装在非标准位置时，把 `CLAUDE_CODE_PATH` 指向 claude 可执行文件即可。
 - **配对失败/一直连不上？** 先确认桥接在跑（托盘图标在）。白名单出厂已预置本扩展 Origin；若手动改过 `~/.ccc-bridge/config.json` 的 `allowedOrigins`，确认包含 `chrome-extension://cnalihjaacpahpjkpneacjcfbhboglno` 并重启过桥接。
 - **auto 模式异常怎么办？** 切换为 `acceptEdits`（设计上就是 auto 的降级预案）。
 - **改端口？** 托盘右键「修改端口…」用浏览器打开本机设置页（与 WS 同一端口，不额外占端口），输入新端口保存即在线生效（写回 config.json，进行中的会话连接会断开），页面直接给出新配对串，到侧栏「⚙ 配对」粘贴一次即可。也可手改 `~/.ccc-bridge/config.json` 的 `port` 后重启桥接。端口被占用时桥接自动顺延（最多 10 个），配对串携带的总是实际端口。
