@@ -20,6 +20,7 @@ import { startServer } from "./server";
 import { claimInstance, writeRuntime, releaseRuntimeOnExit } from "./runtime";
 import { encodePairing } from "./pairing";
 import { SessionManager } from "./session-manager";
+import { AliasManager } from "./alias-manager";
 import { ICON_ICO_B64, ICON_PNG_B64 } from "./icon";
 
 /** systray2 的 MenuItem 没有 click 字段（那是它的自定义扩展属性），本地扩一个 */
@@ -98,6 +99,8 @@ async function main(): Promise<void> {
   claimInstance(configDir()); // 单实例守卫：已有活实例直接抛错（落 tray-error.log）
   const sessions = new SessionManager(path.join(configDir(), "sessions.json"));
   sessions.load();
+  const aliases = new AliasManager(path.join(configDir(), "aliases.json"));
+  aliases.load();
 
   // 在线改端口的回调在 startServer 之前就注册，但触发一定在托盘建好之后（用户从托盘菜单进设置页）；
   // 回调里复用同一份 items 对象（systray2 按 init 时分配的 __id 映射点击，对象不换引用就不会失配）
@@ -117,7 +120,7 @@ async function main(): Promise<void> {
     });
   };
 
-  const server = await startServer({ config, sessions, configDir: configDir(), onPortChanged });
+  const server = await startServer({ config, sessions, aliases, configDir: configDir(), onPortChanged });
   writeRuntime(configDir(), server.port);
   releaseRuntimeOnExit(configDir());
   console.log(`[ccc-bridge] 已启动 ws://127.0.0.1:${server.port}/ws（托盘模式）`);
