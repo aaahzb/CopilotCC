@@ -103,12 +103,12 @@ cd extension && npm i && npm run build
 # 协议单一来源是 shared/protocol.ts，两端复制件由脚本同步（改协议只改它）
 node scripts/sync-protocol.mjs
 
-cd bridge && npm test                  # 桥接 56 个单测
+cd bridge && npm test                  # 桥接 60 个单测
 cd bridge && npm run typecheck         # 桥接严格类型检查
 cd bridge && npm run selftest          # 离线：握手 + 绑定流程，不调 API
 cd bridge && npm run selftest:live     # 端到端：向真实 claude 发一条消息（走本机中转配置）
 
-cd extension && npm test               # 扩展 19 个单测
+cd extension && npm test               # 扩展 24 个单测
 cd extension && npm run typecheck      # 严格类型检查（需先 npx wxt prepare 或构建过一次）
 ```
 
