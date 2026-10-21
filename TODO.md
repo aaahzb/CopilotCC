@@ -114,3 +114,9 @@
 - 桥接：AliasRecord 持久化 pageRichness（aliases.json；未设置不落字段 = 标准档）；create/update 透传；syncCurrentAlias 部分更新天然保留该字段。
 - 扩展：attach-policy 新增 PAGE_RICHNESS_CAPS（精简 5 千 / 标准 3 万 / 丰富 10 万字符），composeMessage 按当前别名档位截断；附带状态行显示实际注入字符数（截断时标注原文字数）；AliasBar 新建表单与详情区顶部都加丰富度下拉，详情区改动即发 alias.update 落盘。
 - 验证：桥接 86 + 扩展 30 测试全绿（协议校验/管理器持久化/路由透传/组装截断四层用例），双端 typecheck、扩展 wxt build、桥接 exe 构建通过。
+
+### 2026-10-22：修复 macOS 上传文件名清洗漏反斜杠（CI 抓到的跨平台 bug）
+
+- 根因：sanitizeUploadName 用 path.basename 去路径穿越，POSIX 实现不认反斜杠，Windows 风格穿越名（..\..\evil.txt）在 macOS 上整串漏过清洗；本地 Windows 测试一直绿所以从未暴露，CI macos-latest 矩阵抓到。
+- 修复：basename 改按正反斜杠切分（name.split(/[\\/]/).pop()），两端平台行为一致；测试夹具不动（期望本就是跨平台契约）。桥接 86 全绿。
+- 教训：凡路径/分隔符处理的代码，Windows 本地绿不代表 POSIX 绿；上传/落盘类功能的清洗逻辑一律手写分隔符处理，不依赖 path 模块的平台语义。

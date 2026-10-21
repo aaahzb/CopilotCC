@@ -21,7 +21,9 @@ const B64_RE = /^[A-Za-z0-9+/]*={0,2}$/;
  * @returns 可用文件名；非法（空/纯点）返回 null
  */
 export function sanitizeUploadName(name: string): string | null {
-  const base = path.basename(name).replace(/[\x00-\x1f]/g, "").trim();
+  // 不用 path.basename：POSIX 实现不认反斜杠，Windows 风格穿越名（..\..\evil.txt）在 macOS 上会整串漏过
+  // （CI macos-latest 抓到的真实失败）；按正反斜杠切分，两端平台行为一致
+  const base = (name.split(/[\\/]/).pop() ?? "").replace(/[\x00-\x1f]/g, "").trim();
   if (!base || base === "." || base === "..") return null;
   return base.slice(0, 100);
 }
