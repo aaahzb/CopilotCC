@@ -41,6 +41,7 @@ export function AliasBar(props: {
     setFolder(props.bound ?? "");
     setSessionId(props.sessionId ?? "");
     setManualSid(false); setSidInput(""); // 每次打开表单复位输入模式
+    setExpanded(false); // 新建与详情互斥：表单自带文件夹+会话选择，避免两套控件重叠
     setCreating(true);
   }
 
@@ -112,7 +113,7 @@ export function AliasBar(props: {
         <button
           className="mini-btn"
           title={expanded ? "收起文件夹+会话详情" : "展开文件夹+会话详情（改绑定即改当前别名）"}
-          onClick={() => setExpanded((v) => !v)}
+          onClick={() => { setExpanded((v) => !v); setCreating(false); }} // 详情与新建互斥
         >
           {expanded ? "▾ 收起" : "▸ 详情"}
         </button>
