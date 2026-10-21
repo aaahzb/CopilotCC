@@ -83,6 +83,7 @@ Chrome 侧栏(React)  ⇄  ws://127.0.0.1:19280  ⇄  ccc-bridge(Node)  ⇄  Age
 - 页面读取权限：扩展声明了 http/https 全站权限，仅用于发消息时按需注入脚本读取当前页正文（无常驻 content script，不后台收集任何数据）。
 - 防 prompt injection：新会话首条消息自动注入前缀，声明网页内容是数据不是指令。
 - 配置文件在 `~/.ccc-bridge/`（token 随机生成 64 位 hex）。
+- 页面 HTML 解析前先剥离 on* 内联事件处理器：DOMParser 文档会继承扩展页 CSP，否则真实页面 HTML 里的内联事件属性会让 chrome://extensions 挂满 CSP 误报（解析所得文档 scripting 禁用，本就无执行风险）。
 
 ## FAQ
 
