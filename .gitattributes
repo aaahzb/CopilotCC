@@ -1,0 +1,12 @@
+# 脚本与 CI 配置强制 LF 行尾（macOS 上 CRLF 会导致 .command/.sh 无法执行）
+*.command text eol=lf
+*.sh text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# 二进制资源禁止文本转换，防止提交时损坏
+*.ico binary
+*.png binary
+*.jpg binary
+*.JPG binary
+*.zip binary

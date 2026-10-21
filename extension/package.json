@@ -7,7 +7,9 @@
     "sync:protocol": "node ../scripts/sync-protocol.mjs",
     "dev": "npm run sync:protocol && wxt",
     "build": "npm run sync:protocol && wxt build",
-    "test": "npm run sync:protocol && vitest run"
+    "test": "npm run sync:protocol && vitest run",
+    "typecheck": "tsc --noEmit",
+    "zip": "wxt zip"
   },
   "dependencies": {
     "defuddle": "0.19.5",

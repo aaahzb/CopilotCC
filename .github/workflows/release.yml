@@ -1,0 +1,127 @@
+# 发布：打 v* 标签触发。先跑测试门禁，再分平台构建（win 在 Windows runner、mac 在 macOS runner
+# 保证 zip 保留可执行位、扩展 zip 在 Linux runner），最后汇总创建 GitHub Release。
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  test:
+    name: 发布前测试门禁
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: 桥接：类型检查 + 单测
+        working-directory: bridge
+        run: |
+          npm ci
+          npm run typecheck
+          npm test
+      - name: 扩展：类型检查 + 单测
+        working-directory: extension
+        run: |
+          npm ci
+          npx wxt prepare
+          npm run typecheck
+          npm test
+
+  build-win:
+    name: 构建 Windows x64 桥接
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - name: 安装依赖并按 tag 写入版本号
+        working-directory: bridge
+        run: |
+          npm ci
+          npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version
+      - name: 编译托盘 exe（内嵌桥形图标、GUI 子系统）
+        working-directory: bridge
+        run: node scripts/build-exe.mjs win
+      - name: 打包 zip（含顶层文件夹，用户解压即用）
+        run: 7z a -tzip ccc-bridge-win-x64.zip ./bridge/dist/ccc-bridge-win-x64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bridge-win
+          path: ccc-bridge-win-x64.zip
+
+  build-mac:
+    name: 构建 macOS arm64 桥接
+    needs: test
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - name: 安装依赖并按 tag 写入版本号
+        working-directory: bridge
+        run: |
+          npm ci
+          npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version
+      - name: 编译 darwin-arm64
+        working-directory: bridge
+        run: node scripts/build-exe.mjs darwin
+      - name: 附带一键初始化脚本并打包（ditto 保留可执行位）
+        run: |
+          cp bridge/scripts/mac-setup.command bridge/dist/ccc-bridge-darwin-arm64/setup.command
+          chmod +x bridge/dist/ccc-bridge-darwin-arm64/setup.command
+          cd bridge/dist && ditto -c -k --keepParent ccc-bridge-darwin-arm64 "$OLDPWD/ccc-bridge-darwin-arm64.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bridge-mac
+          path: ccc-bridge-darwin-arm64.zip
+
+  build-ext:
+    name: 构建 Chrome 扩展
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: 安装依赖并按 tag 写入版本号（manifest version 继承 package.json）
+        working-directory: extension
+        run: |
+          npm ci
+          npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version
+      - name: 构建并打包扩展 zip
+        working-directory: extension
+        run: npx wxt zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: extension
+          path: extension/.output/*-chrome.zip
+
+  publish:
+    name: 创建 GitHub Release
+    needs: [build-win, build-mac, build-ext]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: "*"
+          path: assets
+          merge-multiple: true
+      - name: 上传资产并生成更新说明
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create "${GITHUB_REF_NAME}" --title "${GITHUB_REF_NAME}" --generate-notes assets/*

@@ -11,7 +11,8 @@
     "selftest:live": "npm run sync:protocol && tsx src/index.ts selftest --live",
     "tray": "npm run sync:protocol && tsx src/tray.ts",
     "build:exe": "node scripts/build-exe.mjs",
-    "test": "npm run sync:protocol && vitest run"
+    "test": "npm run sync:protocol && vitest run",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.304",

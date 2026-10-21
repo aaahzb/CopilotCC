@@ -1,0 +1,42 @@
+# 持续集成：三平台跑两端类型检查 + 单测 + 扩展构建
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: 测试 (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            bridge/package-lock.json
+            extension/package-lock.json
+
+      - name: 桥接：依赖 / 类型检查 / 单测
+        working-directory: bridge
+        run: |
+          npm ci
+          npm run typecheck
+          npm test
+
+      - name: 扩展：依赖 / 类型检查 / 单测 / 构建
+        working-directory: extension
+        run: |
+          npm ci
+          npx wxt prepare
+          npm run typecheck
+          npm test
+          npm run build
