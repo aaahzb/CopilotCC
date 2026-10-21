@@ -60,6 +60,7 @@ jobs:
         with:
           name: bridge-win
           path: ccc-bridge-win-x64.zip
+          if-no-files-found: error
 
   build-mac:
     name: 构建 macOS arm64 桥接
@@ -88,6 +89,7 @@ jobs:
         with:
           name: bridge-mac
           path: ccc-bridge-darwin-arm64.zip
+          if-no-files-found: error
 
   build-ext:
     name: 构建 Chrome 扩展
@@ -106,10 +108,16 @@ jobs:
       - name: 构建并打包扩展 zip
         working-directory: extension
         run: npx wxt zip
+      # upload-artifact v4.4+ 默认排除隐藏目录下的文件：.output 以点开头，zip 会被静默丢光
+      # （无文件只 warn 不报错，步骤仍绿），v2026.10.21.5 的 Release 就因此缺扩展包。
+      # 先拷到仓库根（非隐藏路径）再上传，与 win/mac 两路一致。
+      - name: 拷出 zip 到非隐藏路径
+        run: cp extension/.output/*-chrome.zip .
       - uses: actions/upload-artifact@v4
         with:
           name: extension
-          path: extension/.output/*-chrome.zip
+          path: ccc-extension-*-chrome.zip
+          if-no-files-found: error
 
   publish:
     name: 创建 GitHub Release
@@ -123,6 +131,8 @@ jobs:
           pattern: "*"
           path: assets
           merge-multiple: true
+      - name: 列出待发布资产（日志可见，防止再出现静默缺包）
+        run: ls -la assets/
       - name: 上传资产并生成更新说明
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -77,3 +77,10 @@
 - 新功能（2026-10-21）：别名创建表单支持手动输入会话 ID——下拉加「手动输入 ID…」项，选中后出现 ID 文本框（任意文件夹路径均可搭配手输 ID，不再强制新会话），可直接粘贴整行 claude --resume 命令（前端剥离命令前缀）；桥接鬼会话退回新会话时补发 folder.error 警告（必须在 folder.bound 之后发：客户端收 bound 清屏会抹掉先发的警告），alias.select 鬼会话用例补警告断言。桥接 72 + 扩展 24 测试全绿。
 - 修复（2026-10-21）：新建别名表单与详情区互斥——原先两者可同时展开，文件夹+会话控件叠两套（用户截图指出红蓝框功能重叠）；＋新建时自动收起详情，点详情自动放弃创建表单。纯扩展侧改动。
 - 更名与图标（2026-10-21）：产品定名 CopilotCC——扩展 manifest name/action、侧栏 title、右键菜单、托盘状态行与 tooltip、/config 设置页、README 标题全部换新；技术标识不动（npm 包名 ccc-* / 配置目录 ~/.ccc-bridge / zip 资产名 / 扩展固定 key 与 ID / 仓库名）。扩展补图标：gen-icon.mjs 重构为可 import（主流程加执行守卫，导出 render/encodePng/encodeIco/VARIANTS），scripts/gen-ext-icon.mjs 复用悬索桥变体 c 生成 16/32/48/128 PNG 到 extension/public/icon/，wxt.config.ts 注册 manifest.icons 与 action.default_icon，与托盘/exe 同一视觉身份；PNG 全平台 Chrome 通用。桥接 72 + 扩展 24 测试全绿，双端 typecheck 与构建通过。
+
+### 2026-10-21：修复 Release 缺扩展 zip（upload-artifact 隐藏目录排除）
+
+- 根因：actions/upload-artifact v4.4+ 默认排除隐藏目录下的文件。wxt zip 产物在 `extension/.output/`（点开头即隐藏目录），glob 匹配到的唯一文件被过滤，无文件时只 warn 不报错，build-ext 绿色但 artifact 为空，publish 汇总后 Release 只有 win/mac 两包（v2026.10.21.5 实际症状）。
+- 修复（release.yml）：扩展 zip 先 `cp extension/.output/*-chrome.zip .` 拷到仓库根（非隐藏路径）再上传，path 改为 `ccc-extension-*-chrome.zip`；三个 upload-artifact 全部加 `if-no-files-found: error`（今后静默缺包直接变红）；publish 创建 Release 前加 `ls -la assets/` 让收集结果日志可见。
+- 教训：CI 步骤绿色不等于产物真的上传了，artifact 上传必须配 `if-no-files-found: error` 兜底；点开头目录（.output/.next/.wxt 等）下的文件 upload-artifact 默认不收，要么拷出来要么 `include-hidden-files: true`。
+- 验证：本地 `npx wxt zip` 产物为 `extension/.output/ccc-extension-<version>-chrome.zip`（1.35 MB），路径文件名与预期一致；v2026.10.21.6 流水线需确认 build-ext 上传步骤不再 warn、Release 资产含扩展 zip。
