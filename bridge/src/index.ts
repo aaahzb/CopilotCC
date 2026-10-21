@@ -5,6 +5,7 @@ import * as path from "node:path";
 import WebSocket from "ws";
 import { loadOrCreateConfig, configDir } from "./config";
 import { SessionManager } from "./session-manager";
+import { AliasManager } from "./alias-manager";
 import { startServer } from "./server";
 import { claimInstance, writeRuntime, releaseRuntimeOnExit } from "./runtime";
 import { encodePairing } from "./pairing";
@@ -18,9 +19,12 @@ async function cmdStart(): Promise<void> {
   claimInstance(configDir()); // 单实例守卫：已有活实例直接抛错退出，避免双桥抢端口
   const sessions = new SessionManager(path.join(configDir(), "sessions.json"));
   sessions.load();
+  const aliases = new AliasManager(path.join(configDir(), "aliases.json"));
+  aliases.load();
   const server = await startServer({
     config,
     sessions,
+    aliases,
     configDir: configDir(), // 在线改端口后写回 config.json
     onPortChanged: (p) => writeRuntime(configDir(), p),
   });

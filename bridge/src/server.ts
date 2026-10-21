@@ -4,11 +4,13 @@ import { WebSocketServer, WebSocket } from "ws";
 import type { AddressInfo } from "node:net";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { encode, parseClientMessage, type PermissionModeSetting, type EffortLevelSetting, type ServerMessage } from "./protocol";
-import { isValidFolder, SessionManager } from "./session-manager";
+import { isValidFolder, normalizeFolder, SessionManager } from "./session-manager";
 import { createClaudeSession, type ClaudeSessionLike } from "./claude-session";
 import { readTranscript, listSessions, deleteTranscript } from "./transcript";
 import { saveConfig, type BridgeConfig } from "./config";
 import { encodePairing } from "./pairing";
+import { AliasManager } from "./alias-manager";
+import { pickFolder as defaultPickFolder } from "./folder-picker";
 
 /** 服务依赖。createSession 仅供测试注入假会话工厂。 */
 export interface ServerDeps {
@@ -19,6 +21,10 @@ export interface ServerDeps {
   configDir?: string;
   /** 在线改端口成功后回调（托盘更新菜单文案、写 runtime.json） */
   onPortChanged?: (port: number) => void;
+  /** 别名存储；缺省时 alias.* 回空列表（测试不注入即关闭该功能） */
+  aliases?: AliasManager;
+  /** 系统文件夹选择框实现；测试注入假实现，缺省用平台原生对话框 */
+  pickFolder?: () => Promise<string | null>;
 }
 
 /** 启动结果：wss/port 始终指向当前实例（在线改端口后跟随），close 关闭当前实例，setPort 在线改端口 */
@@ -441,9 +447,16 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
  * @param deps 服务依赖
  * @param instanceId 本进程实例 ID（auth.ok 携带，供自探测认亲）
  */
+/**
+ * 在已监听的 wss 上注册连接处理（握手鉴权 + 消息分发 + 会话管理）。
+ * @param wss 已监听的 WebSocketServer
+ * @param deps 服务依赖
+ * @param instanceId 本进程实例 ID（auth.ok 携带，供自探测认亲）
+ */
 function attachHandlers(wss: WebSocketServer, deps: ServerDeps, instanceId: string): void {
-  const { config, sessions } = deps;
+  const { config, sessions, aliases } = deps;
   const newSession = deps.createSession ?? createClaudeSession;
+  const pickFolderImpl = deps.pickFolder ?? defaultPickFolder;
 
   wss.on("connection", (ws: WebSocket, req: http.IncomingMessage) => {
     // Host 校验防 DNS rebinding
@@ -482,6 +495,8 @@ function attachHandlers(wss: WebSocketServer, deps: ServerDeps, instanceId: stri
     let mode: PermissionModeSetting = "auto";
     let model: string | undefined;
     let effort: EffortLevelSetting | undefined;
+    let currentAliasId: string | null = null; // 当前进行中的别名（alias.select/create 设置，粘性跟随文件夹/会话变化）
+    let pickSeq = 0; // folder.pick 代际号：新请求使旧请求的迟到结果作废
 
     const send = (m: ServerMessage): void => {
       if (ws.readyState === WebSocket.OPEN) ws.send(encode(m));
@@ -495,6 +510,31 @@ function attachHandlers(wss: WebSocketServer, deps: ServerDeps, instanceId: stri
         sessions: listSessions(folder),
         currentId: sessions.get(folder)?.sessionId ?? null,
       });
+    }
+
+    /** 推送别名列表与当前别名 ID（未注入别名存储时不推——功能关闭） */
+    function sendAliasList(): void {
+      if (!aliases) return;
+      const currentId = currentAliasId && aliases.get(currentAliasId) ? currentAliasId : null;
+      send({ type: "alias.list.data", aliases: aliases.all(), currentId });
+    }
+
+    /**
+     * 当前别名粘性同步：文件夹/会话变化后把别名数据写回现状（别名跟着工作区走，永不脱钩）。
+     * 仅在显式选中/创建过别名后生效；未选中时不做反向匹配，避免手动绑定意外吸附到同状态的旧别名。
+     */
+    function syncCurrentAlias(): void {
+      if (!aliases || !currentAliasId) return;
+      const rec = aliases.get(currentAliasId);
+      if (!rec) {
+        currentAliasId = null;
+        return;
+      }
+      if (!folder) return;
+      const sid = sessions.get(folder)?.sessionId ?? null;
+      if (normalizeFolder(rec.folder) !== normalizeFolder(folder) || rec.sessionId !== sid) {
+        aliases.update(rec.id, { folder, sessionId: sid });
+      }
     }
 
     /** 为当前文件夹创建（或重建）Claude 会话 */
@@ -528,6 +568,40 @@ function attachHandlers(wss: WebSocketServer, deps: ServerDeps, instanceId: stri
       });
     }
 
+    /**
+     * 绑定文件夹并重建会话（folder.bind 与 alias.select/create 共用）；p 需已通过 isValidFolder 校验。
+     * @param p 目标文件夹
+     * @param forceSessionId 别名指定的会话：string=续聊该会话（已删则退回新会话），null=强制新会话；缺省=按 sessions.json 映射走
+     */
+    function bindFolder(p: string, forceSessionId?: string | null): void {
+      void claude?.close();
+      folder = p;
+      if (forceSessionId === undefined) {
+        const rec = sessions.get(folder);
+        openSession(rec?.sessionId);
+        send({ type: "folder.bound", path: folder, resumed: Boolean(rec), title: rec?.title ?? "", sessionId: rec?.sessionId ?? null });
+      } else if (forceSessionId === null) {
+        sessions.delete(folder); // 别名指向"新会话"：清掉映射，下一条消息开全新会话
+        openSession(undefined);
+        send({ type: "folder.bound", path: folder, resumed: false, title: "", sessionId: null });
+      } else {
+        const target = listSessions(folder).find((s) => s.sessionId === forceSessionId);
+        if (target) {
+          sessions.set(folder, { sessionId: target.sessionId, title: target.title, updatedAt: new Date(target.updatedAt).toISOString() });
+          openSession(target.sessionId);
+          send({ type: "folder.bound", path: folder, resumed: true, title: target.title, sessionId: target.sessionId });
+        } else {
+          // 别名指向的会话已被删除：退回新会话，别名的 sessionId 由 syncCurrentAlias 顺带修正
+          sessions.delete(folder);
+          openSession(undefined);
+          send({ type: "folder.bound", path: folder, resumed: false, title: "", sessionId: null });
+        }
+      }
+      sendSessionList();
+      syncCurrentAlias();
+      sendAliasList();
+    }
+
     ws.on("message", (raw) => {
       const m = parseClientMessage(raw.toString());
       if (!m) return;
@@ -540,12 +614,14 @@ function attachHandlers(wss: WebSocketServer, deps: ServerDeps, instanceId: stri
             send({ type: "folder.error", message: `路径不存在或不是文件夹: ${m.path}` });
             break;
           }
-          void claude?.close();
-          folder = m.path;
-          const rec = sessions.get(folder);
-          openSession(rec?.sessionId);
-          send({ type: "folder.bound", path: folder, resumed: Boolean(rec), title: rec?.title ?? "", sessionId: rec?.sessionId ?? null });
-          sendSessionList();
+          bindFolder(m.path);
+          break;
+        }
+        case "folder.pick": {
+          const seq = ++pickSeq;
+          void pickFolderImpl().then((p) => {
+            if (seq === pickSeq) send({ type: "folder.picked", path: p }); // 只认最新一次请求的结果
+          });
           break;
         }
         case "chat.send": {
@@ -583,6 +659,8 @@ function attachHandlers(wss: WebSocketServer, deps: ServerDeps, instanceId: stri
           openSession(undefined);
           send({ type: "folder.bound", path: folder, resumed: false, title: "", sessionId: null });
           sendSessionList();
+          syncCurrentAlias();
+          sendAliasList();
           break;
         }
         case "session.switch": {
@@ -597,6 +675,8 @@ function attachHandlers(wss: WebSocketServer, deps: ServerDeps, instanceId: stri
           openSession(target.sessionId);
           send({ type: "folder.bound", path: folder, resumed: true, title: target.title, sessionId: target.sessionId });
           sendSessionList();
+          syncCurrentAlias();
+          sendAliasList();
           break;
         }
         case "session.delete": {
@@ -611,6 +691,51 @@ function attachHandlers(wss: WebSocketServer, deps: ServerDeps, instanceId: stri
             send({ type: "folder.bound", path: folder, resumed: false, title: "", sessionId: null });
           }
           sendSessionList();
+          syncCurrentAlias();
+          sendAliasList();
+          break;
+        }
+        case "alias.list":
+          sendAliasList();
+          break;
+        case "alias.create": {
+          if (!aliases) break;
+          if (!isValidFolder(m.folder)) {
+            send({ type: "folder.error", message: `路径不存在或不是文件夹: ${m.folder}` });
+            break;
+          }
+          const rec = aliases.create(m.name, m.folder, m.sessionId);
+          currentAliasId = rec.id; // 新别名立即成为当前：创建即绑定
+          bindFolder(rec.folder, rec.sessionId);
+          break;
+        }
+        case "alias.select": {
+          if (!aliases) break;
+          const a = aliases.get(m.id);
+          if (!a) {
+            send({ type: "folder.error", message: `别名不存在: ${m.id}` });
+            break;
+          }
+          if (!isValidFolder(a.folder)) {
+            send({ type: "folder.error", message: `别名「${a.name}」的文件夹已不存在: ${a.folder}` });
+            break;
+          }
+          currentAliasId = a.id;
+          bindFolder(a.folder, a.sessionId);
+          break;
+        }
+        case "alias.update": {
+          if (!aliases) break;
+          aliases.update(m.id, { name: m.name, folder: m.folder, sessionId: m.sessionId });
+          // 只改数据不重绑：换文件夹/会话的实际行为走 folder.bind/session.switch，粘性同步会写回别名
+          sendAliasList();
+          break;
+        }
+        case "alias.delete": {
+          if (!aliases) break;
+          aliases.delete(m.id);
+          if (currentAliasId === m.id) currentAliasId = null; // 只删别名：会话、转录、当前绑定全部不动
+          sendAliasList();
           break;
         }
         case "settings.set": {

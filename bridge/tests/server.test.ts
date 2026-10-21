@@ -8,6 +8,7 @@ import { startServer, type ServerDeps } from "../src/server";
 import { decodePairing } from "../src/pairing";
 import { slugifyPath } from "../src/transcript";
 import { SessionManager } from "../src/session-manager";
+import { AliasManager } from "../src/alias-manager";
 import type { BridgeConfig } from "../src/config";
 import type { ServerMessage } from "../src/protocol";
 
@@ -366,6 +367,142 @@ describe("在线改端口（/config 设置页）", () => {
     expect(saved.port).toBe(target); // 已持久化
     const { ws, first } = await connect(`ws://127.0.0.1:${target}/ws`);
     expect(first.type).toBe("auth.ok");
+    ws.close();
+    await server.close();
+  });
+});
+
+// ---- 别名：文件夹+会话的命名组合（alias.* + folder.pick） ----
+
+describe("别名（alias.* + folder.pick）", () => {
+  let fakeHome: string;
+  let aliases: AliasManager;
+
+  beforeEach(() => {
+    fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ccc-home-"));
+    process.env.CCC_FAKE_HOME = fakeHome;
+    aliases = new AliasManager(path.join(dir, "aliases.json"));
+    // 造一个历史会话转录（sid-1），供续聊路径匹配
+    const projDir = path.join(fakeHome, ".claude", "projects", slugifyPath(path.resolve(dir)));
+    fs.mkdirSync(projDir, { recursive: true });
+    fs.writeFileSync(path.join(projDir, "sid-1.jsonl"), JSON.stringify({ type: "user", message: { content: "旧会话一" } }), "utf-8");
+  });
+
+  afterEach(() => {
+    delete process.env.CCC_FAKE_HOME;
+  });
+
+  it("alias.create（新会话）：立即绑定、列表推送、成为当前别名", async () => {
+    const { server, url } = await boot(makeConfig(), { aliases });
+    const { ws } = await connect(url);
+    const { waitFor } = collect(ws);
+    ws.send(JSON.stringify({ type: "alias.create", name: "笔记", folder: dir, sessionId: null }));
+    const bound = (await waitFor("folder.bound")) as Extract<ServerMessage, { type: "folder.bound" }>;
+    expect(bound).toMatchObject({ path: dir, resumed: false, sessionId: null });
+    const list = (await waitFor("alias.list.data")) as Extract<ServerMessage, { type: "alias.list.data" }>;
+    expect(list.aliases).toHaveLength(1);
+    expect(list.aliases[0]).toMatchObject({ name: "笔记", folder: dir, sessionId: null });
+    expect(list.currentId).toBe(list.aliases[0].id);
+    ws.close();
+    await server.close();
+  });
+
+  it("alias.select：指向已存在会话 → resumed=true；指向已删会话 → 退回新会话并修正别名", async () => {
+    aliases.create("旧", dir, "sid-1");
+    aliases.create("鬼", dir, "ghost-sid"); // 转录里不存在
+    const { server, url } = await boot(makeConfig(), { aliases });
+    const { ws } = await connect(url);
+    const { inbox, waitFor } = collect(ws);
+    ws.send(JSON.stringify({ type: "alias.list" }));
+    const l0 = (await waitFor("alias.list.data")) as Extract<ServerMessage, { type: "alias.list.data" }>;
+    const ghostId = l0.aliases.find((a) => a.name === "鬼")!.id;
+    let n = inbox.length;
+    ws.send(JSON.stringify({ type: "alias.select", id: l0.aliases[0].id }));
+    const bound = (await waitFor("folder.bound", n)) as Extract<ServerMessage, { type: "folder.bound" }>;
+    expect(bound).toMatchObject({ resumed: true, sessionId: "sid-1", title: "旧会话一" });
+    expect(sentClientMessages.at(-1)?.opts.resumeId).toBe("sid-1");
+    n = inbox.length;
+    ws.send(JSON.stringify({ type: "alias.select", id: ghostId }));
+    const bound2 = (await waitFor("folder.bound", n)) as Extract<ServerMessage, { type: "folder.bound" }>;
+    expect(bound2).toMatchObject({ resumed: false, sessionId: null });
+    // 退回新会话后粘性同步把别名的 sessionId 修成 null
+    const l2 = (await waitFor("alias.list.data", n)) as Extract<ServerMessage, { type: "alias.list.data" }>;
+    expect(l2.aliases.find((a) => a.id === ghostId)?.sessionId).toBeNull();
+    ws.close();
+    await server.close();
+  });
+
+  it("粘性同步：当前别名下换文件夹，别名数据自动写回、不脱钩", async () => {
+    aliases.create("工作", dir, "sid-1");
+    const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), "ccc-test-b-"));
+    const { server, url } = await boot(makeConfig(), { aliases });
+    const { ws } = await connect(url);
+    const { inbox, waitFor } = collect(ws);
+    ws.send(JSON.stringify({ type: "alias.select", id: aliases.all()[0].id }));
+    await waitFor("folder.bound");
+    const n = inbox.length;
+    ws.send(JSON.stringify({ type: "folder.bind", path: dir2 }));
+    const bound = (await waitFor("folder.bound", n)) as Extract<ServerMessage, { type: "folder.bound" }>;
+    expect(bound).toMatchObject({ path: dir2, resumed: false });
+    const l = (await waitFor("alias.list.data", n)) as Extract<ServerMessage, { type: "alias.list.data" }>;
+    expect(l.currentId).toBe(aliases.all()[0].id); // 不脱钩
+    expect(l.aliases[0].folder).toBe(dir2); // 文件夹已写回别名
+    expect(l.aliases[0].sessionId).toBeNull();
+    ws.close();
+    await server.close();
+  });
+
+  it("alias.delete：只删别名，会话映射与当前绑定不动", async () => {
+    aliases.create("唯一", dir, null);
+    const { server, url } = await boot(makeConfig(), { aliases });
+    const { ws } = await connect(url);
+    const { inbox, waitFor } = collect(ws);
+    ws.send(JSON.stringify({ type: "alias.select", id: aliases.all()[0].id }));
+    await waitFor("folder.bound");
+    const n = inbox.length; // 跳过 select 推送的旧列表
+    ws.send(JSON.stringify({ type: "alias.delete", id: aliases.all()[0].id }));
+    const l = (await waitFor("alias.list.data", n)) as Extract<ServerMessage, { type: "alias.list.data" }>;
+    expect(l.aliases).toHaveLength(0);
+    expect(l.currentId).toBeNull();
+    // 会话没被杀：再发消息仍走原文件夹的会话（fakeHandle 继续收到 SEND）
+    ws.send(JSON.stringify({ type: "chat.send", text: "还在吗" }));
+    await new Promise((r) => setTimeout(r, 30));
+    expect(sentClientMessages.some((m) => m.cwd === "SEND" && (m.opts as { text: string }).text === "还在吗")).toBe(true);
+    ws.close();
+    await server.close();
+  });
+
+  it("alias.update：改名后列表更新，其他字段不动", async () => {
+    aliases.create("旧名", dir, null);
+    const { server, url } = await boot(makeConfig(), { aliases });
+    const { ws } = await connect(url);
+    const { waitFor } = collect(ws);
+    ws.send(JSON.stringify({ type: "alias.update", id: aliases.all()[0].id, name: "新名" }));
+    const l = (await waitFor("alias.list.data")) as Extract<ServerMessage, { type: "alias.list.data" }>;
+    expect(l.aliases[0].name).toBe("新名");
+    expect(l.aliases[0].folder).toBe(dir);
+    ws.close();
+    await server.close();
+  });
+
+  it("folder.pick：返回注入实现给的路径", async () => {
+    const { server, url } = await boot(makeConfig(), { aliases, pickFolder: () => Promise.resolve(dir) });
+    const { ws } = await connect(url);
+    const { waitFor } = collect(ws);
+    ws.send(JSON.stringify({ type: "folder.pick" }));
+    const picked = (await waitFor("folder.picked")) as Extract<ServerMessage, { type: "folder.picked" }>;
+    expect(picked.path).toBe(dir);
+    ws.close();
+    await server.close();
+  });
+
+  it("未注入别名存储时 alias.list 不回包（功能关闭）", async () => {
+    const { server, url } = await boot(makeConfig());
+    const { ws } = await connect(url);
+    const { inbox } = collect(ws);
+    ws.send(JSON.stringify({ type: "alias.list" }));
+    await new Promise((r) => setTimeout(r, 100));
+    expect(inbox.some((m) => m.type === "alias.list.data")).toBe(false);
     ws.close();
     await server.close();
   });

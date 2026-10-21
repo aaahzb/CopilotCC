@@ -28,10 +28,20 @@ export interface SessionInfo {
   updatedAt: number;
 }
 
+/** 别名：文件夹+会话组合的命名快捷方式（桥接 aliases.json 持久化，扩展平时只显别名标签） */
+export interface AliasInfo {
+  id: string;
+  name: string;
+  folder: string;
+  /** 绑定的会话 ID；null = 选中别名时在该文件夹开新会话 */
+  sessionId: string | null;
+}
+
 export type ClientMessage =
   | { type: "auth"; token: string }
   | { type: "client.ready" }
   | { type: "folder.bind"; path: string }
+  | { type: "folder.pick" }
   | { type: "chat.send"; text: string }
   | { type: "chat.abort" }
   | { type: "permission.response"; requestId: string; allow: boolean }
@@ -40,6 +50,11 @@ export type ClientMessage =
   | { type: "session.new" }
   | { type: "session.switch"; sessionId: string }
   | { type: "session.delete"; sessionId: string }
+  | { type: "alias.list" }
+  | { type: "alias.create"; name: string; folder: string; sessionId: string | null }
+  | { type: "alias.update"; id: string; name?: string; folder?: string; sessionId?: string | null }
+  | { type: "alias.delete"; id: string }
+  | { type: "alias.select"; id: string }
   | { type: "settings.set"; permissionMode: PermissionModeSetting; model?: string; effort?: EffortLevelSetting };
 
 export type ServerMessage =
@@ -47,6 +62,8 @@ export type ServerMessage =
   | { type: "auth.fail"; reason: string }
   | { type: "folder.bound"; path: string; resumed: boolean; title: string; sessionId: string | null }
   | { type: "folder.error"; message: string }
+  // folder.picked：系统文件夹选择框结果；path 为 null = 用户取消或平台不支持
+  | { type: "folder.picked"; path: string | null }
   | { type: "chat.delta"; text: string }
   | { type: "chat.tool"; name: string; summary: string }
   // chat.done 可选字段：model/effort = SDK init 上报的实际生效值；compacted = 本轮发生过 compact（扩展据此下一轮强制附带页面）
@@ -54,7 +71,8 @@ export type ServerMessage =
   | { type: "chat.error"; message: string }
   | { type: "permission.request"; requestId: string; tool: string; detail: string }
   | { type: "session.history.data"; messages: HistoryMessage[] }
-  | { type: "session.list.data"; sessions: SessionInfo[]; currentId: string | null };
+  | { type: "session.list.data"; sessions: SessionInfo[]; currentId: string | null }
+  | { type: "alias.list.data"; aliases: AliasInfo[]; currentId: string | null };
 
 /**
  * 校验权限模式字符串。
@@ -91,6 +109,8 @@ export function parseClientMessage(raw: string): ClientMessage | null {
       case "session.history":
       case "session.list":
       case "session.new":
+      case "alias.list":
+      case "folder.pick":
         return m;
       case "folder.bind":
         return typeof m.path === "string" && m.path.length > 0 ? m : null;
@@ -101,6 +121,25 @@ export function parseClientMessage(raw: string): ClientMessage | null {
       case "session.switch":
       case "session.delete":
         return typeof m.sessionId === "string" && m.sessionId.length > 0 ? m : null;
+      case "alias.create":
+        return typeof m.name === "string" && m.name.trim().length > 0
+          && typeof m.folder === "string" && m.folder.length > 0
+          && (typeof m.sessionId === "string" || m.sessionId === null) ? m : null;
+      case "alias.update": {
+        if (typeof m.id !== "string" || m.id.length === 0) return null;
+        // 逐字段校验组装：可选字段只带合法值；sessionId 出现时必须显式是 string 或 null（允许改成"新会话"）
+        const out: Extract<ClientMessage, { type: "alias.update" }> = { type: "alias.update", id: m.id };
+        if (typeof m.name === "string" && m.name.trim().length > 0) out.name = m.name;
+        if (typeof m.folder === "string" && m.folder.length > 0) out.folder = m.folder;
+        if ("sessionId" in m) {
+          if (typeof m.sessionId !== "string" && m.sessionId !== null) return null;
+          out.sessionId = m.sessionId;
+        }
+        return out;
+      }
+      case "alias.delete":
+      case "alias.select":
+        return typeof m.id === "string" && m.id.length > 0 ? m : null;
       case "settings.set": {
         if (!isPermissionMode(m.permissionMode)) return null;
         // model/effort 为可选字段：只接受合法值，空串视为"跟随默认"（不下发）

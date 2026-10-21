@@ -3,10 +3,10 @@ import { BridgeClient, type ConnState } from "../../lib/ws-client";
 import { loadSettings, saveSettings, pushFolderHistory, takePendingQuote, loadRuntimeCache, saveRuntimeCache, clearRuntimeCache, type ExtSettings, type RuntimeCache } from "../../lib/storage";
 import { decideAttach, composeMessage, type PageSnapshot } from "../../lib/attach-policy";
 import { snapshotActiveTab } from "../../lib/page-extract";
-import type { ServerMessage, PermissionModeSetting, SessionInfo } from "../../lib/protocol";
+import type { ServerMessage, PermissionModeSetting, SessionInfo, AliasInfo } from "../../lib/protocol";
 import type { PairingInfo } from "../../lib/pairing";
 import { TokenGate } from "../../components/TokenGate";
-import { FolderBar } from "../../components/FolderBar";
+import { AliasBar } from "../../components/AliasBar";
 import { MessageList, type UiMsg } from "../../components/MessageList";
 import { InputBox } from "../../components/InputBox";
 import { shortModelName } from "../../lib/format";
@@ -27,6 +27,9 @@ export default function App(): React.ReactElement {
   const [forceAttach, setForceAttach] = useState(false); // 本次强制看页面（下一条消息强制附带全文；compact 后自动续一轮）
   const [sessions, setSessions] = useState<SessionInfo[]>([]); // 当前文件夹下的会话列表（切换会话下拉）
   const [showGate, setShowGate] = useState(false); // 手动打开重新配对界面（中途改端口/换桥接）
+  const [aliases, setAliases] = useState<AliasInfo[]>([]); // 桥接别名列表（alias.list.data 推送）
+  const [currentAliasId, setCurrentAliasId] = useState<string | null>(null); // 当前进行中的别名
+  const pickResolverRef = useRef<((p: string | null) => void) | null>(null); // folder.picked 的等待者（folder.pick 请求-响应配对）
   const clientRef = useRef<BridgeClient | null>(null);
   const lastUrlRef = useRef<string | null>(null);
   const prevFolderRef = useRef<string | null>(null); // 上次绑定的文件夹（识别"切换文件夹"）
@@ -71,6 +74,14 @@ export default function App(): React.ReactElement {
         setSessions(m.sessions);
         setSessionId(m.currentId);
         prevBoundSidRef.current = m.currentId;
+        break;
+      case "alias.list.data":
+        setAliases(m.aliases);
+        setCurrentAliasId(m.currentId);
+        break;
+      case "folder.picked":
+        pickResolverRef.current?.(m.path); // 配对到等待中的 folder.pick 请求
+        pickResolverRef.current = null;
         break;
       case "chat.delta":
         setStreaming((s) => (s ?? "") + m.text);
@@ -138,6 +149,7 @@ export default function App(): React.ReactElement {
     if (conn === "open") {
       const p = bound ?? settings?.lastFolder;
       if (p) clientRef.current?.send({ type: "folder.bind", path: p });
+      clientRef.current?.send({ type: "alias.list" }); // 顺带拉取桥接别名列表
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conn]);
@@ -148,6 +160,14 @@ export default function App(): React.ReactElement {
     setSettings(await loadSettings());
     setBound(null);
     clientRef.current?.send({ type: "folder.bind", path: p.trim() });
+  }
+
+  /** 请求桥接弹系统文件夹选择框；folder.picked 到达时兑现（取消为 null） */
+  function handlePickFolder(): Promise<string | null> {
+    return new Promise((resolve) => {
+      pickResolverRef.current = resolve;
+      clientRef.current?.send({ type: "folder.pick" });
+    });
   }
 
   async function handleSend(text: string): Promise<void> {
@@ -224,6 +244,8 @@ export default function App(): React.ReactElement {
     setMessages([]);
     setStreaming(null);
     setSessions([]);
+    setAliases([]);
+    setCurrentAliasId(null); // 换桥：旧桥别名作废，等新桥 alias.list.data 重建
     setSessionId(null);
     setRuntime({}); // 新桥的实际生效值未知，连缓存一起清，等首轮 chat.done 重建
     void clearRuntimeCache();
@@ -247,12 +269,18 @@ export default function App(): React.ReactElement {
         <span>{conn === "open" ? "● 已连接" : conn === "connecting" ? "● 连接中…" : "● 已断开（自动重连中）"}</span>
         <button className="pair-btn" title="重新配对（改端口 / 换桥接）" onClick={() => setShowGate(true)}>⚙ 配对</button>
       </div>
-      <FolderBar
+      <AliasBar
+        aliases={aliases}
+        currentAliasId={currentAliasId}
         history={settings.folderHistory}
         bound={bound}
         resumed={resumed}
         sessionId={sessionId}
         sessions={sessions}
+        onAliasSelect={(id) => clientRef.current?.send({ type: "alias.select", id })}
+        onAliasCreate={(name, folder, sid) => clientRef.current?.send({ type: "alias.create", name, folder, sessionId: sid })}
+        onAliasDelete={(id) => clientRef.current?.send({ type: "alias.delete", id })}
+        onPickFolder={handlePickFolder}
         onBind={handleBind}
         onNewSession={() => clientRef.current?.send({ type: "session.new" })}
         onSwitchSession={(id) => clientRef.current?.send({ type: "session.switch", sessionId: id })}
