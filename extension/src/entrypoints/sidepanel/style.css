@@ -95,3 +95,15 @@ body { margin: 0; font-family: "Segoe UI", system-ui, sans-serif; font-size: 13p
 .alias-create-actions .primary:disabled { opacity: 0.4; cursor: default; }
 .alias-detail { margin-top: 6px; }
 .alias-detail .folder-bar { padding: 0; border-bottom: none; }
+
+/* 上传文件：芯片行、拖拽高亮、上传按钮（.input-box .send-row button 特异性高，upload-btn 须三段选择器覆盖） */
+.input-box.drag-over { outline: 2px dashed #4a6fa5; outline-offset: -2px; border-radius: 6px; }
+.upload-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.upload-chip { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; background: #2a2b31; border: 1px solid #444; border-radius: 10px; padding: 2px 4px 2px 8px; color: #c9cdd4; max-width: 100%; }
+.upload-chip button { background: none; border: none; color: #9aa0a6; cursor: pointer; font-size: 12px; padding: 0 4px; }
+.upload-chip button:hover { color: #f0a0a0; }
+.upload-error { color: #f44336; font-size: 12px; }
+.input-box .send-row .send-actions { display: flex; align-items: center; gap: 8px; }
+.input-box .send-row .upload-btn { background: #2a2b31; color: #9aa0a6; border: 1px solid #444; border-radius: 4px; padding: 5px 10px; cursor: pointer; }
+.input-box .send-row .upload-btn:hover:not(:disabled) { border-color: #666; color: #e8eaed; }
+.input-box .send-row .upload-btn:disabled { opacity: 0.4; cursor: default; }

@@ -5,7 +5,7 @@ import path from "node:path";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-for (const file of ["protocol.ts", "pairing.ts"]) {
+for (const file of ["protocol.ts", "pairing.ts", "upload-note.ts"]) {
   const src = path.join(root, "shared", file);
   for (const dest of [`bridge/src/${file}`, `extension/src/lib/${file}`]) {
     const d = path.join(root, dest);

@@ -15,8 +15,8 @@ export interface HistoryMessage {
   text: string;
   /** 完整发送内容（已去防注入前缀）；仅桥接来源的用户消息有，供右键溯源 */
   sentText?: string;
-  /** 附带标记：full=页面全文，selection=仅选中文字 */
-  attachKind?: "full" | "selection";
+  /** 附带标记：full=页面全文，selection=仅选中文字，upload=上传文件 */
+  attachKind?: "full" | "selection" | "upload";
 }
 
 /** 会话列表项（一个文件夹下可有多个会话） */
@@ -37,12 +37,25 @@ export interface AliasInfo {
   sessionId: string | null;
 }
 
+/** 聊天随附的上传文件（base64 内容；桥接落盘到绑定文件夹的 copilotUploads 目录） */
+export interface UploadFile {
+  name: string;
+  dataB64: string;
+}
+
+/** 单次上传文件数上限 */
+export const MAX_UPLOAD_FILES = 10;
+/** 单文件 base64 字符数上限（≈30MB 二进制） */
+export const MAX_UPLOAD_B64_CHARS = 41_000_000;
+/** 单次上传 base64 总字符数上限（≈45MB 二进制；ws 默认 100MiB 帧上限内留足余量） */
+export const MAX_UPLOAD_TOTAL_B64 = 60_000_000;
+
 export type ClientMessage =
   | { type: "auth"; token: string }
   | { type: "client.ready" }
   | { type: "folder.bind"; path: string }
   | { type: "folder.pick" }
-  | { type: "chat.send"; text: string }
+  | { type: "chat.send"; text: string; uploads?: UploadFile[] }
   | { type: "chat.abort" }
   | { type: "permission.response"; requestId: string; allow: boolean }
   | { type: "session.history" }
@@ -114,8 +127,23 @@ export function parseClientMessage(raw: string): ClientMessage | null {
         return m;
       case "folder.bind":
         return typeof m.path === "string" && m.path.length > 0 ? m : null;
-      case "chat.send":
-        return typeof m.text === "string" && m.text.length > 0 ? m : null;
+      case "chat.send": {
+        if (typeof m.text !== "string" || m.text.length === 0) return null;
+        if (m.uploads === undefined) return m; // 无附件：原样放行
+        // uploads 全量严格校验：数量/名单/单文件/总量任一越界整帧拒绝（扩展侧已先做友好拦截，这里是防线）
+        if (!Array.isArray(m.uploads) || m.uploads.length === 0 || m.uploads.length > MAX_UPLOAD_FILES) return null;
+        let total = 0;
+        const uploads: UploadFile[] = [];
+        for (const u of m.uploads) {
+          if (typeof u !== "object" || u === null) return null;
+          if (typeof u.name !== "string" || u.name.length === 0 || u.name.length > 255) return null;
+          if (typeof u.dataB64 !== "string" || u.dataB64.length === 0 || u.dataB64.length > MAX_UPLOAD_B64_CHARS) return null;
+          total += u.dataB64.length;
+          if (total > MAX_UPLOAD_TOTAL_B64) return null;
+          uploads.push({ name: u.name, dataB64: u.dataB64 });
+        }
+        return { type: "chat.send", text: m.text, uploads };
+      }
       case "permission.response":
         return typeof m.requestId === "string" && typeof m.allow === "boolean" ? m : null;
       case "session.switch":

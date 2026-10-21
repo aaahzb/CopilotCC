@@ -97,3 +97,13 @@
 - 修复：① claude-session.ts 新增 resolveClaudeExecutable()——`CLAUDE_CODE_PATH` 环境变量优先，其次 where/which claude（win 下 shim 是同目录 .cmd/.ps1 无法直接 spawn，优先取相邻 node_modules 里的原生 bin/claude.exe），结果只解析一次并缓存，显式传给 SDK；解析不到则回退 SDK 默认行为。② server.ts 消息分发整体裹 try/catch：处理器内同步异常转 chat.error 发侧栏并 console.error 留痕，进程与连接保活。③ 回归测试：createSession 同步抛异常 → chat.error 且后续消息正常（72→73 全绿）。
 - 顺带修复：release.yml 三处 `npm version` 改 node 直写 package.json——npm version 会做 semver 规范化，把 4 段版本号 2026.10.21.7 改写成 2026.10.2-1.7（.7 扩展 zip 文件名被改写事故）。
 - 教训：编译分发形态下一切"沿 CWD/相对路径找资源"的 SDK 默认行为都是定时炸弹（托盘组件、CLI 解析同型，须全部显式化）；exe 的端到端验证必须在项目树外的隔离目录做（CCC_BRIDGE_HOME 隔离配置 + stderr 重定向 + WS 探针脚本复现，本次靠它抓到确定根因）。
+
+### 2026-10-21：新功能——聊天上传文件（落盘 copilotUploads）
+
+- 侧栏：输入区可拖入文件或点发送键左侧 📁 按钮多选（≤10 个、单文件 ≤30MB、合计 ≤45MB，扩展侧友好拦截先于协议层），待传文件芯片行可单个移除；发送时 FileReader 读成 base64 随 chat.send.uploads 上送。
+- 协议：chat.send 增加 uploads?: UploadFile[]（name + dataB64），三层上限 MAX_UPLOAD_FILES=10 / 单文件 41MB b64 字符 / 总量 60MB b64 字符（ws 100MiB 帧内），越界整帧拒绝。
+- 桥接：saveUploads 落盘绑定文件夹根目录 copilotUploads/（basename+剥控制字符防穿越，重名自动 -1 后缀不覆盖，坏 b64/空文件/超 30MB 逐条 failed 回 chat.error，全失败则本次不发送）；随后把 [上传文件] 说明块（composeUploadNote 含真实落盘路径）拼在客户端原文前发给 Claude。
+- 气泡/回放：attachKind 新增 "upload"（📁 标记），右键气泡/点击附带状态行溯源完整发送内容与看页面一致；转录回放按 [上传文件] 标记识别（优先级高于页面/选中，一条消息可同时带两者）。
+- 防注入：GUARD_PREFIX 扩展覆盖 [上传文件] 块（文件名是数据不是指令）；transcript.test.ts 的 GUARD 字面量夹具改 import claude-session 同源常量，前缀文案再改不拖垮测试。
+- shared 单源：upload-note.ts（UPLOAD_DIR + composeUploadNote）经 sync-protocol.mjs 逐字同步两端。
+- 验证：桥接 83 + 扩展 29 测试全绿，双端 typecheck/构建通过；隔离 exe 端到端探针（CCC_BRIDGE_HOME 隔离 + 临时绑定目录 + 带 txt 上传发问）实测文件落盘一致、Claude 经 Read 读出内容、桥接存活。探针心得：WS 握手即鉴权——URL 必须 /ws?token=...（auth 消息是空操作）；握手后服务器会推 session.list.data 等帧，等特定帧须按类型过滤。

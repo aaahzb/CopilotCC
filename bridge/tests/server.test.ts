@@ -143,6 +143,41 @@ describe("server 消息路由", () => {
     await server.close();
   });
 
+  it("chat.send 携带 uploads：文件落盘 copilotUploads，会话收到说明块+客户端原文", async () => {
+    const { server, url } = await boot(makeConfig());
+    const { ws } = await connect(url);
+    ws.send(JSON.stringify({ type: "folder.bind", path: dir }));
+    await new Promise<ServerMessage>((r) => ws.on("message", (d) => r(JSON.parse(d.toString()))));
+    const dataB64 = Buffer.from("hello 上传", "utf-8").toString("base64");
+    ws.send(JSON.stringify({ type: "chat.send", text: "[用户问题]\n看看", uploads: [{ name: "note.txt", dataB64 }] }));
+    await new Promise((r) => setTimeout(r, 50)); // 落盘与转发都在处理器内同步完成，稍等即可
+    const saved = path.join(dir, "copilotUploads", "note.txt");
+    expect(fs.readFileSync(saved, "utf-8")).toBe("hello 上传");
+    const sent = sentClientMessages.find((m) => m.cwd === "SEND");
+    expect(sent).toBeTruthy();
+    const t = (sent!.opts as { text: string }).text;
+    expect(t.startsWith("[上传文件]")).toBe(true); // 说明块拼在最前（含落盘真实路径）
+    expect(t).toContain(saved);
+    expect(t).toContain("[用户问题]\n看看"); // 客户端原文原样在后
+    ws.close();
+    await server.close();
+  });
+
+  it("uploads 全部保存失败 → chat.error 逐条上报且不转发会话", async () => {
+    const { server, url } = await boot(makeConfig());
+    const { ws } = await connect(url);
+    ws.send(JSON.stringify({ type: "folder.bind", path: dir }));
+    await new Promise<ServerMessage>((r) => ws.on("message", (d) => r(JSON.parse(d.toString()))));
+    ws.send(JSON.stringify({ type: "chat.send", text: "[用户问题]\n看看", uploads: [{ name: "bad.txt", dataB64: "!!!" }] }));
+    const err = await new Promise<ServerMessage>((r) => ws.on("message", (d) => r(JSON.parse(d.toString()))));
+    expect(err.type).toBe("chat.error");
+    expect(err.type === "chat.error" && err.message).toContain("bad.txt");
+    await new Promise((r) => setTimeout(r, 30));
+    expect(sentClientMessages.some((m) => m.cwd === "SEND")).toBe(false);
+    ws.close();
+    await server.close();
+  });
+
   it("老文件夹命中映射 → resumed=true", async () => {
     sessions.set(dir, { sessionId: "sid-old", title: "旧会话", updatedAt: "x" });
     const { server, url } = await boot(makeConfig());

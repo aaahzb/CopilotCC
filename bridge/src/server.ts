@@ -11,6 +11,8 @@ import { saveConfig, type BridgeConfig } from "./config";
 import { encodePairing } from "./pairing";
 import { AliasManager } from "./alias-manager";
 import { pickFolder as defaultPickFolder } from "./folder-picker";
+import { saveUploads } from "./uploads";
+import { composeUploadNote } from "./upload-note";
 
 /** 服务依赖。createSession 仅供测试注入假会话工厂。 */
 export interface ServerDeps {
@@ -633,12 +635,20 @@ function attachHandlers(wss: WebSocketServer, deps: ServerDeps, instanceId: stri
             send({ type: "chat.error", message: "请先绑定文件夹" });
             break;
           }
+          let text = m.text;
+          if (m.uploads && m.uploads.length > 0) {
+            // 先落盘到 <绑定文件夹>/copilotUploads，再把说明块拼在客户端原文之前（原文自带 [页面上下文]/[用户问题] 包装）
+            const r = saveUploads(folder, m.uploads);
+            for (const f of r.failed) send({ type: "chat.error", message: `文件保存失败：${f.name}（${f.reason}）` });
+            if (r.saved.length === 0) break; // 全部失败：错误已逐条上报，本次消息不发送
+            text = `${composeUploadNote(r.saved.map((s) => s.path))}\n\n${m.text}`;
+          }
           const rec = sessions.get(folder);
           if (rec && rec.title === "(新会话)") {
-            // 首条消息前 30 字作为会话标题
+            // 首条消息前 30 字作为会话标题（用客户端原文，不含桥接拼的上传说明块）
             sessions.set(folder, { ...rec, title: m.text.replace(/\s+/g, " ").slice(0, 30), updatedAt: new Date().toISOString() });
           }
-          claude.send(m.text);
+          claude.send(text);
           break;
         }
         case "chat.abort":

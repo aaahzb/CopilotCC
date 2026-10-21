@@ -34,17 +34,20 @@ const USER_QUESTION_MARK = "[用户问题]\n";
  * @param raw jsonl 里的原始用户消息文本
  * @returns text 为用户实际输入；sentText/attachKind 仅桥接包装消息有；无标记消息只返回 text
  */
-function parseUserText(raw: string): { text: string; sentText?: string; attachKind?: "full" | "selection" } {
+function parseUserText(raw: string): { text: string; sentText?: string; attachKind?: "full" | "selection" | "upload" } {
   const sent = raw.startsWith(GUARD_PREFIX) ? raw.slice(GUARD_PREFIX.length) : raw;
   const i = sent.indexOf(USER_QUESTION_MARK);
   if (i < 0) return { text: sent }; // 非桥接来源（如交互式 CLI 手动发的消息）
-  const head = sent.slice(0, i); // 包装部分：[页面上下文]/[选中文字] 块；无附带时为空
+  const head = sent.slice(0, i); // 包装部分：[上传文件]/[页面上下文]/[选中文字] 块；无附带时为空
   const text = sent.slice(i + USER_QUESTION_MARK.length);
-  const attachKind: "full" | "selection" | undefined = head.includes("[页面上下文")
-    ? "full"
-    : head.includes("[选中文字]")
-      ? "selection"
-      : undefined;
+  // 一条消息可能同时带页面与上传文件：标记优先取 upload（文件是本轮最显眼的附带物）
+  const attachKind: "full" | "selection" | "upload" | undefined = head.includes("[上传文件]")
+    ? "upload"
+    : head.includes("[页面上下文")
+      ? "full"
+      : head.includes("[选中文字]")
+        ? "selection"
+        : undefined;
   return { text, sentText: sent, ...(attachKind ? { attachKind } : {}) };
 }
 

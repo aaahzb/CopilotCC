@@ -57,3 +57,21 @@ describe("会话管理消息", () => {
     expect(parseClientMessage(JSON.stringify({ type: "session.delete", sessionId: "" }))).toBeNull();
   });
 });
+
+describe("chat.send 上传附件", () => {
+  const up = (n: number): Array<{ name: string; dataB64: string }> =>
+    Array.from({ length: n }, (_, i) => ({ name: `f${i}.txt`, dataB64: "aGVsbG8=" }));
+
+  it("合法 uploads 原样透传", () => {
+    expect(parseClientMessage(JSON.stringify({ type: "chat.send", text: "hi", uploads: [{ name: "a.txt", dataB64: "aGVsbG8=" }] })))
+      .toEqual({ type: "chat.send", text: "hi", uploads: [{ name: "a.txt", dataB64: "aGVsbG8=" }] });
+  });
+
+  it("空数组、数量越界、非法条目、非数组整帧拒绝", () => {
+    expect(parseClientMessage(JSON.stringify({ type: "chat.send", text: "hi", uploads: [] }))).toBeNull();
+    expect(parseClientMessage(JSON.stringify({ type: "chat.send", text: "hi", uploads: up(11) }))).toBeNull();
+    expect(parseClientMessage(JSON.stringify({ type: "chat.send", text: "hi", uploads: [{ name: "", dataB64: "aGVsbG8=" }] }))).toBeNull();
+    expect(parseClientMessage(JSON.stringify({ type: "chat.send", text: "hi", uploads: [{ name: "a.txt" }] }))).toBeNull();
+    expect(parseClientMessage(JSON.stringify({ type: "chat.send", text: "hi", uploads: "x" }))).toBeNull();
+  });
+});

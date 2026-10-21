@@ -1,7 +1,8 @@
-import React, { useState } from "react";
+import React, { useRef, useState } from "react";
 import type { PermissionModeSetting, EffortLevelSetting } from "../lib/protocol";
+import { formatSize, readFilesAsUploads, validateFiles, type PendingUpload } from "../lib/upload-files";
 
-/** 底部输入区：附带开关、权限模式/模型/effort 选择（同一行）、发送/停止 */
+/** 底部输入区：附带开关、权限模式/模型/effort 选择（同一行）、文件上传（拖入或点 📁）、发送/停止 */
 export function InputBox(props: {
   disabled: boolean;
   streaming: boolean;
@@ -22,21 +23,63 @@ export function InputBox(props: {
   onModeChange(m: PermissionModeSetting): void;
   onModelChange(v: string): void;
   onEffortChange(v: EffortLevelSetting | ""): void;
-  onSend(text: string): void;
+  /** 发送：uploads 为待上传文件（无上传时是空数组）；桥接落盘到绑定文件夹的 copilotUploads */
+  onSend(text: string, uploads: PendingUpload[]): void;
   onStop(): void;
 }): React.ReactElement {
   const [text, setText] = useState("");
-  const submit = (): void => {
-    if (!text.trim() || props.disabled) return;
-    props.onSend(text.trim());
+  const [files, setFiles] = useState<File[]>([]); // 待上传文件（芯片行可单个移除）
+  const [uploadError, setUploadError] = useState(""); // 校验失败提示（数量/单文件/总量上限）
+  const [dragOver, setDragOver] = useState(false); // 拖拽悬停高亮
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  /** 合并新文件并整单校验：任一越界整批不加，报原因（友好拦截，协议层还有防线） */
+  function addFiles(list: FileList | File[]): void {
+    if (props.disabled) return;
+    const merged = [...files, ...Array.from(list)];
+    const err = validateFiles(merged);
+    if (err) {
+      setUploadError(err);
+      return;
+    }
+    setUploadError("");
+    setFiles(merged);
+  }
+
+  function removeAt(i: number): void {
+    setFiles((fs) => fs.filter((_, j) => j !== i));
+    setUploadError("");
+  }
+
+  const submit = async (): Promise<void> => {
+    if (props.disabled || (!text.trim() && files.length === 0)) return;
+    // 发送时才把 File 读成 base64：芯片停留期间不占内存
+    const uploads = await readFilesAsUploads(files);
+    props.onSend(text.trim(), uploads);
     setText("");
+    setFiles([]);
+    setUploadError("");
   };
   // 指示文本：手动选择优先（刚改下拉时上报值还是旧会话的），其次桥接上报的实际生效值；都不知道就不显示（绝不显示"默认"二字）
   const modelText = props.model || props.effectiveModel || "";
   const effortText = props.effort || (props.effectiveEffort ?? "");
   const hint = [modelText ? `模型 ${modelText}` : "", effortText ? `effort ${effortText}` : ""].filter(Boolean).join(" · ");
   return (
-    <div className="input-box">
+    <div
+      className={`input-box${dragOver ? " drag-over" : ""}`}
+      onDragOver={(e) => {
+        if (e.dataTransfer.types.includes("Files")) {
+          e.preventDefault(); // 必须阻止默认行为，drop 事件才会触发
+          setDragOver(true);
+        }
+      }}
+      onDragLeave={() => setDragOver(false)}
+      onDrop={(e) => {
+        e.preventDefault(); // 拦截浏览器默认的"打开/下载该文件"
+        setDragOver(false);
+        if (e.dataTransfer.files.length > 0) addFiles(e.dataTransfer.files);
+      }}
+    >
       <div className="toggles">
         <label>
           <input type="checkbox" checked={props.attachEnabled} onChange={(e) => props.onToggleAttach(e.target.checked)} />
@@ -65,18 +108,29 @@ export function InputBox(props: {
           <option value="max">max</option>
         </select>
       </div>
+      {files.length > 0 ? (
+        <div className="upload-chips">
+          {files.map((f, i) => (
+            <span key={`${f.name}-${i}`} className="upload-chip" title={f.name}>
+              📁 {f.name}（{formatSize(f.size)}）
+              <button title="移除该文件" onClick={() => removeAt(i)}>×</button>
+            </span>
+          ))}
+        </div>
+      ) : null}
+      {uploadError ? <div className="upload-error">{uploadError}</div> : null}
       {/* 悬浮层包裹：强制看页面按钮绝对定位悬浮在输入框右上角，不占布局位置 */}
       <div className="ta-wrap">
         <textarea
           rows={3}
-          placeholder={props.disabled ? "先绑定文件夹…" : "针对当前网页提问，Enter 发送 / Shift+Enter 换行"}
+          placeholder={props.disabled ? "先绑定文件夹…" : "针对当前网页提问，Enter 发送 / Shift+Enter 换行；可拖入或点 📁 上传文件"}
           value={text}
           disabled={props.disabled}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
-              submit();
+              void submit();
             }
           }}
         />
@@ -89,14 +143,35 @@ export function InputBox(props: {
           📄 强制看页面
         </button>
       </div>
-      {/* 发送行：最左只读显示当前生效的模型·effort（改动入口是上方下拉），发送/停止按钮靠右 */}
+      {/* 发送行：最左只读显示当前生效的模型·effort（改动入口是上方下拉），上传/发送/停止按钮靠右 */}
       <div className="send-row">
         <span className="model-effort" title="当前生效的模型与推理强度（首轮回复后显示实际值；在上方下拉修改）">{hint}</span>
-        {props.streaming ? (
-          <button onClick={props.onStop}>停止</button>
-        ) : (
-          <button disabled={props.disabled || !text.trim()} onClick={submit}>发送</button>
-        )}
+        <span className="send-actions">
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            hidden
+            onChange={(e) => {
+              if (e.target.files?.length) addFiles(e.target.files);
+              e.target.value = ""; // 重置：同一文件可再次选择
+            }}
+          />
+          <button
+            type="button"
+            className="upload-btn"
+            title="上传文件（也可直接拖进输入区）：保存到绑定文件夹的 copilotUploads 目录，Claude 用 Read 查看"
+            disabled={props.disabled}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            📁
+          </button>
+          {props.streaming ? (
+            <button onClick={props.onStop}>停止</button>
+          ) : (
+            <button disabled={props.disabled || (!text.trim() && files.length === 0)} onClick={() => void submit()}>发送</button>
+          )}
+        </span>
       </div>
     </div>
   );

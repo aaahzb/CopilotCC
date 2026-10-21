@@ -12,10 +12,10 @@ export interface UiMsg {
   id: string;
   role: "user" | "assistant" | "tool";
   text: string;
-  /** 实际发送给 Claude 的完整文本（含页面上下文），仅用户消息与附带状态行有 */
+  /** 实际发送给 Claude 的完整文本（含页面上下文/上传说明），仅用户消息与附带状态行有 */
   sentText?: string;
-  /** 附带标记：full=页面全文，selection=选中文字；无标记=未附带 */
-  attachKind?: "full" | "selection";
+  /** 附带标记：full=页面全文，selection=选中文字，upload=上传文件；无标记=未附带 */
+  attachKind?: "full" | "selection" | "upload";
 }
 
 /**
@@ -57,7 +57,7 @@ const MD = {
 const BOTTOM_THRESHOLD = 120;
 
 /**
- * 消息列表。用户气泡支持附带角标（📄全文/📎选中）与右键查看实际发送内容；
+ * 消息列表。用户气泡支持附带角标（📄全文/📎选中/📁上传）与右键查看实际发送内容；
  * 附带状态行点击弹浮层；滚动离开底部时出现回到底部按钮。
  * @param props.messages 已落地的消息列表
  * @param props.streaming 正在流式生成、尚未落地的 assistant 文本
@@ -123,8 +123,11 @@ export function MessageList(props: { messages: UiMsg[]; streaming: string | null
               onContextMenu={m.sentText ? (e) => { e.preventDefault(); setViewing(m); } : undefined}
             >
               {m.attachKind ? (
-                <span className="attach-mark" title={m.attachKind === "full" ? "已附带页面全文" : "已附带选中文字"}>
-                  {m.attachKind === "full" ? "📄" : "📎"}
+                <span
+                  className="attach-mark"
+                  title={m.attachKind === "full" ? "已附带页面全文" : m.attachKind === "selection" ? "已附带选中文字" : "已上传文件到 copilotUploads"}
+                >
+                  {m.attachKind === "full" ? "📄" : m.attachKind === "selection" ? "📎" : "📁"}
                 </span>
               ) : null}
               <ReactMarkdown {...MD}>{m.text}</ReactMarkdown>

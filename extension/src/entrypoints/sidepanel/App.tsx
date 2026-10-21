@@ -2,6 +2,8 @@ import React, { useEffect, useRef, useState } from "react";
 import { BridgeClient, type ConnState } from "../../lib/ws-client";
 import { loadSettings, saveSettings, pushFolderHistory, takePendingQuote, loadRuntimeCache, saveRuntimeCache, clearRuntimeCache, type ExtSettings, type RuntimeCache } from "../../lib/storage";
 import { decideAttach, composeMessage, type PageSnapshot } from "../../lib/attach-policy";
+import { composeUploadNote, UPLOAD_DIR } from "../../lib/upload-note";
+import type { PendingUpload } from "../../lib/upload-files";
 import { snapshotActiveTab } from "../../lib/page-extract";
 import type { ServerMessage, PermissionModeSetting, SessionInfo, AliasInfo } from "../../lib/protocol";
 import type { PairingInfo } from "../../lib/pairing";
@@ -170,7 +172,7 @@ export default function App(): React.ReactElement {
     });
   }
 
-  async function handleSend(text: string): Promise<void> {
+  async function handleSend(text: string, uploads: PendingUpload[] = []): Promise<void> {
     const s = settingsRef.current;
     if (!s || !bound) return;
     let page: PageSnapshot | null = null;
@@ -197,20 +199,27 @@ export default function App(): React.ReactElement {
               : "ℹ️ 同页追问：未重复附带全文（此前已进会话上下文）";
     }
     const full = composeMessage(text, page, attachFull);
-    // 附带标记：📄 全文 / 📎 仅选中文字；未附带则无标记
-    const attachKind: UiMsg["attachKind"] = !page
-      ? undefined
-      : attachFull && page.markdown
-        ? "full"
-        : page.selection
-          ? "selection"
-          : undefined;
+    const hasUp = uploads.length > 0;
+    // 展示用上传说明块与桥接实际发送同一模板（桥接落盘后按真实路径再拼；重名加 -1 后缀时以桥接为准）
+    const upNote = hasUp ? composeUploadNote(uploads.map((u) => `${bound}/${UPLOAD_DIR}/${u.name}`)) : null;
+    const sentFull = upNote ? `${upNote}\n\n${full}` : full;
+    // 附带标记：📁 上传 > 📄 全文 / 📎 仅选中文字；未附带则无标记
+    const attachKind: UiMsg["attachKind"] = hasUp
+      ? "upload"
+      : !page
+        ? undefined
+        : attachFull && page.markdown
+          ? "full"
+          : page.selection
+            ? "selection"
+            : undefined;
     setMessages((ms) => {
-      const next: UiMsg[] = [...ms, { id: crypto.randomUUID(), role: "user", text, sentText: full, attachKind }];
-      if (attachNote) next.push({ id: crypto.randomUUID(), role: "tool", text: attachNote, sentText: full });
+      const next: UiMsg[] = [...ms, { id: crypto.randomUUID(), role: "user", text, sentText: sentFull, attachKind }];
+      if (upNote) next.push({ id: crypto.randomUUID(), role: "tool", text: `📁 已上传 ${uploads.length} 个文件至 ${UPLOAD_DIR}：${uploads.map((u) => u.name).join("、")}`, sentText: sentFull });
+      if (attachNote) next.push({ id: crypto.randomUUID(), role: "tool", text: attachNote, sentText: sentFull });
       return next;
     });
-    clientRef.current?.send({ type: "chat.send", text: full });
+    clientRef.current?.send({ type: "chat.send", text: full, ...(hasUp ? { uploads } : {}) });
   }
 
   /** 更新设置并把权限模式/模型/effort 全量推给桥接（任一变化桥接都会重建会话） */
