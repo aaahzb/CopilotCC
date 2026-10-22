@@ -143,3 +143,10 @@
 - 修复：按钮从输入框悬浮层挪到底部发送行，放在模型·effort 指示右边，改为普通行内开关（实底 #2a2b31，点亮蓝底）；删除 .ta-wrap 包裹层（display:block 并入 textarea 主规则）；send-row 布局从 space-between 改为左组排列 + send-actions margin-left:auto 钉右，model-effort 加省略号收缩防窄屏溢出。
 - 验证：扩展 typecheck + 30 测试 + 构建通过（纯扩展侧改动，桥接未动）。
 - 教训：悬浮/绝对定位的控件压在有内容的区域上，迟早遮挡输入；控制件一律进正常文档流。
+
+### 2026-10-22：修复输入区上下两行硬约束回归（按钮挪位后遗症）
+
+- 根因：「强制看页面」挪进发送行后两处破行——①输入框上方 toggles 行仍是 flex-wrap: wrap，附带网页 + 权限/模型/effort 三个下拉在窄面板超出宽度换成两行；②发送行 model-effort 指示开着 min-width: 0 可无限压缩，而同行开关与按钮组全部 flex-shrink: 0，指示被挤到零宽，用户看到"当前使用模型不见了"。
+- 修复：toggles 行改 nowrap，三个下拉 min-width: 0 可压缩截断（完整值在下拉里选），行恒为一行；发送行 model-effort 改 flex: 0 1 auto + min-width: 4.5em 保底（永不消失，完整文本在悬浮提示 title）；hint 文案去掉"模型/effort"前缀压缩为裸值 `fable 5.1 · high`；send-row 间距 8px→6px 再省宽度。功能一个不少：附带网页/权限/模型/effort/强制看页面（含点亮态）/模型指示/上传/发送/停止全保留。
+- 验证：扩展 typecheck + 30 测试 + 构建通过（纯扩展侧改动，桥接未动）。
+- 教训：flex 行内可压到零的指示文本等于会消失——指示类元素必须给保底 min-width；多控件行一律 nowrap + 可压缩项显式截断，把"换行"从可能项里删掉，否则窄面板必破行。

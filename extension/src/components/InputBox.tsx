@@ -64,7 +64,8 @@ export function InputBox(props: {
   // 指示文本：手动选择优先（刚改下拉时上报值还是旧会话的），其次桥接上报的实际生效值；都不知道就不显示（绝不显示"默认"二字）
   const modelText = props.model || props.effectiveModel || "";
   const effortText = props.effort || (props.effectiveEffort ?? "");
-  const hint = [modelText ? `模型 ${modelText}` : "", effortText ? `effort ${effortText}` : ""].filter(Boolean).join(" · ");
+  // 压缩为裸值 "模型 · effort"（去掉"模型/effort"前缀省宽度，窄面板下不被按钮挤没；含义在下方悬浮提示 title 里）
+  const hint = [modelText, effortText].filter(Boolean).join(" · ");
   return (
     <div
       className={`input-box${dragOver ? " drag-over" : ""}`}
