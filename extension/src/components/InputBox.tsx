@@ -120,27 +120,28 @@ export function InputBox(props: {
         </div>
       ) : null}
       {uploadError ? <div className="upload-error">{uploadError}</div> : null}
-      {/* 悬浮层包裹：强制看页面按钮绝对定位悬浮在输入框右上角，不占布局位置 */}
-      <div className="ta-wrap">
-        <textarea
-          rows={3}
-          placeholder={props.disabled ? "先绑定文件夹…" : "针对当前网页提问，Enter 发送 / Shift+Enter 换行；可拖入或点 📁 上传文件"}
-          value={text}
-          disabled={props.disabled}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => {
-            // Esc = 中止本轮生成（对齐 Claude Code CLI 的 ESC）；输入法组合中的 Esc 是取消拼音，不拦截
-            if (e.key === "Escape" && props.busy && !e.nativeEvent.isComposing) {
-              e.preventDefault();
-              props.onStop();
-              return;
-            }
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              void submit();
-            }
-          }}
-        />
+      <textarea
+        rows={3}
+        placeholder={props.disabled ? "先绑定文件夹…" : "针对当前网页提问，Enter 发送 / Shift+Enter 换行；可拖入或点 📁 上传文件"}
+        value={text}
+        disabled={props.disabled}
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => {
+          // Esc = 中止本轮生成（对齐 Claude Code CLI 的 ESC）；输入法组合中的 Esc 是取消拼音，不拦截
+          if (e.key === "Escape" && props.busy && !e.nativeEvent.isComposing) {
+            e.preventDefault();
+            props.onStop();
+            return;
+          }
+          if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            void submit();
+          }
+        }}
+      />
+      {/* 发送行：最左是当前生效的模型·effort 指示（改动入口是上方下拉）+ 强制看页面开关，上传/发送/停止按钮靠右 */}
+      <div className="send-row">
+        <span className="model-effort" title="当前生效的模型与推理强度（首轮回复后显示实际值；在上方下拉修改）">{hint}</span>
         <button
           type="button"
           className={`force-attach${props.forceAttach ? " on" : ""}`}
@@ -149,10 +150,6 @@ export function InputBox(props: {
         >
           📄 强制看页面
         </button>
-      </div>
-      {/* 发送行：最左只读显示当前生效的模型·effort（改动入口是上方下拉），上传/发送/停止按钮靠右 */}
-      <div className="send-row">
-        <span className="model-effort" title="当前生效的模型与推理强度（首轮回复后显示实际值；在上方下拉修改）">{hint}</span>
         <span className="send-actions">
           <input
             ref={fileInputRef}

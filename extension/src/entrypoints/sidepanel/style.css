@@ -23,13 +23,12 @@ body { margin: 0; font-family: "Segoe UI", system-ui, sans-serif; font-size: 13p
 .input-box { border-top: 1px solid #333; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; }
 .input-box .toggles { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; font-size: 12px; color: #9aa0a6; }
 .input-box select { background: #2a2b31; color: inherit; border: 1px solid #444; border-radius: 4px; }
-.input-box textarea { width: 100%; background: #2a2b31; color: inherit; border: 1px solid #444; border-radius: 6px; padding: 6px 8px; resize: vertical; }
-.input-box .ta-wrap { position: relative; }
-.input-box .ta-wrap textarea { display: block; }
-.input-box .force-attach { position: absolute; top: 5px; right: 8px; font-size: 11px; line-height: 1.6; padding: 0 8px; border-radius: 10px; border: 1px solid #444; background: rgba(38, 39, 45, 0.88); color: #9aa0a6; cursor: pointer; }
+.input-box textarea { display: block; width: 100%; background: #2a2b31; color: inherit; border: 1px solid #444; border-radius: 6px; padding: 6px 8px; resize: vertical; }
+/* 强制看页面开关：发送行内（模型·effort 指示右侧），点亮态蓝底；曾经悬浮在输入框右上角，会盖住输入文字 */
+.input-box .force-attach { font-size: 11px; line-height: 1.6; padding: 1px 8px; border-radius: 10px; border: 1px solid #444; background: #2a2b31; color: #9aa0a6; cursor: pointer; white-space: nowrap; flex-shrink: 0; }
 .input-box .force-attach.on { background: #2f4f7f; border-color: #4a6fa5; color: #fff; }
-.input-box .send-row { display: flex; justify-content: space-between; align-items: center; }
-.input-box .send-row .model-effort { font-size: 11px; color: #9aa0a6; opacity: 0.85; }
+.input-box .send-row { display: flex; align-items: center; gap: 8px; }
+.input-box .send-row .model-effort { font-size: 11px; color: #9aa0a6; opacity: 0.85; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .input-box .send-row button { background: #2f4f7f; color: #fff; border: none; border-radius: 4px; padding: 5px 18px; }
 .input-box .send-row button:disabled { opacity: 0.4; }
 .token-gate { padding: 20px; display: flex; flex-direction: column; gap: 10px; }
@@ -103,7 +102,7 @@ body { margin: 0; font-family: "Segoe UI", system-ui, sans-serif; font-size: 13p
 .upload-chip button { background: none; border: none; color: #9aa0a6; cursor: pointer; font-size: 12px; padding: 0 4px; }
 .upload-chip button:hover { color: #f0a0a0; }
 .upload-error { color: #f44336; font-size: 12px; }
-.input-box .send-row .send-actions { display: flex; align-items: center; gap: 8px; }
+.input-box .send-row .send-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; flex-shrink: 0; }
 .input-box .send-row .upload-btn { background: #2a2b31; color: #9aa0a6; border: 1px solid #444; border-radius: 4px; padding: 5px 10px; cursor: pointer; }
 .input-box .send-row .upload-btn:hover:not(:disabled) { border-color: #666; color: #e8eaed; }
 .input-box .send-row .upload-btn:disabled { opacity: 0.4; cursor: default; }
