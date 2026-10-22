@@ -59,4 +59,5 @@ chmod +x "$STAGE/首次使用-右键打开我.command"
 ln -s /Applications "$STAGE/Applications"
 hdiutil create -volname "CopilotCC Bridge" -srcfolder "$STAGE" -ov -format UDZO "$REPO/ccc-bridge-darwin-arm64.dmg"
 rm -rf "$STAGE" "$ROOT/dist/ccc.iconset"
-echo "✔ $REPO/ccc-bridge-darwin-arm64.dmg（$APP，ad-hoc 预签，版本 $VER）"
+# 教训：变量后紧跟全角标点（，。（等）时，mac runner 的 bash 会把标点首字节吞进变量名 → 一律 ${} 花括号
+echo "✔ $REPO/ccc-bridge-darwin-arm64.dmg（${APP}，ad-hoc 预签，版本 ${VER}）"

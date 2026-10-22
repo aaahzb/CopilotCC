@@ -20,7 +20,7 @@ elif [ -d "$SRC" ]; then
   echo "==> 安装：拷贝 $APP 到「应用程序」…"
   cp -R "$SRC" "$DST" || die "拷贝失败（权限不足？）。可手动把 App 拖进「应用程序」后重跑本脚本。"
 else
-  die "找不到 $APP。请先把 dmg 里的「CopilotCC Bridge」拖进「应用程序」，再重跑本脚本。"
+  die "找不到 ${APP}。请先把 dmg 里的「CopilotCC Bridge」拖进「应用程序」，再重跑本脚本。"
 fi
 
 echo "==> 解除下载隔离标记…"

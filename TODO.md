@@ -175,3 +175,10 @@
 - ad-hoc 签名 + quarantine = "已损坏"且右键无绕过；Developer ID + notarytool 公证才有"放行即可"体验（$99/年）。免费方案的用户动作底线 = 一次性右键打开解除隔离脚本，文档必须把这步写到最显眼。
 - .app 化时托盘组件解析沿 path.dirname(process.execPath) 自然落到 Contents/MacOS，traybin 跟着放那里即零代码改动；writeIcon 写 os.tmpdir() 不动包内容，不破坏包签名。
 - dmg 内的 .command 进 dmg 前必须 chmod +x（hdiutil 保留权限位），用户右键→打开才有效。
+
+## 2026-10-22 mac 打包脚本：变量后紧跟全角标点被 bash 吞进变量名（CI 红在最后一行 echo）
+
+**现象**：build-mac-app.sh 在 macOS runner 上 dmg 已生成，却在收尾 echo 报 `APP: unbound variable` 退出 1，构件未上传。
+**根因**：`$APP，`/`$VER）` 变量名后紧跟全角标点，mac runner 的 bash 把标点首字节吞进变量名；set -u 下未定义即死。bash -n 查不出，Windows 本地也复现不了（Git Bash 不这么解析）。
+**修复**：变量与全角标点相邻一律 ${VAR} 花括号（mac-setup.command 的 `$APP。` 同步加固）；提交前 `grep -n '\$[A-Za-z_][A-Za-z0-9_]*[^ -~]'` 可机器化扫雷。
+**教训**：中文插值字符串里的变量展开永远带 ${}——这是唯一不依赖 locale 与 bash 版本行为的写法；set -u 再次立功，把静默输出残句变成构建期硬失败。
