@@ -120,3 +120,9 @@
 - 根因：sanitizeUploadName 用 path.basename 去路径穿越，POSIX 实现不认反斜杠，Windows 风格穿越名（..\..\evil.txt）在 macOS 上整串漏过清洗；本地 Windows 测试一直绿所以从未暴露，CI macos-latest 矩阵抓到。
 - 修复：basename 改按正反斜杠切分（name.split(/[\\/]/).pop()），两端平台行为一致；测试夹具不动（期望本就是跨平台契约）。桥接 86 全绿。
 - 教训：凡路径/分隔符处理的代码，Windows 本地绿不代表 POSIX 绿；上传/落盘类功能的清洗逻辑一律手写分隔符处理，不依赖 path 模块的平台语义。
+
+### 2026-10-22：修复详情区「页面丰富度」行深色主题下隐形
+
+- 根因：richness-row 行样式写死 `color: #555` 灰字（浅色主题习惯），侧栏实际是深色主题（body 底 #1e1f24、主文字 #e4e6eb），灰字压在深底上近乎隐形，用户报告"背景是灰色的字也是灰色的"；下拉也没有暗底控件样式。
+- 修复：行文字删掉写死的灰字与 12px 字号，继承面板主文字色；下拉补齐暗底控件约定（background #2a2b31 / color inherit / border #444 / 圆角 4px），与 .alias-switch、.alias-create select 一致。
+- 教训：侧栏是深色主题，新 UI 元素配色一律 `color: inherit` + 复用既有控件样式（#2a2b31 底 / #444 边），不引入任何新灰色。

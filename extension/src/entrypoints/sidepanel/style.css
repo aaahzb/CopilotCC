@@ -108,15 +108,18 @@ body { margin: 0; font-family: "Segoe UI", system-ui, sans-serif; font-size: 13p
 .input-box .send-row .upload-btn:hover:not(:disabled) { border-color: #666; color: #e8eaed; }
 .input-box .send-row .upload-btn:disabled { opacity: 0.4; cursor: default; }
 
-/* 别名详情区的页面丰富度行 */
+/* 别名详情区的页面丰富度行（侧栏是深色主题：颜色一律继承面板主文字色，控件用暗底约定，勿写死灰色） */
 .alias-detail .richness-row {
   display: flex;
   align-items: center;
   gap: 6px;
   margin-bottom: 6px;
-  font-size: 12px;
-  color: #555;
 }
 .alias-detail .richness-row select {
   flex: 1;
+  background: #2a2b31;
+  color: inherit;
+  border: 1px solid #444;
+  border-radius: 4px;
+  padding: 3px 4px;
 }
