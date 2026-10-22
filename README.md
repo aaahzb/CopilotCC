@@ -118,6 +118,9 @@ cd bridge && npm run selftest:live     # 端到端：向真实 claude 发一条�
 
 cd extension && npm test               # 扩展 24 个单测
 cd extension && npm run typecheck      # 严格类型检查（需先 npx wxt prepare 或构建过一次）
+
+# 预编译件架构审计（CI 门禁同款）：读文件头断言 CPU 架构，防"第三方二进制架构发错进包"
+node bridge/scripts/check-arch.mjs bridge/node_modules/systray2/traybin/tray_windows_release.exe x64
 ```
 
 `bridge/probe-sdk.mjs` / `probe2-sdk.mjs` / `bridge/scripts/probe-frames.mjs` 是 Agent SDK 直连探针（排障用，不经桥接直接验证 CLI 时序、权限模式与流式帧字段——"SDK 流不下发 effort" 就是用 probe-frames 实锤的）。
@@ -129,7 +132,7 @@ shared/protocol.ts      # WS 协议单一来源
 scripts/                # sync-protocol / gen-extension-key
 bridge/                 # 本地桥接（Node + ws + Agent SDK）
   src/{config,session-manager,transcript,claude-session,server,index}.ts
-  scripts/              # build-exe / build-mac-app / build-tray-mac / gen-icon / gen-iconset / mac-setup.command / 探针
+  scripts/              # build-exe / build-mac-app / build-tray-mac / check-arch / gen-icon / gen-iconset / mac-setup.command / 探针
   tray/main.swift       # 自研 macOS 菜单栏托盘助手（systray2 协议，arm64 原生，CI 现场 swiftc 编译）
 extension/              # Chrome MV3 扩展（WXT + React）
   src/lib/{protocol,storage,attach-policy,ws-client,page-extract}.ts
@@ -147,7 +150,7 @@ extension/              # Chrome MV3 扩展（WXT + React）
   git tag v0.2.0 && git push origin v0.2.0
   ```
 
-  流程：测试门禁 → Windows runner 编 `ccc-bridge-win-x64.zip`（bun 单文件 exe，内嵌桥形图标与托盘组件）、macOS runner 编 `ccc-bridge-darwin-arm64.dmg`（本机原生编译 → 组装标准 .app（悬索桥 icns、菜单栏驻留）→ swiftc 现场编译 arm64 托盘助手并跑协议冒烟 → ad-hoc 预签并校验 → dmg 附 Applications 快捷方式与一键解除隔离脚本，hdiutil 打包）、ubuntu runner 出扩展 zip（`wxt zip`，manifest 版本号自动取 tag）→ 汇总创建带自动更新说明的 GitHub Release。
+  流程：测试门禁 → Windows runner 编 `ccc-bridge-win-x64.zip`（bun 单文件 exe，内嵌桥形图标与托盘组件，打包前 `--smoke` 运行自检）、macOS runner 编 `ccc-bridge-darwin-arm64.dmg`（本机原生编译 → 组装标准 .app（悬索桥 icns、菜单栏驻留）→ swiftc 现场编译 arm64 托盘助手并跑协议冒烟 → 主程序 `--smoke` 运行自检 → ad-hoc 预签并校验 → dmg 附 Applications 快捷方式与一键解除隔离脚本，hdiutil 打包）、ubuntu runner 出扩展 zip（`wxt zip`，manifest 版本号自动取 tag）→ 汇总创建带自动更新说明的 GitHub Release。CI 门禁另对第三方预编译托盘组件做字节级架构审计（`check-arch.mjs`）——"构建成功 ≠ 能跑"，教训见 TODO。
 
 ## 许可证
 

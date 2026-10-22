@@ -25,12 +25,14 @@ jobs:
             bridge/package-lock.json
             extension/package-lock.json
 
-      - name: 桥接：依赖 / 类型检查 / 单测
+      - name: 桥接：依赖 / 类型检查 / 单测 / 预编译件架构审计
         working-directory: bridge
         run: |
           npm ci
           npm run typecheck
           npm test
+          # 第三方预编译托盘组件架构审计：win 内嵌件必须 x64（教训见 TODO 2026-10-23：x86_64 托盘混进 arm64 mac 包）
+          node scripts/check-arch.mjs node_modules/systray2/traybin/tray_windows_release.exe x64
 
       - name: 扩展：依赖 / 类型检查 / 单测 / 构建
         working-directory: extension

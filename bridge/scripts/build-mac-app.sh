@@ -51,6 +51,10 @@ swiftc -O -target arm64-apple-macos12.0 -o "$BUNDLE/Contents/MacOS/traybin/tray_
 SMOKE="$(printf '%s\n' '{"icon":"","title":"","tooltip":"","items":[{"title":"冒烟","tooltip":"","enabled":true,"__id":1}],"isTemplateIcon":false}' '{"type":"exit"}' | "$BUNDLE/Contents/MacOS/traybin/tray_darwin_release" || true)"
 echo "$SMOKE" | grep -q '"type":"ready"' || { echo "✘ 托盘助手冒烟失败：$SMOKE"; exit 1; }
 
+# 3.6 主程序运行冒烟：能 exec 且自报平台/架构正确，才证明产物在 arm64 上真实可跑（构建成功 ≠ 能跑）。
+# 此时未签名没关系：CI 编译产物无隔离标记，本机同架构直接可执行
+"$BUNDLE/Contents/MacOS/ccc-bridge" --smoke darwin arm64
+
 # 4. ad-hoc 预签：先内层二进制后整包；签完立即校验——失败让 CI 红，不出坏包
 codesign --force -s - "$BUNDLE/Contents/MacOS/traybin/tray_darwin_release"
 codesign --force -s - "$BUNDLE/Contents/MacOS/ccc-bridge"

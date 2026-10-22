@@ -210,6 +210,17 @@ async function main(): Promise<void> {
   console.log("[ccc-bridge] 托盘图标已就绪");
 }
 
+// 产物级冒烟入口（CI 用）：`ccc-bridge --smoke <platform> <arch>`——能执行到这里就证明二进制与本机架构匹配
+// （"Bad CPU type" 这类错误在 exec 阶段就死了）；平台/架构不匹配退出码 1，win 版是 GUI 子系统看不到 stdout 也能靠退出码断言
+const smokeIdx = process.argv.indexOf("--smoke");
+if (smokeIdx >= 0) {
+  const wantPlatform = process.argv[smokeIdx + 1] ?? "";
+  const wantArch = process.argv[smokeIdx + 2] ?? "";
+  const ok = process.platform === wantPlatform && process.arch === wantArch;
+  console.log(`ccc-bridge smoke：实际 ${process.platform}/${process.arch}，期望 ${wantPlatform}/${wantArch} → ${ok ? "OK" : "不匹配"}`);
+  process.exit(ok ? 0 : 1);
+}
+
 main().catch((e: unknown) => {
   const msg = e instanceof Error ? e.stack ?? e.message : String(e);
   console.error("[ccc-bridge] 托盘启动失败:", msg);

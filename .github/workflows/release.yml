@@ -54,6 +54,8 @@ jobs:
       - name: 编译托盘 exe（内嵌桥形图标、GUI 子系统）
         working-directory: bridge
         run: node scripts/build-exe.mjs win
+      - name: 产物冒烟：win exe 能跑且自报架构正确（--smoke；GUI 子系统无 stdout，靠退出码断言）
+        run: ./bridge/dist/ccc-bridge-win-x64/ccc-bridge.exe --smoke win32 x64
       - name: 打包 zip（含顶层文件夹，用户解压即用）
         run: 7z a -tzip ccc-bridge-win-x64.zip ./bridge/dist/ccc-bridge-win-x64
       - uses: actions/upload-artifact@v4
