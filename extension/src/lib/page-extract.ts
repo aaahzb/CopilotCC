@@ -28,16 +28,25 @@ export function stripInlineHandlers(html: string): string {
  * 提取当前活动 tab 的正文（Defuddle→Markdown）与选中文字。
  * 按需注入脚本，不装常驻 content script；DOM 解析在侧栏页面做（SW 无 DOM）。
  * 绝不静默失败：任何一步失败都把可读原因放进 error 返回，由 UI 展示。
- * @returns 提取结果；chrome:// 等不可注入页面 page 为 null 且 error 说明原因
+ * @returns 提取结果；chrome:// 等不可注入页面、扩展自身页面（sidepanel 被开成标签页）page 为 null 且 error 说明原因
  */
 export async function snapshotActiveTab(): Promise<SnapshotResult> {
   let tabId: number;
+  let tabUrl = "";
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tab?.id) return { page: null, error: "找不到活动标签页" };
     tabId = tab.id;
+    tabUrl = tab.url ?? "";
   } catch (e) {
     return { page: null, error: `查询标签页失败：${errText(e)}` };
+  }
+
+  // 扩展自身页面（用户把 sidepanel.html 开成普通标签页时，活动 tab 就是它）绝不附带：
+  // 否则聊天 UI 的 DOM 和 chrome-extension:// 地址会进入上下文，模型可能把该地址当来源写进产物
+  const ownOrigin = chrome.runtime.getURL(""); // 形如 chrome-extension://<扩展id>/
+  if (tabUrl.startsWith(ownOrigin)) {
+    return { page: null, error: "当前标签页是本扩展（侧栏）自身页面，按设计不附带" };
   }
 
   let raw: { html?: string; url: string; title: string; selection: string };
@@ -56,6 +65,10 @@ export async function snapshotActiveTab(): Promise<SnapshotResult> {
   } catch (e) {
     // 常见于 chrome:// 特权页，或该页未被 activeTab 授权覆盖
     return { page: null, error: `脚本注入失败：${errText(e)}` };
+  }
+  // 双保险：tabs 查询拿不到 tab.url 时（权限口径差异），注入后用页面自报的 location.href 再挡一次
+  if (raw.url.startsWith(ownOrigin)) {
+    return { page: null, error: "当前标签页是本扩展（侧栏）自身页面，按设计不附带" };
   }
   if (!raw.html) return { page: null, error: "页面 HTML 为空" };
 

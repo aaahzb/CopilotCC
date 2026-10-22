@@ -6,6 +6,7 @@ import rehypeKatex from "rehype-katex";
 import rehypeHighlight from "rehype-highlight";
 import "katex/dist/katex.min.css";
 import "highlight.js/styles/github-dark.css";
+import { isWebHref } from "../lib/format";
 
 /** 界面消息：user/assistant 聊天气泡，tool 为折叠工具卡片 */
 export interface UiMsg {
@@ -46,11 +47,32 @@ function CodeBlock(props: { children?: React.ReactNode }): React.ReactElement {
   );
 }
 
-/** react-markdown 渲染配置：GFM + 数学公式 + 语法高亮 + 代码块复制按钮 */
+/**
+ * 链接渲染：仅 http/https 绝对地址可点击（新标签打开，不顶替侧栏自身）。
+ * 其余一律降级为带说明悬浮提示的纯文本：相对地址（如 Claude 写的 [标准知识.md](标准知识.md)）
+ * 会按侧栏页面基地址解析成 chrome-extension://…/sidepanel.html 之类的错误地址，没有可打开的目标。
+ */
+function MdLink(props: { href?: string; children?: React.ReactNode }): React.ReactElement {
+  const href = props.href ?? "";
+  if (isWebHref(href)) {
+    return (
+      <a href={href} target="_blank" rel="noreferrer">
+        {props.children}
+      </a>
+    );
+  }
+  return (
+    <span className="dead-link" title={href ? `非网页地址（${href}），侧栏内无法打开，按纯文本显示` : undefined}>
+      {props.children}
+    </span>
+  );
+}
+
+/** react-markdown 渲染配置：GFM + 数学公式 + 语法高亮 + 代码块复制按钮 + 非网页链接降级纯文本（MdLink） */
 const MD = {
   remarkPlugins: [remarkGfm, remarkMath],
   rehypePlugins: [rehypeKatex, rehypeHighlight],
-  components: { pre: CodeBlock },
+  components: { pre: CodeBlock, a: MdLink },
 };
 
 /** 距底超过该像素值时显示"回到底部"按钮 */

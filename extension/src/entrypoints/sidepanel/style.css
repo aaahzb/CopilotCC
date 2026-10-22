@@ -55,6 +55,8 @@ body { margin: 0; font-family: "Segoe UI", system-ui, sans-serif; font-size: 13p
 .msg th, .msg td { border: 1px solid #444; padding: 4px 8px; }
 .msg th { background: #17181c; }
 .msg code { background: #17181c; padding: 1px 5px; border-radius: 3px; }
+/* 非网页链接（本地文件名等）降级后的纯文本：点状下划线 + 帮助光标，提示它本来是链接 */
+.msg .dead-link { text-decoration: underline dotted #666; cursor: help; }
 .msg pre code { background: none; padding: 0; }
 .code-wrap { position: relative; }
 .code-wrap .code-copy { position: absolute; top: 4px; right: 4px; background: #2f4f7f; color: #fff; border: none; border-radius: 4px; padding: 2px 8px; font-size: 11px; cursor: pointer; opacity: .85; }
