@@ -53,7 +53,9 @@ function extractEmbeddedTraybin(): string | null {
 
 /**
  * systray2 只认 CWD 下 ./traybin/<平台二进制>：chdir 到包含 traybin 的目录。
- * 候选顺序：内嵌释放目录（win 单文件分发）→ exe 旁 traybin/（mac 包与旧版 win 包）→ CWD → node_modules/systray2（开发态）。
+ * 候选顺序：内嵌释放目录（win 单文件分发）→ exe 旁 traybin/（mac 包与旧版 win 包）→ bridge/tray/bin
+ * （mac 开发态自研 arm64 助手，scripts/build-tray-mac.sh 产出）→ CWD → node_modules/systray2
+ * （win/linux 开发态；其自带 darwin 托盘是 x86_64 单架构，arm64 Mac 不可用）。
  * @throws 所有候选都找不到时抛错
  */
 function chdirToTraybinParent(): void {
@@ -69,8 +71,9 @@ function chdirToTraybinParent(): void {
   const candidates = [
     ...(embedded ? [embedded] : []), // win 单文件：释放到配置目录的组件（与当前 exe 同版本，优先）
     path.dirname(process.execPath), // mac 包与旧版 win 包：exe 旁
+    ...(here ? [path.join(here, "..", "tray", "bin")] : []), // mac 开发态：自研 arm64 助手（build-tray-mac.sh 产出）
     process.cwd(), // 已在正确 CWD
-    ...(here ? [path.join(here, "..", "node_modules", "systray2")] : []), // 开发：包目录
+    ...(here ? [path.join(here, "..", "node_modules", "systray2")] : []), // win/linux 开发态：包目录
   ];
   for (const dir of candidates) {
     if (fs.existsSync(path.join(dir, "traybin", exe))) {
@@ -196,7 +199,14 @@ async function main(): Promise<void> {
   systray.onClick((a) => {
     (a.item as TrayItem).click?.();
   });
-  await systray.ready();
+  // 就绪加 8s 超时：二进制能 spawn 但迟迟不报 ready 的卡死态也按致命处理落 tray-error.log，
+  // 否则桥接无声无图标地挂着，用户只能看到"什么都没发生"（静默挂死是最坏的失败形态）
+  await Promise.race([
+    systray.ready(),
+    new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error(`托盘二进制 ${systray.binPath} 8 秒内未报 ready`)), 8000);
+    }),
+  ]);
   console.log("[ccc-bridge] 托盘图标已就绪");
 }
 

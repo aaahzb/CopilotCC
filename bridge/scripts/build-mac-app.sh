@@ -14,12 +14,11 @@ BUNDLE="$ROOT/dist/$APP"
 STAGE="$ROOT/dist/dmg-stage"
 VER="$(node -p "require('$ROOT/package.json').version")"
 
-# 1. 组装 .app 骨架：主程序与托盘组件都放在 Contents/MacOS（tray.ts 按 exe 旁 traybin/ 解析，零改动兼容）
+# 1. 组装 .app 骨架：主程序放 Contents/MacOS；traybin/ 目录留给第 3.5 步现场编译的托盘助手（tray.ts 按 exe 旁 traybin/ 解析，零改动兼容）
 rm -rf "$BUNDLE" "$STAGE"
 mkdir -p "$BUNDLE/Contents/MacOS/traybin" "$BUNDLE/Contents/Resources"
 cp "$SRC/ccc-bridge" "$BUNDLE/Contents/MacOS/ccc-bridge"
-cp "$SRC/traybin/tray_darwin_release" "$BUNDLE/Contents/MacOS/traybin/tray_darwin_release"
-chmod +x "$BUNDLE/Contents/MacOS/ccc-bridge" "$BUNDLE/Contents/MacOS/traybin/tray_darwin_release"
+chmod +x "$BUNDLE/Contents/MacOS/ccc-bridge"
 
 # 2. Info.plist（LSUIElement：菜单栏常驻程序，不占 Dock）
 cat > "$BUNDLE/Contents/Info.plist" <<PLIST
@@ -44,6 +43,13 @@ PLIST
 # 3. 图标：形状库出 iconset → iconutil 转 icns（iconutil 仅 macOS 有）
 node "$ROOT/scripts/gen-iconset.mjs" "$ROOT/dist/ccc.iconset"
 iconutil -c icns "$ROOT/dist/ccc.iconset" -o "$BUNDLE/Contents/Resources/icon.icns"
+
+# 3.5 托盘助手：自研 Swift 菜单栏程序现场编译为 arm64 原生。systray2 自带的 tray_darwin_release 是
+# x86_64 单架构——无 Rosetta 的 Apple Silicon 起不来（2026-10-23 实锤：App 能开但菜单栏没图标）
+swiftc -O -target arm64-apple-macos12.0 -o "$BUNDLE/Contents/MacOS/traybin/tray_darwin_release" "$ROOT/tray/main.swift"
+# 协议回路冒烟：启动须先报 ready；喂初始菜单（含中文，验 UTF-8 通路）+ exit 须干净跑完
+SMOKE="$(printf '%s\n' '{"icon":"","title":"","tooltip":"","items":[{"title":"冒烟","tooltip":"","enabled":true,"__id":1}],"isTemplateIcon":false}' '{"type":"exit"}' | "$BUNDLE/Contents/MacOS/traybin/tray_darwin_release" || true)"
+echo "$SMOKE" | grep -q '"type":"ready"' || { echo "✘ 托盘助手冒烟失败：$SMOKE"; exit 1; }
 
 # 4. ad-hoc 预签：先内层二进制后整包；签完立即校验——失败让 CI 红，不出坏包
 codesign --force -s - "$BUNDLE/Contents/MacOS/traybin/tray_darwin_release"

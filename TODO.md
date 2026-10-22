@@ -182,3 +182,13 @@
 **根因**：`$APP，`/`$VER）` 变量名后紧跟全角标点，mac runner 的 bash 把标点首字节吞进变量名；set -u 下未定义即死。bash -n 查不出，Windows 本地也复现不了（Git Bash 不这么解析）。
 **修复**：变量与全角标点相邻一律 ${VAR} 花括号（mac-setup.command 的 `$APP。` 同步加固）；提交前 `grep -n '\$[A-Za-z_][A-Za-z0-9_]*[^ -~]'` 可机器化扫雷。
 **教训**：中文插值字符串里的变量展开永远带 ${}——这是唯一不依赖 locale 与 bash 版本行为的写法；set -u 再次立功，把静默输出残句变成构建期硬失败。
+
+## 2026-10-23 macOS 菜单栏图标不出现：systray2 自带托盘二进制是 x86_64 单架构
+
+**现象**：dmg 安装/解除隔离都顺了，App 也能打开，但菜单栏看不到桥形图标（桥接进程其实在跑，WS 正常）。
+**根因**：systray2@2.1.4 自带的 tray_darwin_release 是 x86_64 单架构 Mach-O（头部 cputype 0x01000007，xxd 前 8 字节可辨）；没装 Rosetta 的 Apple Silicon 上 spawn 即失败，图标永远不会出现。Windows 托盘正常只是因为 win 版本来就是 x64——架构盲区一直没被覆盖。
+**修复**：托盘助手自研——bridge/tray/main.swift（按 node_modules/systray2/index.js 客户端口径实现 ready/整份菜单/update-*/clicked/exit 协议，同名 tray_darwin_release 使客户端零改动），CI 在 mac runner 用 swiftc 现场编 arm64（-target arm64-apple-macos12.0），编完跑协议回路冒烟（ready + 中文初始菜单 + exit）卡质量门；tray.ts 的 ready() 加 8s 超时（能 spawn 但迟迟不就绪的静默挂死也走 tray-error.log 致命日志）；开发态 scripts/build-tray-mac.sh 产 bridge/tray/bin/，候选顺序优先于 node_modules。
+**教训**：
+- 分发包里每一个非自家二进制都要验证目标架构：Mach-O 头 4-7 字节是 cputype（0x01000007=x86_64，0x0100000C=arm64；CAFEBABE=universal 胖二进制），xxd 一眼可辨，不收"它在某台机器上能跑"的口供。
+- "能打开 ≠ 全链路能跑"：主进程活着、WS 正常，不代表子进程托盘起来了——启动期失败必须落盘可查（tray-error.log 就是第一证据来源）。
+- 静默挂死是最坏的失败形态：spawn 成功但协议不就绪要有超时兜底，否则用户只能看到"什么都没发生"。

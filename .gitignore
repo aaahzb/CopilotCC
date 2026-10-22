@@ -6,3 +6,6 @@ dist/
 
 # 用户截图，永不提交
 /捕获.JPG
+
+# 本地编译的 mac 托盘助手（build-tray-mac.sh 产出）
+bridge/tray/bin/

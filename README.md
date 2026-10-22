@@ -86,6 +86,7 @@ Chrome 侧栏(React)  ⇄  ws://127.0.0.1:19280  ⇄  ccc-bridge(Node)  ⇄  Age
 - **auto 模式异常怎么办？** 切换为 `acceptEdits`（设计上就是 auto 的降级预案）。
 - **改端口？** 托盘右键「修改端口…」用浏览器打开本机设置页（与 WS 同一端口，不额外占端口），输入新端口保存即在线生效（写回 config.json，进行中的会话连接会断开），页面直接给出新配对串，到侧栏「⚙ 配对」粘贴一次即可。也可手改 `~/.ccc-bridge/config.json` 的 `port` 后重启桥接。端口被占用时桥接自动顺延（最多 10 个），配对串携带的总是实际端口。
 - **macOS 报"已损坏，无法打开"？** 免费分发没有 Apple 开发者证书（$99/年的 Developer ID + 公证才有「放行即可」的体验），浏览器下载的隔离标记下 macOS 对 ad-hoc 签名一律报损坏、且对 App 右键打开也绕不过——对 dmg 里的「首次使用-右键打开我.command」右键 → 打开一次即可（解除隔离后，以后双击即用）。
+- **macOS 看不到桥接图标？** 图标在屏幕最上方菜单栏的右侧——菜单栏驻留程序按设计不占底部 Dock；刘海屏菜单栏太挤时系统会藏起新图标，关掉几个菜单栏应用再看。仍没有：终端跑 `cat ~/.ccc-bridge/tray-error.log` 把内容发给开发者。
 - **chrome:// 等特权页无法提取？** 属浏览器限制，会在消息列表显示失败原因，不再静默降级。同理，若把侧栏自身（chrome-extension://…/sidepanel.html）开成普通标签页，该页按设计不附带——否则聊天界面本身会进入上下文，模型可能把扩展内部地址当来源写进产物。
 - **想换托盘/ exe 图标？** 图标由 `bridge/scripts/gen-icon.mjs` 生成（Claude 橙桥形，a 拱桥 / b 拱桥+桥墩 / c 悬索桥三变体，当前用 c），`node bridge/scripts/gen-icon.mjs a|b` 后重新 `npm run build:exe` 生效；脚本输出浅/深底预览条到 `%TEMP%/ccc-icon-preview.png` 供挑选；扩展图标由 `scripts/gen-ext-icon.mjs` 复用同一形状库生成（extension/public/icon/，改后重新 `npm run build` 生效）。
 
@@ -96,6 +97,8 @@ Chrome 侧栏(React)  ⇄  ws://127.0.0.1:19280  ⇄  ccc-bridge(Node)  ⇄  Age
 ```bash
 # 桥接（Node 22+）
 cd bridge && npm i && npm start        # 开发态托盘：npm run tray
+# arm64 Mac 跑托盘前须先编一次自研托盘助手：bash scripts/build-tray-mac.sh
+# （systray2 自带的 darwin 托盘是 x86_64 单架构，无 Rosetta 起不来；发布态由 CI 现场编译，无需手动）
 
 # 扩展（另一个终端）
 cd extension && npm i && npm run build
@@ -126,7 +129,8 @@ shared/protocol.ts      # WS 协议单一来源
 scripts/                # sync-protocol / gen-extension-key
 bridge/                 # 本地桥接（Node + ws + Agent SDK）
   src/{config,session-manager,transcript,claude-session,server,index}.ts
-  scripts/              # build-exe / build-mac-app / gen-icon / gen-iconset / mac-setup.command / 探针
+  scripts/              # build-exe / build-mac-app / build-tray-mac / gen-icon / gen-iconset / mac-setup.command / 探针
+  tray/main.swift       # 自研 macOS 菜单栏托盘助手（systray2 协议，arm64 原生，CI 现场 swiftc 编译）
 extension/              # Chrome MV3 扩展（WXT + React）
   src/lib/{protocol,storage,attach-policy,ws-client,page-extract}.ts
   src/components/       # TokenGate / FolderBar / MessageList / InputBox / PermissionCard
@@ -143,7 +147,7 @@ extension/              # Chrome MV3 扩展（WXT + React）
   git tag v0.2.0 && git push origin v0.2.0
   ```
 
-  流程：测试门禁 → Windows runner 编 `ccc-bridge-win-x64.zip`（bun 单文件 exe，内嵌桥形图标与托盘组件）、macOS runner 编 `ccc-bridge-darwin-arm64.dmg`（本机原生编译 → 组装标准 .app（悬索桥 icns、菜单栏驻留）→ ad-hoc 预签并校验 → dmg 附 Applications 快捷方式与一键解除隔离脚本，hdiutil 打包）、ubuntu runner 出扩展 zip（`wxt zip`，manifest 版本号自动取 tag）→ 汇总创建带自动更新说明的 GitHub Release。
+  流程：测试门禁 → Windows runner 编 `ccc-bridge-win-x64.zip`（bun 单文件 exe，内嵌桥形图标与托盘组件）、macOS runner 编 `ccc-bridge-darwin-arm64.dmg`（本机原生编译 → 组装标准 .app（悬索桥 icns、菜单栏驻留）→ swiftc 现场编译 arm64 托盘助手并跑协议冒烟 → ad-hoc 预签并校验 → dmg 附 Applications 快捷方式与一键解除隔离脚本，hdiutil 打包）、ubuntu runner 出扩展 zip（`wxt zip`，manifest 版本号自动取 tag）→ 汇总创建带自动更新说明的 GitHub Release。
 
 ## 许可证
 

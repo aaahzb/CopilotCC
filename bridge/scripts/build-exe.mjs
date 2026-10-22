@@ -1,7 +1,8 @@
 /**
  * 用 bun build --compile 出托盘桥：Windows x64 + macOS arm64。
  * 产物布局：win = dist/ccc-bridge-win-x64/ccc-bridge.exe 单文件（托盘组件 base64 内嵌，首跑释放到 ~/.ccc-bridge/traybin/）；
- *           darwin = dist/ccc-bridge-darwin-arm64/ccc-bridge + traybin/tray_darwin_release（setup.command 要对它签名）。
+ *           darwin = dist/ccc-bridge-darwin-arm64/ccc-bridge（托盘助手由 build-mac-app.sh 现场编译 bridge/tray/main.swift 产出——
+ *           systray2 自带的 tray_darwin_release 是 x86_64 单架构，无 Rosetta 的 Apple Silicon 起不来，已弃用）。
  * 运行：node scripts/build-exe.mjs（需要全局 bun，npm i -g bun）。
  */
 import { spawnSync } from "node:child_process";
@@ -35,8 +36,8 @@ export const TRAYBIN_WIN_B64 = "";
 const allTargets = [
   // win：单文件分发（embed=true），托盘组件内嵌进 exe、首跑释放到配置目录，zip 里只有一个 exe
   { key: "win", target: "bun-windows-x64", dir: "ccc-bridge-win-x64", exe: "ccc-bridge.exe", trayBin: "tray_windows_release.exe", embed: true, extra: ["--windows-hide-console", `--windows-icon "${iconPath}"`] },
-  // darwin：托盘组件走 exe 旁 traybin/（setup.command 要对它 ad-hoc 签名，须是磁盘上的真实文件）
-  { key: "darwin", target: "bun-darwin-arm64", dir: "ccc-bridge-darwin-arm64", exe: "ccc-bridge", trayBin: "tray_darwin_release", embed: false, extra: [] },
+  // darwin：不再带 systray2 的 x86_64 托盘组件；arm64 托盘助手由 build-mac-app.sh 现场编译进 .app
+  { key: "darwin", target: "bun-darwin-arm64", dir: "ccc-bridge-darwin-arm64", exe: "ccc-bridge", trayBin: null, embed: false, extra: [] },
 ];
 
 // 平台过滤：node scripts/build-exe.mjs [win|darwin]，缺省全部（release CI 在 mac runner 上只编 darwin）
@@ -55,7 +56,7 @@ for (const t of targets) {
     // 单文件分发：托盘组件 base64 临时写进 TS 模块参与编译
     const b64 = fs.readFileSync(path.join(root, "node_modules", "systray2", "traybin", t.trayBin)).toString("base64");
     fs.writeFileSync(traybinB64Path, `export const TRAYBIN_WIN_B64 = "${b64}";\n`);
-  } else {
+  } else if (t.trayBin) {
     fs.mkdirSync(path.join(outDir, "traybin"), { recursive: true });
   }
   // npm 全局 bun 在 Windows 上是 bun.cmd shim，execFile 不能直跑 → 走 shell
@@ -66,7 +67,7 @@ for (const t of targets) {
     console.error(`✘ ${t.dir} 构建失败（exit ${r.status}）`);
     process.exit(r.status ?? 1);
   }
-  if (!t.embed) {
+  if (!t.embed && t.trayBin) {
     fs.copyFileSync(path.join(root, "node_modules", "systray2", "traybin", t.trayBin), path.join(outDir, "traybin", t.trayBin));
   }
   console.log(`✔ dist/${t.dir}`);
