@@ -161,7 +161,7 @@
 ### 2026-10-22：修复回复中本地文件名被渲染成错误链接（点击误跳 sidepanel.html）
 
 - 根因：Claude 回复里提到本地文件常写成 `[标准知识.md](标准知识.md)` 这类相对链接；react-markdown 默认渲染成 `<a href="标准知识.md">`，相对地址按侧栏页面基地址解析成 chrome-extension://…/sidepanel.html 之类的扩展内部地址，点击即误跳（用户报告"标准知识.md 变成可点击的，点击打开了 sidepanel.html"）。
-- 修复：MessageList 增加 MdLink 链接渲染——仅 http/https 绝对地址可点击（顺带补 target=_blank rel=noreferrer 新标签打开，此前点真链接会顶替侧栏自身页面）；其余一律降级为带说明悬浮提示的纯文本（点状下划线标识它本来是链接）。判定逻辑 isWebHref 落 format.ts 纯函数便于测试。
+- 修复：MessageList 增加 MdLink 链接渲染——仅 http/https 绝对地址可点击（顺带补 target=_blank rel=noreferrer 新标签打开，此前点真链接会顶替侧栏自身页面）；其余一律降级为纯文本（仅保留悬浮提示说明它本来是不可打开的地址；初版加了点状下划线 + help 光标，用户反馈问号光标观感怪异，回退为彻底普通文字）。判定逻辑 isWebHref 落 format.ts 纯函数便于测试。
 - 顺带加固：snapshotActiveTab 增加扩展自身页面守卫——用户把 sidepanel.html 开成普通标签页时活动 tab 就是它，注入会成功并把聊天 UI 与扩展地址喂进上下文；现在注入前按 tab.url 拦、注入后按 location.href 再拦一次，双保险不附带。
 - 验证：扩展 typecheck + 35 测试全绿（新增 isWebHref 3 例 + 自身页面守卫 2 例）+ 构建通过（纯扩展侧改动，桥接未动）。
-- 教训：应用壳层（侧栏/内嵌页）里的 Markdown 渲染不能放行相对链接——相对地址会按壳页面基地址解析成无意义或错误目标；链接渲染必须白名单协议（http/https），其余一律降级。
+- 教训：应用壳层（侧栏/内嵌页）里的 Markdown 渲染不能放行相对链接——相对地址会按壳页面基地址解析成无意义或错误目标；链接渲染必须白名单协议（http/https），其余一律降级。且降级就要降彻底：任何"它本来是链接"的样式暗示（下划线、help 光标）都是噪音。
