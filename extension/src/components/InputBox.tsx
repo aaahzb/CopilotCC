@@ -146,10 +146,13 @@ export function InputBox(props: {
         <button
           type="button"
           className={`force-attach${props.forceAttach ? " on" : ""}`}
-          title="本次强制看页面：下一条消息强制附带页面全文（不受同页去重限制），用后自动失效；本轮若发生 compact 会自动续到下一轮"
+          aria-pressed={props.forceAttach}
+          title={props.forceAttach
+            ? "已点亮 ✓：下一条消息强制附带页面全文；再点一次即取消（用后自动失效；本轮若发生 compact 会自动续到下一轮）"
+            : "本次强制看页面：下一条消息强制附带页面全文（不受同页去重限制），用后自动失效；本轮若发生 compact 会自动续到下一轮"}
           onClick={props.onToggleForceAttach}
         >
-          📄 强制看页面
+          📄 强制看页面{props.forceAttach ? " ✓" : ""}
         </button>
         <span className="send-actions">
           <input

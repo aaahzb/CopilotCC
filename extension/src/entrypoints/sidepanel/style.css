@@ -27,9 +27,9 @@ body { margin: 0; font-family: "Segoe UI", system-ui, sans-serif; font-size: 13p
 .input-box .toggles > select { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .input-box select { background: #2a2b31; color: inherit; border: 1px solid #444; border-radius: 4px; }
 .input-box textarea { display: block; width: 100%; background: #2a2b31; color: inherit; border: 1px solid #444; border-radius: 6px; padding: 6px 8px; resize: vertical; }
-/* 强制看页面开关：发送行内（模型·effort 指示右侧），点亮态蓝底；曾经悬浮在输入框右上角，会盖住输入文字 */
+/* 强制看页面开关：发送行内（模型·effort 指示右侧）；点亮态 = 亮蓝底 + 文案带 ✓ 双通道反馈（深灰→深蓝的单色差在深色主题下分辨不出，教训见 TODO）；曾经悬浮在输入框右上角，会盖住输入文字 */
 .input-box .force-attach { font-size: 11px; line-height: 1.6; padding: 1px 8px; border-radius: 10px; border: 1px solid #444; background: #2a2b31; color: #9aa0a6; cursor: pointer; white-space: nowrap; flex-shrink: 0; }
-.input-box .force-attach.on { background: #2f4f7f; border-color: #4a6fa5; color: #fff; }
+.input-box .force-attach.on { background: #3b82f6; border-color: #60a5fa; color: #fff; }
 .input-box .send-row { display: flex; align-items: center; gap: 6px; }
 /* 模型·effort 指示：可被压缩省略但保底 4.5em，永不被按钮挤没；完整文本在悬浮提示 */
 .input-box .send-row .model-effort { font-size: 11px; color: #9aa0a6; opacity: 0.85; flex: 0 1 auto; min-width: 4.5em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
