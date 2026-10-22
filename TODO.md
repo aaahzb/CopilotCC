@@ -165,3 +165,13 @@
 - 顺带加固：snapshotActiveTab 增加扩展自身页面守卫——用户把 sidepanel.html 开成普通标签页时活动 tab 就是它，注入会成功并把聊天 UI 与扩展地址喂进上下文；现在注入前按 tab.url 拦、注入后按 location.href 再拦一次，双保险不附带。
 - 验证：扩展 typecheck + 35 测试全绿（新增 isWebHref 3 例 + 自身页面守卫 2 例）+ 构建通过（纯扩展侧改动，桥接未动）。
 - 教训：应用壳层（侧栏/内嵌页）里的 Markdown 渲染不能放行相对链接——相对地址会按壳页面基地址解析成无意义或错误目标；链接渲染必须白名单协议（http/https），其余一律降级。且降级就要降彻底：任何"它本来是链接"的样式暗示（下划线、help 光标）都是噪音。
+
+## 2026-10-22 macOS dmg 重构：标准 .app + ad-hoc 预签 + 一键解除隔离（免费分发）
+
+**现象**：CI 出的 dmg 打开是裸文件夹而非 .app，双击报"已损坏"；用户期望"加个签名放行就行"。
+**根因**：浏览器下载带 com.apple.quarantine 隔离标记；没有 Apple Developer ID（$99/年）+ 公证时，ad-hoc 签名在隔离态下一律报"已损坏"，对 App 右键→打开也无法绕过——免费分发唯一路径是先解除隔离。
+**修复**：dmg 改标准布局——正规 CopilotCC Bridge.app（Info.plist + 悬索桥 icns + LSUIElement 菜单栏驻留；traybin 放 Contents/MacOS 下，零改动兼容 tray.ts 的 exe 旁解析）+ CI 内 ad-hoc 预签并以 codesign --verify --deep --strict 卡质量门 + Applications 软链 + 「首次使用-右键打开我.command」一键脚本（拷入 /Applications → xattr -cr 解除隔离 → 校验补签 → open 启动）。整条链由 bridge/scripts/build-mac-app.sh 串好，release.yml 只调它。
+**教训**：
+- ad-hoc 签名 + quarantine = "已损坏"且右键无绕过；Developer ID + notarytool 公证才有"放行即可"体验（$99/年）。免费方案的用户动作底线 = 一次性右键打开解除隔离脚本，文档必须把这步写到最显眼。
+- .app 化时托盘组件解析沿 path.dirname(process.execPath) 自然落到 Contents/MacOS，traybin 跟着放那里即零代码改动；writeIcon 写 os.tmpdir() 不动包内容，不破坏包签名。
+- dmg 内的 .command 进 dmg 前必须 chmod +x（hdiutil 保留权限位），用户右键→打开才有效。

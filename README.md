@@ -16,7 +16,7 @@
 | --- | --- | --- |
 | `ccc-extension-x.y.z-chrome.zip` | Chrome / Edge | 浏览器扩展 |
 | `ccc-bridge-win-x64.zip` | Windows 64 位 | 本地桥接（系统托盘程序） |
-| `ccc-bridge-darwin-arm64.dmg` | macOS（Apple Silicon） | 本地桥接（菜单栏程序） |
+| `ccc-bridge-darwin-arm64.dmg` | macOS（Apple Silicon） | 本地桥接（菜单栏程序，标准 .app 包） |
 
 > macOS Intel / Linux 暂无预编译产物，请走「开发者 → 从源码运行」。
 
@@ -29,7 +29,7 @@
 ### 2. 运行桥接
 
 - **Windows**：解压 `ccc-bridge-win-x64.zip`，双击 `ccc-bridge.exe`，图标出现在系统托盘（单文件 exe，首次运行自动把托盘组件释放到 `~/.ccc-bridge/traybin/`）。
-- **macOS**：打开 `ccc-bridge-darwin-arm64.dmg`，把里面的 `ccc-bridge-darwin-arm64` 文件夹**先拷到 dmg 外面**（如「应用程序」或家目录——dmg 只读，初始化要往二进制写签名，不能直接在 dmg 里跑），对拷出来的 `setup.command` **右键 → 打开**（仅首次需要，自动完成赋权与签名），之后双击 `ccc-bridge` 常驻菜单栏。
+- **macOS**：打开 `ccc-bridge-darwin-arm64.dmg`，把「CopilotCC Bridge」拖进「应用程序」（不拖也行，下面的脚本会代劳），然后对 dmg 里的「首次使用-右键打开我.command」**右键 → 打开**——仅首次需要：浏览器下载的隔离标记会让 macOS 对免费签名误报"已损坏"（对 App 右键打开同样绕不过，必须先解除隔离），脚本自动完成安装、解除隔离并启动。之后双击「应用程序」里的 CopilotCC Bridge 即常驻菜单栏，无需再跑脚本。
 
 ### 3. 配对
 
@@ -85,6 +85,7 @@ Chrome 侧栏(React)  ⇄  ws://127.0.0.1:19280  ⇄  ccc-bridge(Node)  ⇄  Age
 - **配对失败/一直连不上？** 先确认桥接在跑（托盘图标在）。白名单出厂已预置本扩展 Origin；若手动改过 `~/.ccc-bridge/config.json` 的 `allowedOrigins`，确认包含 `chrome-extension://cnalihjaacpahpjkpneacjcfbhboglno` 并重启过桥接。
 - **auto 模式异常怎么办？** 切换为 `acceptEdits`（设计上就是 auto 的降级预案）。
 - **改端口？** 托盘右键「修改端口…」用浏览器打开本机设置页（与 WS 同一端口，不额外占端口），输入新端口保存即在线生效（写回 config.json，进行中的会话连接会断开），页面直接给出新配对串，到侧栏「⚙ 配对」粘贴一次即可。也可手改 `~/.ccc-bridge/config.json` 的 `port` 后重启桥接。端口被占用时桥接自动顺延（最多 10 个），配对串携带的总是实际端口。
+- **macOS 报"已损坏，无法打开"？** 免费分发没有 Apple 开发者证书（$99/年的 Developer ID + 公证才有「放行即可」的体验），浏览器下载的隔离标记下 macOS 对 ad-hoc 签名一律报损坏、且对 App 右键打开也绕不过——对 dmg 里的「首次使用-右键打开我.command」右键 → 打开一次即可（解除隔离后，以后双击即用）。
 - **chrome:// 等特权页无法提取？** 属浏览器限制，会在消息列表显示失败原因，不再静默降级。同理，若把侧栏自身（chrome-extension://…/sidepanel.html）开成普通标签页，该页按设计不附带——否则聊天界面本身会进入上下文，模型可能把扩展内部地址当来源写进产物。
 - **想换托盘/ exe 图标？** 图标由 `bridge/scripts/gen-icon.mjs` 生成（Claude 橙桥形，a 拱桥 / b 拱桥+桥墩 / c 悬索桥三变体，当前用 c），`node bridge/scripts/gen-icon.mjs a|b` 后重新 `npm run build:exe` 生效；脚本输出浅/深底预览条到 `%TEMP%/ccc-icon-preview.png` 供挑选；扩展图标由 `scripts/gen-ext-icon.mjs` 复用同一形状库生成（extension/public/icon/，改后重新 `npm run build` 生效）。
 
@@ -125,7 +126,7 @@ shared/protocol.ts      # WS 协议单一来源
 scripts/                # sync-protocol / gen-extension-key
 bridge/                 # 本地桥接（Node + ws + Agent SDK）
   src/{config,session-manager,transcript,claude-session,server,index}.ts
-  scripts/              # build-exe / gen-icon / mac-setup.command / 探针
+  scripts/              # build-exe / build-mac-app / gen-icon / gen-iconset / mac-setup.command / 探针
 extension/              # Chrome MV3 扩展（WXT + React）
   src/lib/{protocol,storage,attach-policy,ws-client,page-extract}.ts
   src/components/       # TokenGate / FolderBar / MessageList / InputBox / PermissionCard
@@ -142,4 +143,8 @@ extension/              # Chrome MV3 扩展（WXT + React）
   git tag v0.2.0 && git push origin v0.2.0
   ```
 
-  流程：测试门禁 → Windows runner 编 `ccc-bridge-win-x64.zip`（bun 单文件 exe，内嵌桥形图标与托盘组件）、macOS runner 编 `ccc-bridge-darwin-arm64.dmg`（本机原生编译，附 `setup.command` 一键初始化，hdiutil 出 dmg）、ubuntu runner 出扩展 zip（`wxt zip`，manifest 版本号自动取 tag）→ 汇总创建带自动更新说明的 GitHub Release。
+  流程：测试门禁 → Windows runner 编 `ccc-bridge-win-x64.zip`（bun 单文件 exe，内嵌桥形图标与托盘组件）、macOS runner 编 `ccc-bridge-darwin-arm64.dmg`（本机原生编译 → 组装标准 .app（悬索桥 icns、菜单栏驻留）→ ad-hoc 预签并校验 → dmg 附 Applications 快捷方式与一键解除隔离脚本，hdiutil 打包）、ubuntu runner 出扩展 zip（`wxt zip`，manifest 版本号自动取 tag）→ 汇总创建带自动更新说明的 GitHub Release。
+
+## 许可证
+
+[MIT](LICENSE)

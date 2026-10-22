@@ -73,7 +73,4 @@ for (const t of targets) {
 }
 
 console.log("");
-console.log("完成。macOS 部署：");
-console.log("  chmod +x ccc-bridge traybin/tray_darwin_release");
-console.log("  codesign --force -s - ccc-bridge && codesign --force -s - traybin/tray_darwin_release");
-console.log("  xattr -dr com.apple.quarantine . 2>/dev/null || true");
+console.log("完成。macOS 打包下一步（仅 macOS）：bash scripts/build-mac-app.sh  # 组装 .app + ad-hoc 预签 + dmg");

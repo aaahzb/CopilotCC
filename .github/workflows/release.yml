@@ -80,11 +80,8 @@ jobs:
       - name: 编译 darwin-arm64
         working-directory: bridge
         run: node scripts/build-exe.mjs darwin
-      - name: 附带一键初始化脚本并打包 dmg（hdiutil 保留可执行位）
-        run: |
-          cp bridge/scripts/mac-setup.command bridge/dist/ccc-bridge-darwin-arm64/setup.command
-          chmod +x bridge/dist/ccc-bridge-darwin-arm64/setup.command
-          hdiutil create -volname CopilotCC -srcfolder bridge/dist/ccc-bridge-darwin-arm64 -ov -format UDZO ccc-bridge-darwin-arm64.dmg
+      - name: 组装 .app、ad-hoc 预签并打包 dmg（标准应用包 + 一键解除隔离脚本；hdiutil 保留可执行位与符号链接）
+        run: bash bridge/scripts/build-mac-app.sh
       - uses: actions/upload-artifact@v4
         with:
           name: bridge-mac
