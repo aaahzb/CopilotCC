@@ -12,6 +12,7 @@ function stubEvents(): SessionEvents & { log: Array<[string, ...unknown[]]> } {
     onError: (m) => log.push(["error", m]),
     onPermission: (r) => log.push(["permission", r]),
     onSessionId: (id) => log.push(["sid", id]),
+    onAborted: () => log.push(["aborted"]),
   };
 }
 
@@ -146,5 +147,76 @@ describe("createClaudeSession", () => {
     await new Promise((r) => setTimeout(r, 50));
     expect(ev.log).toContainEqual(["done", "sid-1", { model: undefined, effort: undefined, compacted: true }]);
     await s.close();
+  });
+
+  describe("abort 手动中止", () => {
+    /** 可控假 SDK query：帧由测试手动推入；interrupt 是间谍（可注入拒绝实现） */
+    function manualQuery(interruptImpl?: () => Promise<void>): {
+      fn: (args: { prompt: AsyncIterable<unknown>; options: Record<string, unknown> }) => AsyncIterable<unknown>;
+      interrupt: ReturnType<typeof vi.fn>;
+      push: (m: unknown) => void;
+    } {
+      const queue: unknown[] = [];
+      let notify: (() => void) | null = null;
+      const interrupt = vi.fn(interruptImpl ?? (() => Promise.resolve()));
+      const fn = () => {
+        const gen = (async function* () {
+          for (;;) {
+            while (queue.length > 0) yield queue.shift();
+            await new Promise<void>((r) => (notify = r));
+            notify = null;
+          }
+        })();
+        return Object.assign(gen, { interrupt });
+      };
+      const push = (m: unknown): void => {
+        queue.push(m);
+        notify?.();
+      };
+      return { fn, interrupt, push };
+    }
+
+    const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 20));
+
+    it("中止进行中的轮次：立即 onAborted、调 SDK interrupt、该轮收尾 result 帧被吞", async () => {
+      const { fn, interrupt, push } = manualQuery();
+      const ev = stubEvents();
+      const s = createClaudeSession("D:\notes", { permissionMode: "auto", events: ev, queryFn: fn });
+      push(INIT);
+      await tick();
+      s.send("长任务");
+      s.abort(); // 思考/工具调用期（尚无首字）即可中止
+      expect(ev.log).toContainEqual(["aborted"]);
+      expect(interrupt).toHaveBeenCalledTimes(1);
+      push(DONE); // 被中止轮的收尾帧：成败都不再发 done/error（客户端已被 aborted 释放）
+      await tick();
+      expect(ev.log.map(([k]) => k)).not.toContain("done");
+      expect(ev.log.map(([k]) => k)).not.toContain("error");
+      await s.close();
+    });
+
+    it("空闲时 abort 是空操作：不触发 onAborted、不调 interrupt（竞态：done 在途时点了停止）", async () => {
+      const { fn, interrupt, push } = manualQuery();
+      const ev = stubEvents();
+      const s = createClaudeSession("D:\notes", { permissionMode: "auto", events: ev, queryFn: fn });
+      push(INIT);
+      await tick();
+      s.abort();
+      expect(interrupt).not.toHaveBeenCalled();
+      expect(ev.log.map(([k]) => k)).not.toContain("aborted");
+      await s.close();
+    });
+
+    it("interrupt 拒绝（CLI 侧轮次已结束）不冒泡、不影响已下发的 onAborted", async () => {
+      const { fn, interrupt } = manualQuery(() => Promise.reject(new Error("no active turn")));
+      const ev = stubEvents();
+      const s = createClaudeSession("D:\notes", { permissionMode: "auto", events: ev, queryFn: fn });
+      s.send("x");
+      s.abort();
+      expect(ev.log).toContainEqual(["aborted"]);
+      expect(interrupt).toHaveBeenCalledTimes(1);
+      await tick(); // 给拒绝一个冒泡窗口：未捕获的 rejection 会被 vitest 标红
+      await s.close();
+    });
   });
 });

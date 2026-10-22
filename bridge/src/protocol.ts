@@ -84,6 +84,8 @@ export type ServerMessage =
   // chat.done 可选字段：model/effort = SDK init 上报的实际生效值；compacted = 本轮发生过 compact（扩展据此下一轮强制附带页面）
   | { type: "chat.done"; sessionId: string; model?: string; effort?: EffortLevelSetting | null; compacted?: boolean }
   | { type: "chat.error"; message: string }
+  // chat.aborted：本轮被用户手动停止（桥接立即下发，不等 CLI 收尾帧；客户端据它解除 busy 并保留已生成的部分文字）
+  | { type: "chat.aborted" }
   | { type: "permission.request"; requestId: string; tool: string; detail: string }
   | { type: "session.history.data"; messages: HistoryMessage[] }
   | { type: "session.list.data"; sessions: SessionInfo[]; currentId: string | null }

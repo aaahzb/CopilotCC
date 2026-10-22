@@ -123,3 +123,7 @@ body { margin: 0; font-family: "Segoe UI", system-ui, sans-serif; font-size: 13p
   border-radius: 4px;
   padding: 3px 4px;
 }
+
+/* 停止按钮：生成中发送键变为红色停止样式（.input-box .send-row button 特异性高，须三段选择器覆盖蓝底） */
+.input-box .send-row .stop-btn { background: #c62828; }
+.input-box .send-row .stop-btn:hover { background: #d32f2f; }

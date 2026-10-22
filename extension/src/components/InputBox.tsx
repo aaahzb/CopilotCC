@@ -5,7 +5,8 @@ import { formatSize, readFilesAsUploads, validateFiles, type PendingUpload } fro
 /** 底部输入区：附带开关、权限模式/模型/effort 选择（同一行）、文件上传（拖入或点 📁）、发送/停止 */
 export function InputBox(props: {
   disabled: boolean;
-  streaming: boolean;
+  /** 一轮生成进行中（含思考/工具调用期，不等首字）：发送键变为停止键，Esc 可中止 */
+  busy: boolean;
   attachEnabled: boolean;
   permissionMode: PermissionModeSetting;
   /** 模型别名；空串 = 自动（跟随 CLI 配置，界面用 effectiveModel 呈现实际生效值） */
@@ -52,7 +53,7 @@ export function InputBox(props: {
   }
 
   const submit = async (): Promise<void> => {
-    if (props.disabled || (!text.trim() && files.length === 0)) return;
+    if (props.disabled || props.busy || (!text.trim() && files.length === 0)) return; // busy 兜底：防 Enter 竞态连发
     // 发送时才把 File 读成 base64：芯片停留期间不占内存
     const uploads = await readFilesAsUploads(files);
     props.onSend(text.trim(), uploads);
@@ -128,6 +129,12 @@ export function InputBox(props: {
           disabled={props.disabled}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
+            // Esc = 中止本轮生成（对齐 Claude Code CLI 的 ESC）；输入法组合中的 Esc 是取消拼音，不拦截
+            if (e.key === "Escape" && props.busy && !e.nativeEvent.isComposing) {
+              e.preventDefault();
+              props.onStop();
+              return;
+            }
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
               void submit();
@@ -166,8 +173,8 @@ export function InputBox(props: {
           >
             📁
           </button>
-          {props.streaming ? (
-            <button onClick={props.onStop}>停止</button>
+          {props.busy ? (
+            <button type="button" className="stop-btn" title="停止本轮生成（输入框聚焦时按 Esc 同效）" onClick={props.onStop}>■ 停止</button>
           ) : (
             <button disabled={props.disabled || (!text.trim() && files.length === 0)} onClick={() => void submit()}>发送</button>
           )}

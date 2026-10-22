@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import WebSocket from "ws";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -16,6 +16,7 @@ let dir: string;
 let sessions: SessionManager;
 let sentClientMessages: Array<{ cwd: string; opts: Record<string, unknown> }>;
 let fakeHandle: { send: (t: string) => void; abort: () => void; respondPermission: (id: string, a: boolean) => void; close: () => Promise<void> };
+let abortCount = 0; // fakeHandle.abort 被调次数（chat.abort 路由测试）
 
 /** 构造测试配置，默认端口 0（系统分配） */
 function makeConfig(over: Partial<BridgeConfig> = {}): BridgeConfig {
@@ -46,6 +47,7 @@ function connect(url: string, headers: Record<string, string> = {}): Promise<{ w
 }
 
 beforeEach(() => {
+  abortCount = 0;
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "ccc-test-"));
   sessions = new SessionManager(path.join(dir, "sessions.json"));
   sentClientMessages = [];
@@ -53,7 +55,7 @@ beforeEach(() => {
     send: (t) => {
       sentClientMessages.push({ cwd: "SEND", opts: { text: t } });
     },
-    abort: () => {},
+    abort: () => { abortCount += 1; },
     respondPermission: () => {},
     close: async () => {},
   };
@@ -576,6 +578,25 @@ describe("别名（alias.* + folder.pick）", () => {
     ws.send(JSON.stringify({ type: "alias.list" }));
     await new Promise((r) => setTimeout(r, 100));
     expect(inbox.some((m) => m.type === "alias.list.data")).toBe(false);
+    ws.close();
+    await server.close();
+  });
+});
+
+describe("chat.abort 手动停止", () => {
+  it("chat.abort 调会话 abort；会话上报 onAborted → 下发 chat.aborted 帧", async () => {
+    const { server, url } = await boot(makeConfig());
+    const { ws } = await connect(url);
+    const { waitFor } = collect(ws);
+    ws.send(JSON.stringify({ type: "folder.bind", path: dir }));
+    await waitFor("folder.bound");
+    ws.send(JSON.stringify({ type: "chat.abort" }));
+    await vi.waitFor(() => expect(abortCount).toBe(1), { timeout: 2000 }); // 路由把中止传给当前会话
+    // 会话侧中止完成（abort() 立即触发 onAborted，不等 CLI 收尾帧）→ 客户端收到 chat.aborted 解除 busy
+    const captured = sentClientMessages.find((m) => m.cwd !== "SEND");
+    (captured!.opts.events as { onAborted(): void }).onAborted();
+    const m = await waitFor("chat.aborted");
+    expect(m.type).toBe("chat.aborted");
     ws.close();
     await server.close();
   });

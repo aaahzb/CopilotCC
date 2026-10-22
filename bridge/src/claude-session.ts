@@ -22,6 +22,8 @@ export interface SessionEvents {
   onTool(name: string, summary: string): void;
   onDone(sessionId: string, info: SessionRuntimeInfo): void;
   onError(message: string): void;
+  /** 本轮被用户手动中止：abort() 立即触发（不等 CLI 收尾帧），server 据此下发 chat.aborted 释放客户端 */
+  onAborted(): void;
   onPermission(req: { requestId: string; tool: string; detail: string }): void;
   onSessionId(id: string): void;
 }
@@ -100,6 +102,8 @@ export function createClaudeSession(cwd: string, opts: SessionOptions): ClaudeSe
   let rtModel: string | undefined; // init 上报的实际模型
   let rtEffort: EffortLevelSetting | null | undefined; // init 上报的实际 effort（null=不下发）
   let compactPending = false; // 本轮是否出现过 compact 帧
+  let turnActive = false; // 有未完结的生成轮（send 起、result 帧止）；abort 据此区分"中止"与"空闲空操作"
+  let abortSwallow = false; // abort 后吞掉该轮的收尾 result 帧：客户端已被 chat.aborted 释放，不再发 done/error
   let guardPending = !opts.resumeId; // 仅全新会话需要注入防护前缀
   const pending = new Map<string, PendingPermission>();
   const inbox: string[] = [];
@@ -179,6 +183,11 @@ export function createClaudeSession(cwd: string, opts: SessionOptions): ClaudeSe
       return;
     }
     if (msg.type === "result") {
+      if (abortSwallow) {
+        abortSwallow = false; // 被中止轮的收尾帧（成败都算）：客户端已收到 chat.aborted，静默吞掉
+        return;
+      }
+      turnActive = false; // 本轮正常完结
       if (msg.subtype === "success") {
         // effort 真值：SDK 流不下发（探针实证 init/assistant/result 均无），但 CLI 会把每次请求参数
         // 持久化进转录 jsonl 的 api-request-blob —— 以最近一次请求为准（每回答粒度）
@@ -221,11 +230,21 @@ export function createClaudeSession(cwd: string, opts: SessionOptions): ClaudeSe
 
   return {
     send(text: string): void {
+      turnActive = true; // 一轮生成开始（abort 只对进行中的轮次生效）
       inbox.push(text);
       wake?.();
     },
     abort(): void {
-      void (stream as { interrupt?: () => Promise<void> }).interrupt?.();
+      // 空闲时空操作：chat.done 在途、用户又点了停止的竞态下不误伤下一轮（abortSwallow 若置位会吞掉下一轮的正常 result）
+      if (!turnActive) return;
+      turnActive = false;
+      abortSwallow = true; // 该轮的收尾 result 帧到达时吞掉（成败都算）
+      compactPending = false; // 本轮作废，compact 标记不带出去
+      for (const [, p] of pending) p.resolve(false); // 中止会让挂起的审批请求成孤儿：立即按拒绝释放（含侧栏卡片）
+      pending.clear();
+      events.onAborted(); // 立即释放客户端：不等 CLI 收尾帧，不问 interrupt 成败
+      // 通知 CLI 停止本轮（等价交互模式的 ESC）；无此方法或拒绝（CLI 侧轮次已结束）都不影响已下发的中止
+      void (stream as { interrupt?: () => Promise<void> }).interrupt?.()?.catch(() => {});
     },
     respondPermission(requestId: string, allow: boolean): void {
       const p = pending.get(requestId);

@@ -557,6 +557,7 @@ function attachHandlers(wss: WebSocketServer, deps: ServerDeps, instanceId: stri
             if (folder === f) sendSessionList(); // 一轮结束后转录已落盘，刷新列表（新会话此刻才有文件）
           },
           onError: (message) => send({ type: "chat.error", message }),
+          onAborted: () => send({ type: "chat.aborted" }),
           onPermission: (r) => send({ type: "permission.request", ...r }),
           onSessionId: (id) => {
             const existing = sessions.get(f);

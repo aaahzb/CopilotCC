@@ -126,3 +126,13 @@
 - 根因：richness-row 行样式写死 `color: #555` 灰字（浅色主题习惯），侧栏实际是深色主题（body 底 #1e1f24、主文字 #e4e6eb），灰字压在深底上近乎隐形，用户报告"背景是灰色的字也是灰色的"；下拉也没有暗底控件样式。
 - 修复：行文字删掉写死的灰字与 12px 字号，继承面板主文字色；下拉补齐暗底控件约定（background #2a2b31 / color inherit / border #444 / 圆角 4px），与 .alias-switch、.alias-create select 一致。
 - 教训：侧栏是深色主题，新 UI 元素配色一律 `color: inherit` + 复用既有控件样式（#2a2b31 底 / #444 边），不引入任何新灰色。
+
+### 2026-10-22：新功能——随时强停本轮生成（等价 CLI 的 ESC）
+
+- 根因（用户报告"少了强停机制"）：停止键的显示条件是"流式文字已开始"（streaming !== null），而 Claude Code 轮次里思考与工具调用常占大头，首字之前没有任何停止入口；发送键此时是禁用态，观感就是"没法停"。
+- 协议：ServerMessage 新增 chat.aborted（无字段）——桥接确认中止立即下发，客户端据它解除 busy。
+- 桥接：claude-session 跟踪 turnActive（send 起、result 帧止）；abort() 空闲时空操作（防 done 在途竞态误吞下一轮 result），进行中则立即发 onAborted（不等 CLI 收尾帧）+ 吞掉该轮收尾 result + 挂起审批立即按拒绝释放 + interrupt() 通知 CLI 停止（拒绝吞掉，不影响已下发的 aborted）；server 事件接线 onAborted → chat.aborted。
+- 扩展：新增 busy 状态（发送即置位；chat.done/error/aborted、换文件夹/会话、断线、换桥接清零），InputBox 的 streaming prop 改 busy——停止键整轮可见；停止键改红色 ■ 样式；输入框 Esc 中止（输入法组合中的 Esc 不拦截）；submit 加 busy 兜底防 Enter 连发。
+- 中止观感对齐 CLI：已生成的部分文字保留为正式气泡，追加"⏹ 已手动停止本轮生成"标记。
+- 验证：桥接 90 + 扩展 30 测试全绿（新增 abort 中止/空闲空操作/interrupt 拒绝/路由下发 4 例），双端 typecheck、扩展构建通过。
+- 教训：「进行中」状态要锚在用户动作（发送）上，不能锚在 UI 表现（首字到达）上——否则思考/工具调用期就是控制真空。

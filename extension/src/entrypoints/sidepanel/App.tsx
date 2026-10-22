@@ -23,6 +23,7 @@ export default function App(): React.ReactElement {
   const [resumed, setResumed] = useState(false);
   const [messages, setMessages] = useState<UiMsg[]>([]);
   const [streaming, setStreaming] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false); // 一轮生成进行中（发送即起，done/error/aborted/断线/换会话止）：发送键变为停止键
   const [permReq, setPermReq] = useState<{ requestId: string; tool: string; detail: string } | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null); // 当前会话 ID（folder.bound/session.list.data 携带或 chat.done 推送）
   const [runtime, setRuntime] = useState<RuntimeCache>({}); // 桥接上报的实际生效模型/effort（chat.done 携带，本地缓存跨重载）
@@ -56,6 +57,7 @@ export default function App(): React.ReactElement {
           // 换文件夹或换会话：清空当前显示（含流式残留），历史回放随后覆盖
           setMessages([]);
           setStreaming(null);
+          setBusy(false); // 旧会话的进行轮随切换作废，其收尾帧不再属于当前界面
         }
         prevFolderRef.current = m.path;
         prevBoundSidRef.current = m.sessionId;
@@ -92,6 +94,7 @@ export default function App(): React.ReactElement {
         setMessages((ms) => [...ms, { id: crypto.randomUUID(), role: "tool", text: `🔧 ${m.name} ${m.summary}` }]);
         break;
       case "chat.done":
+        setBusy(false);
         setSessionId(m.sessionId);
         prevBoundSidRef.current = m.sessionId;
         if (typeof m.model === "string" && m.model.length > 0) {
@@ -107,9 +110,24 @@ export default function App(): React.ReactElement {
         });
         break;
       case "chat.error":
+        setBusy(false);
         setStreaming(null);
         setForceAttach(false); // 本轮异常结束：强制附带随之失效
         setMessages((ms) => [...ms, { id: crypto.randomUUID(), role: "assistant", text: `⚠️ ${m.message}` }]);
+        break;
+      case "chat.aborted":
+        // 手动停止：已生成的部分文字保留为正式气泡，另加停止标记（对齐 CLI 按 ESC 的观感）
+        setBusy(false);
+        setForceAttach(false); // 本轮被中止：强制附带随之失效
+        setPermReq(null); // 中止时挂起的审批卡片一并取消（桥接已按拒绝释放）
+        setStreaming((s) => {
+          setMessages((ms) => [
+            ...ms,
+            ...(s ? [{ id: crypto.randomUUID(), role: "assistant" as const, text: s }] : []),
+            { id: crypto.randomUUID(), role: "assistant" as const, text: "⏹ 已手动停止本轮生成" },
+          ]);
+          return null;
+        });
         break;
       case "permission.request":
         setPermReq({ requestId: m.requestId, tool: m.tool, detail: m.detail });
@@ -123,7 +141,10 @@ export default function App(): React.ReactElement {
     const c = new BridgeClient({
       getUrl: () => `ws://${s.host}:${s.port}/ws?token=${encodeURIComponent(s.token)}`,
       onMessage: onServerMessage,
-      onState: setConn,
+      onState: (state) => {
+        setConn(state);
+        if (state !== "open") setBusy(false); // 断线即丢失在途帧：解除 busy 防界面卡死
+      },
     });
     clientRef.current = c;
     c.connect();
@@ -174,7 +195,7 @@ export default function App(): React.ReactElement {
 
   async function handleSend(text: string, uploads: PendingUpload[] = []): Promise<void> {
     const s = settingsRef.current;
-    if (!s || !bound) return;
+    if (!s || !bound || busy) return; // busy 兜底：一轮未完结不再发（发送键已换成停止键，防 Enter 竞态连发）
     let page: PageSnapshot | null = null;
     let attachFull = false;
     let attachNote: string | null = null;
@@ -222,7 +243,10 @@ export default function App(): React.ReactElement {
       if (attachNote) next.push({ id: crypto.randomUUID(), role: "tool", text: attachNote, sentText: sentFull });
       return next;
     });
-    clientRef.current?.send({ type: "chat.send", text: full, ...(hasUp ? { uploads } : {}) });
+    const c = clientRef.current;
+    if (!c) return; // 发送途中断线：气泡已上屏，不置 busy（重连后照常可用）
+    c.send({ type: "chat.send", text: full, ...(hasUp ? { uploads } : {}) });
+    setBusy(true); // 发送即进入"生成中"：停止键立刻出现，不等首字（思考/工具调用期也可中止）
   }
 
   /** 更新设置并把权限模式/模型/effort 全量推给桥接（任一变化桥接都会重建会话） */
@@ -309,7 +333,7 @@ export default function App(): React.ReactElement {
       />
       <InputBox
         disabled={!bound || conn !== "open"}
-        streaming={streaming !== null}
+        busy={busy}
         attachEnabled={settings.attachEnabled}
         permissionMode={settings.permissionMode}
         model={settings.model}
