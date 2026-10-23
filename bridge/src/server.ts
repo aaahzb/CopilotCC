@@ -617,9 +617,10 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
       if (rec) send({ type: "session.history.data", messages: readTranscript(workspace.folder, rec.sessionId) });
       const sl = sessionListMsg();
       if (sl) send(sl);
-      const al = aliasListMsg();
-      if (al) send(al);
     }
+    // 别名列表是全局数据（不依附文件夹绑定）：未绑定也必须下发，否则空工作区时别名下拉永空
+    const al = aliasListMsg();
+    if (al) send(al);
     send({
       type: "chat.sync",
       busy: workspace.busy,

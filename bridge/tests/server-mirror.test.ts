@@ -167,14 +167,21 @@ describe("镜像工作区（多视图广播与快照）", () => {
     }
   });
 
-  it("空工作区快照：client.ready 只回 chat.sync（无绑定态，视图据它走首绑引导）", async () => {
-    const { server, url } = await boot();
+  it("空工作区快照：无绑定态（无 folder.bound）但别名列表照常下发——全局数据不受绑定门控", async () => {
+    const aliases = new AliasManager(path.join(dir, "aliases.json"));
+    aliases.create("甲", dir, null);
+    aliases.create("乙", dir, null);
+    const { server, url } = await boot({ aliases });
     const { ws } = await connect(url);
     const { inbox, waitFor } = collect(ws);
     ws.send(JSON.stringify({ type: "client.ready" }));
     const sync = (await waitFor("chat.sync")) as Extract<ServerMessage, { type: "chat.sync" }>;
     expect(sync).toMatchObject({ busy: false, streamText: "", user: null, permReq: null, draft: "" });
-    expect(inbox.some((m) => m.type === "folder.bound")).toBe(false);
+    expect(inbox.some((m) => m.type === "folder.bound")).toBe(false); // 无绑定态：视图据 chat.sync 走首绑引导
+    // 回归：未绑定也必须收到别名列表（镜像重写曾把它关进 folder 门内 → 全新桥接下别名下拉永空）
+    const al = inbox.find((m) => m.type === "alias.list.data") as Extract<ServerMessage, { type: "alias.list.data" }> | undefined;
+    expect(al?.aliases.map((a) => a.name)).toEqual(["甲", "乙"]);
+    expect(inbox.indexOf(al!)).toBeLessThan(inbox.indexOf(sync)); // 列表先于 chat.sync 到达
     ws.close();
     await server.close();
   });
