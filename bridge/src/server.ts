@@ -1,4 +1,4 @@
-/** ccc-bridge 服务端：WS 桥（握手鉴权 + 会话管理）+ 内置 /config 端口设置页（在线改端口）。 */
+/** ccc-bridge 服务端：WS 桥（握手鉴权 + 镜像工作区广播）+ 内置 /config 端口设置页（在线改端口）。 */
 import * as http from "node:http";
 import { WebSocketServer, WebSocket } from "ws";
 import type { AddressInfo } from "node:net";
@@ -10,9 +10,10 @@ import { readTranscript, listSessions, deleteTranscript } from "./transcript";
 import { saveConfig, type BridgeConfig } from "./config";
 import { encodePairing } from "./pairing";
 import { AliasManager } from "./alias-manager";
-import { pickFolder as defaultPickFolder } from "./folder-picker";
+import { pickFolder as defaultPickFolder, openInFileManager as defaultOpenFolder } from "./folder-picker";
 import { saveUploads } from "./uploads";
-import { composeUploadNote } from "./upload-note";
+import { composeUploadNote, UPLOAD_DIR } from "./upload-note";
+import { writeResumeScript, removeResumeScript } from "./resume-script";
 
 /** 服务依赖。createSession 仅供测试注入假会话工厂。 */
 export interface ServerDeps {
@@ -27,16 +28,19 @@ export interface ServerDeps {
   aliases?: AliasManager;
   /** 系统文件夹选择框实现；测试注入假实现，缺省用平台原生对话框 */
   pickFolder?: () => Promise<string | null>;
+  /** 系统文件管理器打开实现（folder.open）；测试注入假实现，缺省用平台原生（explorer/open/xdg-open） */
+  openFolder?: (path: string) => Promise<boolean>;
 }
 
-/** 启动结果：wss/port 始终指向当前实例（在线改端口后跟随），close 关闭当前实例，setPort 在线改端口 */
+/** 启动结果：wss/port 始终指向当前实例（在线改端口后跟随），close 关闭当前实例并终结会话，setPort 在线改端口 */
 export interface StartedServer {
   /** 当前 WS 服务实例 */
   readonly wss: WebSocketServer;
   /** 当前实际监听的端口（config.port=0 时为系统分配） */
   readonly port: number;
   /**
-   * 在线改端口：先在新端口完成监听+自探测，成功后才拆旧服务（含写回 config.json、触发 onPortChanged）。
+   * 在线切端口：先在新端口完成监听+自探测，成功后才拆旧服务（含写回 config.json、触发 onPortChanged）。
+   * 工作区（含进行中的会话）原地不动，只换监听。
    * @param target 目标端口（被无关程序占用时顺延，最多 10 个）
    * @returns 实际生效的端口
    * @throws 候选端口耗尽，或目标被同配置的另一个桥接实例占用
@@ -54,6 +58,63 @@ interface Running {
 
 /** 端口自探测结论：ok=确实是本进程；duplicate=另一个 ccc-bridge；foreign=无关程序/超时 */
 type ProbeVerdict = "ok" | "duplicate" | "foreign";
+
+/**
+ * 镜像工作区：桥接进程内唯一的会话工作区。侧边栏/弹窗等全部视图共享这一份状态；
+ * 视图（WS 连接）可以随便断开重连，工作区与进行中的会话都原地不动（桥接进程退出才终结）。
+ */
+interface Workspace {
+  /** 当前绑定的文件夹 */
+  folder: string | null;
+  /** 当前 Claude 会话（绑定文件夹即创建；换绑/换会话时重建） */
+  claude: ClaudeSessionLike | null;
+  mode: PermissionModeSetting;
+  model: string | undefined;
+  effort: EffortLevelSetting | undefined;
+  /** 当前进行中的别名（alias.select/create 设置，粘性跟随文件夹/会话变化） */
+  currentAliasId: string | null;
+  /** 本轮回答进行中（chat.send 受理 → done/error/aborted） */
+  busy: boolean;
+  /** 本轮已流出的部分文本（快照给中途接入的视图补流式；轮次结束清空） */
+  streamText: string;
+  /** 在途轮的用户气泡（chat.user 已广播但尚未落盘，历史回放里没有，快照靠它补齐） */
+  inflightUser: { display: string; sent: string } | null;
+  /** 挂起的权限审批（permission.request 已广播未裁决；快照给中途接入的视图补卡片） */
+  pendingPerm: { requestId: string; tool: string; detail: string } | null;
+  /** 输入框草稿镜像（chat.draft 上报更新；弹窗与侧边栏接力输入） */
+  draft: string;
+}
+
+/** attachHandlers 需要的工作区上下文（startServer 内组装；在线切端口换 wss 时复用同一工作区） */
+interface HandlerCtx {
+  workspace: Workspace;
+  /** 全部已认证连接（跨在线切端口共享；旧 wss 的连接被 terminate 后从集合摘除） */
+  clients: Set<WebSocket>;
+  /** 广播状态事件给全部视图；except 用于 chat.draft 回显抑制（上报方已有本地草稿，回包会顶跳光标） */
+  broadcast: (m: ServerMessage, except?: WebSocket) => void;
+  /** 绑定文件夹并重建会话（folder.bind 与 alias.select/create 共用） */
+  bindFolder: (p: string, forceSessionId?: string | null) => void;
+  /** 为当前文件夹创建（或重建）Claude 会话 */
+  openSession: (resumeId?: string) => void;
+  /** 清空在途轮次状态（换绑/换会话/删当前会话时：旧轮次随会话一起没了） */
+  resetInflight: () => void;
+  /** client.ready 快照推送（只发请求方） */
+  pushSnapshot: (send: (m: ServerMessage) => void) => void;
+  /** folder.open 处理（只回请求方） */
+  handleFolderOpen: (send: (m: ServerMessage) => void) => Promise<void>;
+  /** 广播会话列表 */
+  pushSessionList: () => void;
+  /** 广播别名列表 */
+  pushAliasList: () => void;
+  /** 组装会话列表消息（未绑定文件夹时为 null） */
+  sessionListMsg: () => ServerMessage | null;
+  /** 组装别名列表消息（未注入别名存储时为 null） */
+  aliasListMsg: () => ServerMessage | null;
+  /** 当前别名粘性同步（别名跟着工作区走，永不脱钩） */
+  syncCurrentAlias: () => void;
+  /** 当前别名的续聊脚本保鲜 */
+  refreshAliasScript: () => void;
+}
 
 /**
  * 常量时间比较 token，防时序侧信道。
@@ -327,18 +388,260 @@ async function handleConfigRequest(req: http.IncomingMessage, res: http.ServerRe
  * 每个候选监听成功后做自探测——顺延只对"无关程序占用"生效；发现同 token 的重复实例直接抛错。
  * 同端口上还内置 /config 设置页（token 鉴权）：托盘「修改端口」打开它在线改端口，
  * 改完写回 config.json 并把新配对串展示给用户去扩展侧重新配对。
+ * 镜像工作区：进程内唯一工作区（见 Workspace），侧边栏/弹窗等全部已认证连接都是它的视图，
+ * 状态事件一律广播；在线切端口只换监听，工作区（含进行中的会话）原地不动。
  * @param deps 配置、会话映射、（测试用）会话工厂、配置目录与端口变更回调
  * @returns wss 实例、实际端口与关闭函数（均跟随在线切换后的当前实例）
  * @throws 候选端口耗尽，或发现重复实例
  */
 export async function startServer(deps: ServerDeps): Promise<StartedServer> {
   const instanceId = randomBytes(8).toString("hex"); // 本进程实例 ID：自探测认亲用
-  const { config } = deps;
+  const { config, sessions, aliases } = deps;
+  const newSession = deps.createSession ?? createClaudeSession;
+  const openFolderImpl = deps.openFolder ?? defaultOpenFolder;
   let current: Running; // 当前监听着的服务（在线改端口会整体替换）
+
+  /** 唯一工作区：全部视图共享的会话与在途状态 */
+  const workspace: Workspace = {
+    folder: null,
+    claude: null,
+    mode: "auto",
+    model: undefined,
+    effort: undefined,
+    currentAliasId: null,
+    busy: false,
+    streamText: "",
+    inflightUser: null,
+    pendingPerm: null,
+    draft: "",
+  };
+  const clients = new Set<WebSocket>();
+
+  function broadcast(m: ServerMessage, except?: WebSocket): void {
+    const frame = encode(m);
+    for (const c of clients) {
+      if (c !== except && c.readyState === WebSocket.OPEN) c.send(frame);
+    }
+  }
+
+  function sessionListMsg(): ServerMessage | null {
+    if (!workspace.folder) return null;
+    return {
+      type: "session.list.data",
+      sessions: listSessions(workspace.folder),
+      currentId: sessions.get(workspace.folder)?.sessionId ?? null,
+    };
+  }
+
+  function aliasListMsg(): ServerMessage | null {
+    if (!aliases) return null;
+    const currentId = workspace.currentAliasId && aliases.get(workspace.currentAliasId) ? workspace.currentAliasId : null;
+    return { type: "alias.list.data", aliases: aliases.all(), currentId };
+  }
+
+  function pushSessionList(): void {
+    const m = sessionListMsg();
+    if (m) broadcast(m);
+  }
+
+  function pushAliasList(): void {
+    const m = aliasListMsg();
+    if (m) broadcast(m);
+  }
+
+  /**
+   * 当前别名粘性同步：文件夹/会话变化后把别名数据写回现状（别名跟着工作区走，永不脱钩）。
+   * 仅在显式选中/创建过别名后生效；未选中时不做反向匹配，避免手动绑定意外吸附到同状态的旧别名。
+   */
+  function syncCurrentAlias(): void {
+    if (!aliases || !workspace.currentAliasId) return;
+    const rec = aliases.get(workspace.currentAliasId);
+    if (!rec) {
+      workspace.currentAliasId = null;
+      return;
+    }
+    if (!workspace.folder) return;
+    const sid = sessions.get(workspace.folder)?.sessionId ?? null;
+    if (normalizeFolder(rec.folder) !== normalizeFolder(workspace.folder) || rec.sessionId !== sid) {
+      aliases.update(rec.id, { folder: workspace.folder, sessionId: sid });
+    }
+  }
+
+  /** 当前别名的续聊脚本保鲜（绑定/会话演进/回答完成后调用；无别名或文件夹失效时静默跳过） */
+  function refreshAliasScript(): void {
+    if (!aliases || !workspace.currentAliasId) return;
+    const rec = aliases.get(workspace.currentAliasId);
+    if (!rec || !isValidFolder(rec.folder)) return;
+    writeResumeScript(rec.folder, rec.name, sessions.get(rec.folder)?.sessionId ?? null);
+  }
+
+  function resetInflight(): void {
+    workspace.busy = false;
+    workspace.streamText = "";
+    workspace.inflightUser = null;
+    workspace.pendingPerm = null;
+  }
+
+  /** 为当前文件夹创建（或重建）Claude 会话；事件一律广播并记账到工作区（快照数据源） */
+  function openSession(resumeId?: string): void {
+    if (!workspace.folder) return;
+    const f = workspace.folder;
+    workspace.claude = newSession(f, {
+      resumeId,
+      permissionMode: workspace.mode,
+      model: workspace.model,
+      effort: workspace.effort,
+      events: {
+        onDelta: (text) => {
+          workspace.streamText += text; // 真流式：每个 delta 立即广播一帧，同时记账供快照补齐
+          broadcast({ type: "chat.delta", text });
+        },
+        onTool: (name, summary) => broadcast({ type: "chat.tool", name, summary }),
+        onDone: (sessionId, info) => {
+          // info 字段为 undefined 时 JSON 序列化自动省略；effort 为 null 时显式下发（表示该会话无 effort 参数）
+          broadcast({ type: "chat.done", sessionId, model: info?.model, effort: info?.effort, compacted: info?.compacted });
+          workspace.busy = false;
+          workspace.streamText = "";
+          workspace.inflightUser = null;
+          workspace.pendingPerm = null;
+          if (workspace.folder === f) {
+            pushSessionList(); // 一轮结束后转录已落盘，刷新列表（新会话此刻才有文件）
+            refreshAliasScript(); // 续聊脚本跟上最新会话
+          }
+        },
+        onError: (message) => {
+          broadcast({ type: "chat.error", message });
+          resetInflight(); // 轮次终结：清在途状态，后续快照不再补这轮
+        },
+        onAborted: () => {
+          broadcast({ type: "chat.aborted" });
+          resetInflight(); // 用户停止：已生成的部分文字各视图已落为气泡；快照不再补（与历史回放口径一致）
+        },
+        onPermission: (r) => {
+          workspace.pendingPerm = r;
+          broadcast({ type: "permission.request", ...r });
+        },
+        onSessionId: (id) => {
+          const existing = sessions.get(f);
+          sessions.set(f, {
+            sessionId: id,
+            title: existing?.title ?? "(新会话)",
+            updatedAt: new Date().toISOString(),
+          });
+          refreshAliasScript(); // 会话 ID 落地即有可续目标
+        },
+      },
+    });
+  }
+
+  /**
+   * 绑定文件夹并重建会话（folder.bind 与 alias.select/create 共用）；p 需已通过 isValidFolder 校验。
+   * @param p 目标文件夹
+   * @param forceSessionId 别名指定的会话：string=续聊该会话（已删则退回新会话），null=强制新会话；缺省=按 sessions.json 映射走
+   */
+  function bindFolder(p: string, forceSessionId?: string | null): void {
+    void workspace.claude?.close();
+    workspace.folder = p;
+    resetInflight(); // 换绑即换会话：旧轮次的在途状态对新工作区无意义
+    if (forceSessionId === undefined) {
+      const rec = sessions.get(workspace.folder);
+      openSession(rec?.sessionId);
+      broadcast({ type: "folder.bound", path: workspace.folder, resumed: Boolean(rec), title: rec?.title ?? "", sessionId: rec?.sessionId ?? null });
+    } else if (forceSessionId === null) {
+      sessions.delete(workspace.folder); // 别名指向"新会话"：清掉映射，下一条消息开全新会话
+      openSession(undefined);
+      broadcast({ type: "folder.bound", path: workspace.folder, resumed: false, title: "", sessionId: null });
+    } else {
+      const target = listSessions(workspace.folder).find((s) => s.sessionId === forceSessionId);
+      if (target) {
+        sessions.set(workspace.folder, { sessionId: target.sessionId, title: target.title, updatedAt: new Date(target.updatedAt).toISOString() });
+        openSession(target.sessionId);
+        broadcast({ type: "folder.bound", path: workspace.folder, resumed: true, title: target.title, sessionId: target.sessionId });
+      } else {
+        // 别名指向的会话已被删除：退回新会话，别名的 sessionId 由 syncCurrentAlias 顺带修正
+        sessions.delete(workspace.folder);
+        openSession(undefined);
+        broadcast({ type: "folder.bound", path: workspace.folder, resumed: false, title: "", sessionId: null });
+        broadcast({ type: "folder.error", message: `会话 ${forceSessionId} 在该文件夹下没有转录，已改为开新会话` }); // 必须在 folder.bound 之后发：客户端收 bound 会清屏，先发警告会被抹掉
+      }
+    }
+    pushSessionList();
+    syncCurrentAlias();
+    pushAliasList();
+    refreshAliasScript();
+  }
+
+  /**
+   * client.ready 快照推送（新视图/重连视图接入）。顺序保证：绑定态 → 历史回放 → 会话/别名列表 → 在途状态；
+   * chat.sync 最后到达，在途用户气泡与流式文本追加在回放之上，不被回放替换抹掉。
+   * @param send 目标连接的发送函数（快照只发请求方，不广播）
+   */
+  function pushSnapshot(send: (m: ServerMessage) => void): void {
+    if (workspace.folder) {
+      const rec = sessions.get(workspace.folder);
+      send({ type: "folder.bound", path: workspace.folder, resumed: Boolean(rec), title: rec?.title ?? "", sessionId: rec?.sessionId ?? null });
+      if (rec) send({ type: "session.history.data", messages: readTranscript(workspace.folder, rec.sessionId) });
+      const sl = sessionListMsg();
+      if (sl) send(sl);
+      const al = aliasListMsg();
+      if (al) send(al);
+    }
+    send({
+      type: "chat.sync",
+      busy: workspace.busy,
+      streamText: workspace.streamText,
+      user: workspace.inflightUser,
+      permReq: workspace.pendingPerm,
+      draft: workspace.draft,
+    });
+  }
+
+  /**
+   * folder.open：打开"当前别名.folder ?? 工作区.folder"，并先刷新该别名的续聊脚本。
+   * 只回请求方（folder.opened / folder.error），不广播。
+   * @param send 请求方发送函数
+   */
+  async function handleFolderOpen(send: (m: ServerMessage) => void): Promise<void> {
+    try {
+      const a = aliases && workspace.currentAliasId ? aliases.get(workspace.currentAliasId) : undefined;
+      const target = a?.folder ?? workspace.folder;
+      if (!target) {
+        send({ type: "folder.error", message: "还没有绑定文件夹" });
+        return;
+      }
+      if (!isValidFolder(target)) {
+        send({ type: "folder.error", message: `文件夹已不存在: ${target}` });
+        return;
+      }
+      const script = a ? writeResumeScript(a.folder, a.name, sessions.get(a.folder)?.sessionId ?? null) : null;
+      if (await openFolderImpl(target)) send({ type: "folder.opened", path: target, script });
+      else send({ type: "folder.error", message: `无法打开文件管理器: ${target}` });
+    } catch (e) {
+      send({ type: "folder.error", message: `打开文件夹失败: ${e instanceof Error ? e.message : String(e)}` });
+    }
+  }
+
+  /** 工作区上下文：attachHandlers 只接线不持有状态，在线切端口后新 wss 复用同一工作区 */
+  const ctx: HandlerCtx = {
+    workspace,
+    clients,
+    broadcast,
+    bindFolder,
+    openSession,
+    resetInflight,
+    pushSnapshot,
+    handleFolderOpen,
+    pushSessionList,
+    pushAliasList,
+    sessionListMsg,
+    aliasListMsg,
+    syncCurrentAlias,
+    refreshAliasScript,
+  };
 
   /**
    * 在线切端口：先在新端口完成监听+自探测，全部成功后才拆旧服务——切换失败不影响现状。
-   * 新旧服务同属一个进程（同一 instanceId），探测不会误判重复实例。
+   * 新旧服务同属一个进程（同一 instanceId、同一工作区），探测不会误判重复实例。
    * @param target 用户要切的端口
    * @returns 实际生效的端口（目标被无关程序占用时顺延）
    * @throws 候选端口耗尽，或目标被同配置的另一个桥接实例占用
@@ -358,7 +661,7 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
         }
         continue;
       }
-      attachHandlers(r.wss, deps, instanceId);
+      attachHandlers(r.wss, deps, instanceId, ctx);
       const verdict = await selfVerify(port, config.token, instanceId);
       if (verdict === "duplicate") {
         await closeRunning(r);
@@ -402,7 +705,10 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
         return current.port;
       },
       setPort: rebind,
-      close: () => closeRunning(current),
+      close: async () => {
+        await closeRunning(current); // 先断开全部视图连接
+        await workspace.claude?.close(); // 桥接整体关停才终结会话（视图断开/在线切端口都不杀）
+      },
     };
   }
 
@@ -421,7 +727,7 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
       }
       continue;
     }
-    attachHandlers(r.wss, deps, instanceId);
+    attachHandlers(r.wss, deps, instanceId, ctx);
     if (port === 0) {
       // 系统分配的临时端口不会被抢占，跳过探测
       current = r;
@@ -444,21 +750,33 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
 }
 
 /**
- * 在已监听的 wss 上注册连接处理（握手鉴权 + 消息分发 + 会话管理）。
+ * 在已监听的 wss 上注册连接处理（握手鉴权 + 消息分发）。
+ * 会话与工作区状态全部在 ctx（startServer 组装）里：本函数只管"认证连接 ↔ 工作区"的接线，
+ * 因此在线切端口换新 wss 时工作区原地续命。
  * @param wss 已监听的 WebSocketServer
- * @param deps 服务依赖
+ * @param deps 服务依赖（握手鉴权用 config；路由用 sessions/aliases/pickFolder）
  * @param instanceId 本进程实例 ID（auth.ok 携带，供自探测认亲）
+ * @param ctx 工作区上下文（唯一工作区 + 连接集合 + 广播/快照等操作）
  */
-/**
- * 在已监听的 wss 上注册连接处理（握手鉴权 + 消息分发 + 会话管理）。
- * @param wss 已监听的 WebSocketServer
- * @param deps 服务依赖
- * @param instanceId 本进程实例 ID（auth.ok 携带，供自探测认亲）
- */
-function attachHandlers(wss: WebSocketServer, deps: ServerDeps, instanceId: string): void {
+function attachHandlers(wss: WebSocketServer, deps: ServerDeps, instanceId: string, ctx: HandlerCtx): void {
   const { config, sessions, aliases } = deps;
-  const newSession = deps.createSession ?? createClaudeSession;
   const pickFolderImpl = deps.pickFolder ?? defaultPickFolder;
+  const {
+    workspace,
+    clients,
+    broadcast,
+    bindFolder,
+    openSession,
+    resetInflight,
+    pushSnapshot,
+    handleFolderOpen,
+    pushSessionList,
+    pushAliasList,
+    sessionListMsg,
+    aliasListMsg,
+    syncCurrentAlias,
+    refreshAliasScript,
+  } = ctx;
 
   wss.on("connection", (ws: WebSocket, req: http.IncomingMessage) => {
     // Host 校验防 DNS rebinding
@@ -490,121 +808,12 @@ function attachHandlers(wss: WebSocketServer, deps: ServerDeps, instanceId: stri
       console.warn("[ccc-bridge] 警告：未配置 allowedOrigins，开发模式放行 Origin:", origin || "(无)");
     }
     ws.send(encode({ type: "auth.ok", instance: instanceId }));
-
-    // 每连接状态
-    let folder: string | null = null;
-    let claude: ClaudeSessionLike | null = null;
-    let mode: PermissionModeSetting = "auto";
-    let model: string | undefined;
-    let effort: EffortLevelSetting | undefined;
-    let currentAliasId: string | null = null; // 当前进行中的别名（alias.select/create 设置，粘性跟随文件夹/会话变化）
-    let pickSeq = 0; // folder.pick 代际号：新请求使旧请求的迟到结果作废
+    clients.add(ws); // 自探测连接也会进集合：它从不发 client.ready 不拿快照，随即 terminate 由 close 摘除
 
     const send = (m: ServerMessage): void => {
       if (ws.readyState === WebSocket.OPEN) ws.send(encode(m));
     };
-
-    /** 推送当前文件夹的会话列表（currentId 取映射里的当前会话） */
-    function sendSessionList(): void {
-      if (!folder) return;
-      send({
-        type: "session.list.data",
-        sessions: listSessions(folder),
-        currentId: sessions.get(folder)?.sessionId ?? null,
-      });
-    }
-
-    /** 推送别名列表与当前别名 ID（未注入别名存储时不推——功能关闭） */
-    function sendAliasList(): void {
-      if (!aliases) return;
-      const currentId = currentAliasId && aliases.get(currentAliasId) ? currentAliasId : null;
-      send({ type: "alias.list.data", aliases: aliases.all(), currentId });
-    }
-
-    /**
-     * 当前别名粘性同步：文件夹/会话变化后把别名数据写回现状（别名跟着工作区走，永不脱钩）。
-     * 仅在显式选中/创建过别名后生效；未选中时不做反向匹配，避免手动绑定意外吸附到同状态的旧别名。
-     */
-    function syncCurrentAlias(): void {
-      if (!aliases || !currentAliasId) return;
-      const rec = aliases.get(currentAliasId);
-      if (!rec) {
-        currentAliasId = null;
-        return;
-      }
-      if (!folder) return;
-      const sid = sessions.get(folder)?.sessionId ?? null;
-      if (normalizeFolder(rec.folder) !== normalizeFolder(folder) || rec.sessionId !== sid) {
-        aliases.update(rec.id, { folder, sessionId: sid });
-      }
-    }
-
-    /** 为当前文件夹创建（或重建）Claude 会话 */
-    function openSession(resumeId?: string): void {
-      if (!folder) return;
-      const f = folder;
-      claude = newSession(f, {
-        resumeId,
-        permissionMode: mode,
-        model,
-        effort,
-        events: {
-          onDelta: (text) => send({ type: "chat.delta", text }),
-          onTool: (name, summary) => send({ type: "chat.tool", name, summary }),
-          onDone: (sessionId, info) => {
-            // info 字段为 undefined 时 JSON 序列化自动省略；effort 为 null 时显式下发（表示该会话无 effort 参数）
-            send({ type: "chat.done", sessionId, model: info?.model, effort: info?.effort, compacted: info?.compacted });
-            if (folder === f) sendSessionList(); // 一轮结束后转录已落盘，刷新列表（新会话此刻才有文件）
-          },
-          onError: (message) => send({ type: "chat.error", message }),
-          onAborted: () => send({ type: "chat.aborted" }),
-          onPermission: (r) => send({ type: "permission.request", ...r }),
-          onSessionId: (id) => {
-            const existing = sessions.get(f);
-            sessions.set(f, {
-              sessionId: id,
-              title: existing?.title ?? "(新会话)",
-              updatedAt: new Date().toISOString(),
-            });
-          },
-        },
-      });
-    }
-
-    /**
-     * 绑定文件夹并重建会话（folder.bind 与 alias.select/create 共用）；p 需已通过 isValidFolder 校验。
-     * @param p 目标文件夹
-     * @param forceSessionId 别名指定的会话：string=续聊该会话（已删则退回新会话），null=强制新会话；缺省=按 sessions.json 映射走
-     */
-    function bindFolder(p: string, forceSessionId?: string | null): void {
-      void claude?.close();
-      folder = p;
-      if (forceSessionId === undefined) {
-        const rec = sessions.get(folder);
-        openSession(rec?.sessionId);
-        send({ type: "folder.bound", path: folder, resumed: Boolean(rec), title: rec?.title ?? "", sessionId: rec?.sessionId ?? null });
-      } else if (forceSessionId === null) {
-        sessions.delete(folder); // 别名指向"新会话"：清掉映射，下一条消息开全新会话
-        openSession(undefined);
-        send({ type: "folder.bound", path: folder, resumed: false, title: "", sessionId: null });
-      } else {
-        const target = listSessions(folder).find((s) => s.sessionId === forceSessionId);
-        if (target) {
-          sessions.set(folder, { sessionId: target.sessionId, title: target.title, updatedAt: new Date(target.updatedAt).toISOString() });
-          openSession(target.sessionId);
-          send({ type: "folder.bound", path: folder, resumed: true, title: target.title, sessionId: target.sessionId });
-        } else {
-          // 别名指向的会话已被删除：退回新会话，别名的 sessionId 由 syncCurrentAlias 顺带修正
-          sessions.delete(folder);
-          openSession(undefined);
-          send({ type: "folder.bound", path: folder, resumed: false, title: "", sessionId: null });
-          send({ type: "folder.error", message: `会话 ${forceSessionId} 在该文件夹下没有转录，已改为开新会话` }); // 必须在 folder.bound 之后发：客户端收 bound 会清屏，先发警告会被抹掉
-        }
-      }
-      sendSessionList();
-      syncCurrentAlias();
-      sendAliasList();
-    }
+    let pickSeq = 0; // folder.pick 代际号：新请求使旧请求的迟到结果作废（每连接独立）
 
     ws.on("message", (raw) => {
       // 处理器内任何同步异常都不能逃出：会冒泡成 uncaughtException 打崩整个桥接进程
@@ -614,8 +823,10 @@ function attachHandlers(wss: WebSocketServer, deps: ServerDeps, instanceId: stri
       if (!m) return;
       switch (m.type) {
         case "auth":
+          break; // auth 已在握手完成
         case "client.ready":
-          break; // auth 已在握手完成；ready 是扩展点（预留消息闸门）
+          pushSnapshot(send); // 镜像快照：新视图/重连视图一次性补齐工作区现状
+          break;
         case "folder.bind": {
           if (!isValidFolder(m.path)) {
             send({ type: "folder.error", message: `路径不存在或不是文件夹: ${m.path}` });
@@ -631,88 +842,124 @@ function attachHandlers(wss: WebSocketServer, deps: ServerDeps, instanceId: stri
           });
           break;
         }
+        case "folder.open":
+          void handleFolderOpen(send); // 内部自带 try/catch，且只回请求方
+          break;
         case "chat.send": {
-          if (!folder || !claude) {
+          if (!workspace.folder || !workspace.claude) {
             send({ type: "chat.error", message: "请先绑定文件夹" });
             break;
           }
           let text = m.text;
           if (m.uploads && m.uploads.length > 0) {
             // 先落盘到 <绑定文件夹>/copilotUploads，再把说明块拼在客户端原文之前（原文自带 [页面上下文]/[用户问题] 包装）
-            const r = saveUploads(folder, m.uploads);
-            for (const f of r.failed) send({ type: "chat.error", message: `文件保存失败：${f.name}（${f.reason}）` });
+            const r = saveUploads(workspace.folder, m.uploads);
+            for (const f of r.failed) broadcast({ type: "chat.error", message: `文件保存失败：${f.name}（${f.reason}）` });
             if (r.saved.length === 0) break; // 全部失败：错误已逐条上报，本次消息不发送
+            broadcast({ type: "chat.tool", name: "上传", summary: `已保存 ${r.saved.length} 个文件至 ${UPLOAD_DIR}` }); // 全部视图镜像上传结果
             text = `${composeUploadNote(r.saved.map((s) => s.path))}\n\n${m.text}`;
           }
-          const rec = sessions.get(folder);
+          const rec = sessions.get(workspace.folder);
           if (rec && rec.title === "(新会话)") {
-            // 首条消息前 30 字作为会话标题（用客户端原文，不含桥接拼的上传说明块）
-            sessions.set(folder, { ...rec, title: m.text.replace(/\s+/g, " ").slice(0, 30), updatedAt: new Date().toISOString() });
+            // 首条消息前 30 字作为会话标题（优先用户原始输入 display，不含桥接拼的包装与上传说明块）
+            const title = (m.display ?? m.text).replace(/\s+/g, " ").slice(0, 30);
+            if (title) sessions.set(workspace.folder, { ...rec, title, updatedAt: new Date().toISOString() });
           }
-          claude.send(text);
+          const display = m.display ?? m.text;
+          workspace.inflightUser = { display, sent: text };
+          workspace.busy = true;
+          workspace.streamText = "";
+          if (workspace.draft) {
+            workspace.draft = ""; // 发送即清草稿：镜像到全部视图（含上报方，它的输入框已由发送动作清空）
+            broadcast({ type: "chat.draft", text: "" });
+          }
+          // 回显上屏由桥接统一广播（含发送方视图）：双视图气泡天然一致，不再各自乐观上屏
+          broadcast({ type: "chat.user", display, sent: text, ...(m.note ? { note: m.note } : {}) });
+          try {
+            workspace.claude.send(text);
+          } catch (e) {
+            resetInflight(); // 发送动作同步抛错：回滚在途状态，避免工作区卡死在 busy
+            throw e; // 交给外层统一 catch 上报请求方
+          }
           break;
         }
         case "chat.abort":
-          claude?.abort();
+          workspace.claude?.abort();
+          break;
+        case "chat.draft":
+          workspace.draft = m.text;
+          broadcast({ type: "chat.draft", text: m.text }, ws); // 镜像到其它视图；不回显上报方（防光标被回包顶跳）
           break;
         case "permission.response":
-          claude?.respondPermission(m.requestId, m.allow);
+          workspace.pendingPerm = null;
+          broadcast({ type: "permission.resolved", requestId: m.requestId }); // 任一视图裁决，全部视图撤卡片（裁决方幂等）
+          workspace.claude?.respondPermission(m.requestId, m.allow);
           break;
         case "session.history": {
-          if (!folder) break;
-          const rec = sessions.get(folder);
-          send({ type: "session.history.data", messages: rec ? readTranscript(folder, rec.sessionId) : [] });
+          if (!workspace.folder) break;
+          const rec = sessions.get(workspace.folder);
+          send({ type: "session.history.data", messages: rec ? readTranscript(workspace.folder, rec.sessionId) : [] });
           break;
         }
-        case "session.list":
-          sendSessionList();
+        case "session.list": {
+          const sl = sessionListMsg();
+          if (sl) send(sl); // 请求-应答型，只回请求方
           break;
+        }
         case "session.new": {
-          if (!folder) break;
-          void claude?.close();
-          sessions.delete(folder); // 清掉映射：下一条消息走全新会话
+          if (!workspace.folder) break;
+          void workspace.claude?.close();
+          sessions.delete(workspace.folder); // 清掉映射：下一条消息走全新会话
+          resetInflight();
           openSession(undefined);
-          send({ type: "folder.bound", path: folder, resumed: false, title: "", sessionId: null });
-          sendSessionList();
+          broadcast({ type: "folder.bound", path: workspace.folder, resumed: false, title: "", sessionId: null });
+          pushSessionList();
           syncCurrentAlias();
-          sendAliasList();
+          pushAliasList();
+          refreshAliasScript();
           break;
         }
         case "session.switch": {
-          if (!folder) break;
-          const target = listSessions(folder).find((s) => s.sessionId === m.sessionId);
+          if (!workspace.folder) break;
+          const target = listSessions(workspace.folder).find((s) => s.sessionId === m.sessionId);
           if (!target) {
             send({ type: "folder.error", message: `会话不存在: ${m.sessionId}` });
             break;
           }
-          void claude?.close();
-          sessions.set(folder, { sessionId: target.sessionId, title: target.title, updatedAt: new Date(target.updatedAt).toISOString() });
+          void workspace.claude?.close();
+          sessions.set(workspace.folder, { sessionId: target.sessionId, title: target.title, updatedAt: new Date(target.updatedAt).toISOString() });
+          resetInflight();
           openSession(target.sessionId);
-          send({ type: "folder.bound", path: folder, resumed: true, title: target.title, sessionId: target.sessionId });
-          sendSessionList();
+          broadcast({ type: "folder.bound", path: workspace.folder, resumed: true, title: target.title, sessionId: target.sessionId });
+          pushSessionList();
           syncCurrentAlias();
-          sendAliasList();
+          pushAliasList();
+          refreshAliasScript();
           break;
         }
         case "session.delete": {
-          if (!folder) break;
-          const wasCurrent = sessions.get(folder)?.sessionId === m.sessionId;
-          deleteTranscript(folder, m.sessionId);
+          if (!workspace.folder) break;
+          const wasCurrent = sessions.get(workspace.folder)?.sessionId === m.sessionId;
+          deleteTranscript(workspace.folder, m.sessionId);
           if (wasCurrent) {
             // 删的是当前会话：关会话、清映射，回到"未开始"状态
-            void claude?.close();
-            sessions.delete(folder);
+            void workspace.claude?.close();
+            sessions.delete(workspace.folder);
+            resetInflight();
             openSession(undefined);
-            send({ type: "folder.bound", path: folder, resumed: false, title: "", sessionId: null });
+            broadcast({ type: "folder.bound", path: workspace.folder, resumed: false, title: "", sessionId: null });
           }
-          sendSessionList();
+          pushSessionList();
           syncCurrentAlias();
-          sendAliasList();
+          pushAliasList();
+          refreshAliasScript();
           break;
         }
-        case "alias.list":
-          sendAliasList();
+        case "alias.list": {
+          const al = aliasListMsg();
+          if (al) send(al); // 请求-应答型，只回请求方
           break;
+        }
         case "alias.create": {
           if (!aliases) break;
           if (!isValidFolder(m.folder)) {
@@ -720,8 +967,8 @@ function attachHandlers(wss: WebSocketServer, deps: ServerDeps, instanceId: stri
             break;
           }
           const rec = aliases.create(m.name, m.folder, m.sessionId, m.pageRichness);
-          currentAliasId = rec.id; // 新别名立即成为当前：创建即绑定
-          bindFolder(rec.folder, rec.sessionId);
+          workspace.currentAliasId = rec.id; // 新别名立即成为当前：创建即绑定
+          bindFolder(rec.folder, rec.sessionId); // 内含列表广播与续聊脚本保鲜
           break;
         }
         case "alias.select": {
@@ -735,33 +982,41 @@ function attachHandlers(wss: WebSocketServer, deps: ServerDeps, instanceId: stri
             send({ type: "folder.error", message: `别名「${a.name}」的文件夹已不存在: ${a.folder}` });
             break;
           }
-          currentAliasId = a.id;
-          bindFolder(a.folder, a.sessionId);
+          workspace.currentAliasId = a.id;
+          bindFolder(a.folder, a.sessionId); // 内含列表广播与续聊脚本保鲜
           break;
         }
         case "alias.update": {
           if (!aliases) break;
+          const before = aliases.get(m.id);
           aliases.update(m.id, { name: m.name, folder: m.folder, sessionId: m.sessionId, pageRichness: m.pageRichness });
+          // 改名/换文件夹时清掉旧位置的续聊脚本（防孤儿脚本）；当前别名随即在新位置重写
+          if (before && ((m.name !== undefined && m.name !== before.name) || (m.folder !== undefined && m.folder !== before.folder))) {
+            removeResumeScript(before.folder, before.name);
+            if (workspace.currentAliasId === m.id) refreshAliasScript();
+          }
           // 只改数据不重绑：换文件夹/会话的实际行为走 folder.bind/session.switch，粘性同步会写回别名
-          sendAliasList();
+          pushAliasList();
           break;
         }
         case "alias.delete": {
           if (!aliases) break;
+          const rec = aliases.get(m.id);
           aliases.delete(m.id);
-          if (currentAliasId === m.id) currentAliasId = null; // 只删别名：会话、转录、当前绑定全部不动
-          sendAliasList();
+          if (rec) removeResumeScript(rec.folder, rec.name); // 续聊脚本随别名走（仅删带生成标记的，防误删用户文件）
+          if (workspace.currentAliasId === m.id) workspace.currentAliasId = null; // 只删别名：会话、转录、当前绑定全部不动
+          pushAliasList();
           break;
         }
         case "settings.set": {
-          const changed = m.permissionMode !== mode || m.model !== model || m.effort !== effort;
-          mode = m.permissionMode;
-          model = m.model;
-          effort = m.effort;
-          if (changed && folder && claude) {
+          const changed = m.permissionMode !== workspace.mode || m.model !== workspace.model || m.effort !== workspace.effort;
+          workspace.mode = m.permissionMode;
+          workspace.model = m.model;
+          workspace.effort = m.effort;
+          if (changed && workspace.folder && workspace.claude) {
             // 模式/模型/effort 变更需要重建会话（resumeId 保证上下文不断）
-            const rec = sessions.get(folder);
-            void claude.close();
+            const rec = sessions.get(workspace.folder);
+            void workspace.claude.close();
             openSession(rec?.sessionId);
           }
           break;
@@ -775,7 +1030,7 @@ function attachHandlers(wss: WebSocketServer, deps: ServerDeps, instanceId: stri
     });
 
     ws.on("close", () => {
-      void claude?.close();
+      clients.delete(ws); // 视图断开只摘连接：会话随工作区活，桥接进程退出才终结（StartedServer.close）
     });
   });
 }

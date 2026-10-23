@@ -130,3 +130,13 @@ body { margin: 0; font-family: "Segoe UI", system-ui, sans-serif; font-size: 13p
 /* 停止按钮：生成中发送键变为红色停止样式（.input-box .send-row button 特异性高，须三段选择器覆盖蓝底） */
 .input-box .send-row .stop-btn { background: #c62828; }
 .input-box .send-row .stop-btn:hover { background: #d32f2f; }
+
+/* 弹窗模式顶栏：钉住芯片 + 指向当前页 + 回侧边栏 */
+.popup-bar { display: flex; align-items: center; gap: 6px; padding: 4px 10px; border-bottom: 1px solid #333; font-size: 12px; }
+.popup-bar .pin-chip { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; background: #2a2b31; border: 1px solid #444; border-radius: 10px; padding: 2px 8px; color: #c9cdd4; }
+.popup-bar .mini-btn { margin-left: 0; flex-shrink: 0; }
+
+/* 别名详情区：打开文件夹按钮行 + 瞬时反馈文案 */
+.folder-open-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.folder-open-row .mini-btn { margin-left: 0; }
+.folder-open-flash { font-size: 11px; color: #4caf50; }

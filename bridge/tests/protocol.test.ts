@@ -88,3 +88,27 @@ describe("别名页面丰富度", () => {
       .toEqual({ type: "alias.update", id: "a1" });
   });
 });
+
+describe("镜像工作区新增消息", () => {
+  it("chat.send 携带 display/note 透传；非法 display 与空 note 剥掉", () => {
+    expect(parseClientMessage(JSON.stringify({ type: "chat.send", text: "full", display: "hi", note: "附带页面" })))
+      .toEqual({ type: "chat.send", text: "full", display: "hi", note: "附带页面" });
+    // 空串 display 合法（纯文件发送时没有用户输入文字）
+    expect(parseClientMessage(JSON.stringify({ type: "chat.send", text: "full", display: "" })))
+      .toEqual({ type: "chat.send", text: "full", display: "" });
+    expect(parseClientMessage(JSON.stringify({ type: "chat.send", text: "full", display: 1, note: "" })))
+      .toEqual({ type: "chat.send", text: "full" });
+  });
+
+  it("chat.draft：字符串且 ≤10 万字符，空串合法（清空草稿）", () => {
+    expect(parseClientMessage(JSON.stringify({ type: "chat.draft", text: "草稿" }))).toEqual({ type: "chat.draft", text: "草稿" });
+    expect(parseClientMessage(JSON.stringify({ type: "chat.draft", text: "" }))).toEqual({ type: "chat.draft", text: "" });
+    expect(parseClientMessage(JSON.stringify({ type: "chat.draft" }))).toBeNull();
+    expect(parseClientMessage(JSON.stringify({ type: "chat.draft", text: 1 }))).toBeNull();
+    expect(parseClientMessage(JSON.stringify({ type: "chat.draft", text: "x".repeat(100_001) }))).toBeNull();
+  });
+
+  it("folder.open 无参解析", () => {
+    expect(parseClientMessage(JSON.stringify({ type: "folder.open" }))).toEqual({ type: "folder.open" });
+  });
+});

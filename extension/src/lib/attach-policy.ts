@@ -53,3 +53,15 @@ export function composeMessage(question: string, page: PageSnapshot | null, atta
   parts.push(`[用户问题]\n${question}`);
   return parts.join("\n\n");
 }
+
+/**
+ * 从实际发送文本反推附带标记（chat.user 广播重放上屏用；优先级与转录解析一致：上传 > 全文 > 选中）。
+ * @param sent 实际发送给 Claude 的完整文本（chat.user.sent / 转录 sentText）
+ * @returns 附带标记；未附带返回 undefined
+ */
+export function deriveAttachKind(sent: string): "full" | "selection" | "upload" | undefined {
+  if (sent.includes("[上传文件]")) return "upload";
+  if (sent.includes("[页面上下文")) return "full";
+  if (sent.includes("[选中文字]")) return "selection";
+  return undefined;
+}

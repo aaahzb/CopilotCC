@@ -1,10 +1,9 @@
 import React, { useEffect, useRef, useState } from "react";
 import { BridgeClient, type ConnState } from "../../lib/ws-client";
 import { loadSettings, saveSettings, pushFolderHistory, takePendingQuote, loadRuntimeCache, saveRuntimeCache, clearRuntimeCache, type ExtSettings, type RuntimeCache } from "../../lib/storage";
-import { decideAttach, composeMessage, PAGE_RICHNESS_CAPS, type PageSnapshot } from "../../lib/attach-policy";
-import { composeUploadNote, UPLOAD_DIR } from "../../lib/upload-note";
+import { decideAttach, composeMessage, deriveAttachKind, PAGE_RICHNESS_CAPS, type PageSnapshot } from "../../lib/attach-policy";
 import type { PendingUpload } from "../../lib/upload-files";
-import { snapshotActiveTab } from "../../lib/page-extract";
+import { snapshotActiveTab, snapshotTab } from "../../lib/page-extract";
 import type { ServerMessage, PermissionModeSetting, SessionInfo, AliasInfo } from "../../lib/protocol";
 import type { PairingInfo } from "../../lib/pairing";
 import { TokenGate } from "../../components/TokenGate";
@@ -14,8 +13,28 @@ import { InputBox } from "../../components/InputBox";
 import { shortModelName } from "../../lib/format";
 import { PermissionCard } from "../../components/PermissionCard";
 
-/** 侧栏主界面 */
-export default function App(): React.ReactElement {
+/**
+ * 别名徽标/芯片色相：id 简单散列取 360 模（弹窗芯片与页面徽标同色，无需调色板）。
+ * @param aliasId 别名 ID；null 用默认蓝
+ * @returns 色相 0-359
+ */
+function aliasHue(aliasId: string | null): number {
+  if (!aliasId) return 210;
+  let h = 0;
+  for (let i = 0; i < aliasId.length; i++) h = (h * 31 + aliasId.charCodeAt(i)) | 0;
+  return Math.abs(h) % 360;
+}
+
+/**
+ * 聊天主界面（侧边栏与弹窗共用同一份镜像视图）。
+ * 状态真源在桥接工作区：消息/流式/草稿/审批全部来自桥接广播与快照（client.ready → chat.sync），
+ * 本组件不做乐观上屏（气泡一致性由桥接 chat.user 广播保证）。
+ * popupTabId 非空即弹窗模式：页面提取钉住该 tab（弹窗聚焦时"活动 tab"是弹窗自己），
+ * 顶栏提供 📌 关联芯片 / 🎯 指向当前页（换绑）/ ⇱ 回侧边栏。
+ */
+export default function App(props: { popupTabId?: number | null; popupAliasId?: string | null }): React.ReactElement {
+  const popupTabId = props.popupTabId ?? null; // 非 null = 弹窗模式（钉住的页面 tab）
+  const popupAliasId = props.popupAliasId ?? null; // 弹窗打开时指定要选中的别名
   const [settings, setSettings] = useState<ExtSettings | null>(null);
   const [conn, setConn] = useState<ConnState>("connecting");
   const [authError, setAuthError] = useState("");
@@ -23,7 +42,7 @@ export default function App(): React.ReactElement {
   const [resumed, setResumed] = useState(false);
   const [messages, setMessages] = useState<UiMsg[]>([]);
   const [streaming, setStreaming] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false); // 一轮生成进行中（发送即起，done/error/aborted/断线/换会话止）：发送键变为停止键
+  const [busy, setBusy] = useState(false); // 一轮生成进行中（chat.user 起，done/error/aborted/断线/换会话止）：发送键变为停止键
   const [permReq, setPermReq] = useState<{ requestId: string; tool: string; detail: string } | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null); // 当前会话 ID（folder.bound/session.list.data 携带或 chat.done 推送）
   const [runtime, setRuntime] = useState<RuntimeCache>({}); // 桥接上报的实际生效模型/effort（chat.done 携带，本地缓存跨重载）
@@ -32,11 +51,23 @@ export default function App(): React.ReactElement {
   const [showGate, setShowGate] = useState(false); // 手动打开重新配对界面（中途改端口/换桥接）
   const [aliases, setAliases] = useState<AliasInfo[]>([]); // 桥接别名列表（alias.list.data 推送）
   const [currentAliasId, setCurrentAliasId] = useState<string | null>(null); // 当前进行中的别名
+  const [draft, setDraft] = useState(""); // 输入框草稿（工作区镜像：本地即显 + 防抖上报，桥接广播其它视图）
+  const [pinTabId, setPinTabId] = useState<number | null>(popupTabId); // 弹窗钉住的页面 tab（🎯 换绑会改）
+  const [pinTabTitle, setPinTabTitle] = useState(""); // 钉住页标题（顶栏芯片显示）
+  const [pinTabUrl, setPinTabUrl] = useState(""); // 钉住页地址（芯片悬浮提示）
+  const [pinWinId, setPinWinId] = useState<number | null>(null); // 弹窗自身的窗口 ID（pin.report/聚焦用）
+  const [openFolderFlash, setOpenFolderFlash] = useState<string | null>(null); // folder.opened 瞬时反馈（约 4 秒）
   const pickResolverRef = useRef<((p: string | null) => void) | null>(null); // folder.picked 的等待者（folder.pick 请求-响应配对）
   const clientRef = useRef<BridgeClient | null>(null);
   const lastUrlRef = useRef<string | null>(null);
   const prevFolderRef = useRef<string | null>(null); // 上次绑定的文件夹（识别"切换文件夹"）
   const prevBoundSidRef = useRef<string | null>(null); // 上次 folder.bound/chat.done 的会话 ID（识别"切换会话"）
+  const snapshotPhaseRef = useRef(false); // 快照窗口期（auth.ok → chat.sync）：此间的 folder.bound 不再回讨 history（快照自带）
+  const snapshotBoundRef = useRef(false); // 本次连接的快照是否已含绑定（chat.sync 据此决定要不要回绑 lastFolder）
+  const composingRef = useRef(false); // 输入法组合中：chat.draft 入包不顶字，防抖上报也暂缓
+  const draftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null); // 草稿防抖定时器
+  const flashTimerRef = useRef<number | null>(null); // 打开文件夹反馈的清除定时器
+  const aliasSelectTriedRef = useRef(false); // 弹窗 URL 指定别名的自动选中只试一次
   const settingsRef = useRef<ExtSettings | null>(null);
   settingsRef.current = settings;
 
@@ -44,12 +75,15 @@ export default function App(): React.ReactElement {
   function onServerMessage(m: ServerMessage): void {
     switch (m.type) {
       case "auth.ok":
+        snapshotPhaseRef.current = true; // 进入快照窗口期
+        snapshotBoundRef.current = false;
         clientRef.current?.send({ type: "client.ready" });
         break;
       case "auth.fail":
         setAuthError(m.reason);
         break;
       case "folder.bound":
+        snapshotBoundRef.current = true; // 快照已含绑定（或非快照期的主动绑定，置位无害）
         if (
           (prevFolderRef.current !== null && prevFolderRef.current !== m.path) ||
           (prevBoundSidRef.current !== null && prevBoundSidRef.current !== m.sessionId)
@@ -65,7 +99,8 @@ export default function App(): React.ReactElement {
         setResumed(m.resumed);
         setSessionId(m.sessionId);
         lastUrlRef.current = null; // 换文件夹/会话后重新附带全文
-        if (m.resumed) clientRef.current?.send({ type: "session.history" });
+        // 快照窗口期内不回讨 history：快照按序自带 history（重复回讨会在 chat.sync 后到达，抹掉在途气泡）
+        if (m.resumed && !snapshotPhaseRef.current) clientRef.current?.send({ type: "session.history" });
         break;
       case "folder.error":
         setMessages((ms) => [...ms, { id: crypto.randomUUID(), role: "assistant", text: `⚠️ ${m.message}` }]);
@@ -86,6 +121,47 @@ export default function App(): React.ReactElement {
       case "folder.picked":
         pickResolverRef.current?.(m.path); // 配对到等待中的 folder.pick 请求
         pickResolverRef.current = null;
+        break;
+      case "folder.opened": {
+        // 打开文件夹的瞬时反馈（AliasBar 按钮旁显示约 4 秒）
+        const text = m.script ? `已打开（续聊脚本：${m.script}）` : "已打开";
+        setOpenFolderFlash(text);
+        if (flashTimerRef.current !== null) window.clearTimeout(flashTimerRef.current);
+        flashTimerRef.current = window.setTimeout(() => setOpenFolderFlash(null), 4000);
+        break;
+      }
+      case "chat.user": {
+        // 回显上屏（广播，含发送方）：气泡一致性由桥接保证；note 渲染为附带说明 tool 泡
+        setBusy(true);
+        const note = m.note;
+        setMessages((ms) => {
+          const next: UiMsg[] = [...ms, { id: crypto.randomUUID(), role: "user", text: m.display, sentText: m.sent, attachKind: deriveAttachKind(m.sent) }];
+          if (note) next.push({ id: crypto.randomUUID(), role: "tool", text: note, sentText: m.sent });
+          return next;
+        });
+        break;
+      }
+      case "chat.sync": {
+        // 工作区快照收尾帧（顺序：folder.bound → history → lists → 本帧）：补齐在途轮/挂起审批/草稿
+        snapshotPhaseRef.current = false;
+        setBusy(m.busy);
+        setStreaming(m.busy ? m.streamText : null); // 续播在途流式（空串 = 等首帧 delta，气泡已在）
+        setPermReq(m.permReq);
+        if (!composingRef.current) setDraft(m.draft);
+        const u = m.user;
+        if (u) {
+          // 在途轮的用户气泡未落盘（历史回放没有），靠快照补齐
+          setMessages((ms) => [...ms, { id: crypto.randomUUID(), role: "user", text: u.display, sentText: u.sent, attachKind: deriveAttachKind(u.sent) }]);
+        }
+        // 快照无绑定 = 桥接侧尚无工作区绑定：回绑上次文件夹（快照已含绑定时绝不误抢）
+        if (!snapshotBoundRef.current) {
+          const p = settingsRef.current?.lastFolder;
+          if (p) clientRef.current?.send({ type: "folder.bind", path: p });
+        }
+        break;
+      }
+      case "chat.draft":
+        if (!composingRef.current) setDraft(m.text); // 输入法组合中不顶字
         break;
       case "chat.delta":
         setStreaming((s) => (s ?? "") + m.text);
@@ -132,6 +208,9 @@ export default function App(): React.ReactElement {
       case "permission.request":
         setPermReq({ requestId: m.requestId, tool: m.tool, detail: m.detail });
         break;
+      case "permission.resolved":
+        setPermReq(null); // 任一视图已裁决（含本视图，幂等）
+        break;
     }
   }
 
@@ -143,7 +222,7 @@ export default function App(): React.ReactElement {
       onMessage: onServerMessage,
       onState: (state) => {
         setConn(state);
-        if (state !== "open") setBusy(false); // 断线即丢失在途帧：解除 busy 防界面卡死
+        if (state !== "open") setBusy(false); // 断线即丢失在途帧：解除 busy 防界面卡死（重连后快照恢复真实 busy）
       },
     });
     clientRef.current = c;
@@ -166,16 +245,117 @@ export default function App(): React.ReactElement {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 每次 WS 进入 open（含断线重连）都回绑：服务端每条连接的状态独立，
-  // 重连后不重绑会出现客户端显示已绑定、服务端却报"请先绑定文件夹"
+  // 弹窗模式初始化：拿自身窗口 ID + 钉住页标题（芯片显示）
   useEffect(() => {
-    if (conn === "open") {
-      const p = bound ?? settings?.lastFolder;
-      if (p) clientRef.current?.send({ type: "folder.bind", path: p });
-      clientRef.current?.send({ type: "alias.list" }); // 顺带拉取桥接别名列表
+    if (popupTabId === null) return;
+    void (async () => {
+      try {
+        const win = await chrome.windows.getCurrent();
+        setPinWinId(win.id ?? null);
+      } catch {
+        // 拿不到就只缺聚焦能力，不影响聊天
+      }
+      await refreshPinTab(popupTabId);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // 弹窗模式：连接就绪且钉住信息齐备后向后台上报 pin（驱动被钉页面的关联徽标；别名/换绑变化时重报）
+  useEffect(() => {
+    if (popupTabId === null || pinWinId === null || pinTabId === null || conn !== "open") return;
+    const name = aliases.find((a) => a.id === currentAliasId)?.name ?? "";
+    void chrome.runtime
+      .sendMessage({ type: "ccc.pin.report", winId: pinWinId, tabId: pinTabId, aliasName: name, hue: aliasHue(currentAliasId) })
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [popupTabId, pinWinId, pinTabId, conn, currentAliasId, aliases]);
+
+  // 弹窗模式：URL 指定了别名时，等别名列表到达后自动选中一次（不存在则跟随工作区当前别名）
+  useEffect(() => {
+    if (popupTabId === null || popupAliasId === null || aliasSelectTriedRef.current || conn !== "open") return;
+    if (aliases.length === 0) return; // 快照未到，等
+    aliasSelectTriedRef.current = true;
+    if (currentAliasId !== popupAliasId && aliases.some((a) => a.id === popupAliasId)) {
+      clientRef.current?.send({ type: "alias.select", id: popupAliasId });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [conn]);
+  }, [aliases, currentAliasId, conn, popupTabId, popupAliasId]);
+
+  // 弹窗模式：窗口标题跟随别名（多弹窗并排/任务栏区分用）
+  useEffect(() => {
+    if (popupTabId === null) return;
+    const name = aliases.find((a) => a.id === currentAliasId)?.name;
+    document.title = name ? `CopilotCC · ${name}` : "CopilotCC 弹窗";
+  }, [popupTabId, aliases, currentAliasId]);
+
+  /**
+   * 刷新钉住页标题/地址（芯片显示用）。
+   * @param tabId 钉住的页面 tab
+   */
+  async function refreshPinTab(tabId: number): Promise<void> {
+    try {
+      const t = await chrome.tabs.get(tabId);
+      setPinTabTitle(t.title ?? t.url ?? `tab ${tabId}`);
+      setPinTabUrl(t.url ?? "");
+    } catch {
+      setPinTabTitle("页面已关闭");
+      setPinTabUrl("");
+    }
+  }
+
+  /** 弹出独立窗口：当前活动 tab 钉给弹窗；同 tab 去重聚焦由后台负责 */
+  async function openPopup(): Promise<void> {
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (!tab?.id) return;
+      await chrome.runtime.sendMessage({ type: "ccc.popup.open", tabId: tab.id, aliasId: currentAliasId });
+    } catch {
+      // 后台不可用：静默（极端情况，正常不会发生）
+    }
+  }
+
+  /** 🎯 指向当前页：改钉到最后聚焦普通窗口的活动 tab（徽标换页由后台 pin 流程负责） */
+  async function repointToCurrent(): Promise<void> {
+    try {
+      const win = await chrome.windows.getLastFocused({ populate: true, windowTypes: ["normal"] });
+      const tab = win.tabs?.find((t) => t.active);
+      if (!tab?.id) return;
+      setPinTabId(tab.id);
+      await refreshPinTab(tab.id);
+    } catch {
+      // 无可用普通窗口：忽略
+    }
+  }
+
+  /** ⇱ 回侧边栏：在钉住页所在窗口打开侧边栏（快照+镜像恢复全部状态），再关弹窗 */
+  async function backToSidepanel(): Promise<void> {
+    try {
+      if (pinTabId !== null) {
+        const t = await chrome.tabs.get(pinTabId);
+        await chrome.sidePanel.open({ windowId: t.windowId });
+      }
+    } catch {
+      // 页面没了就只关弹窗
+    }
+    window.close();
+  }
+
+  /**
+   * 草稿本地变更：立即上屏 + 防抖 200ms 上报桥接（镜像到其它视图）；输入法组合中暂缓上报。
+   * @param t 最新草稿
+   */
+  function handleDraftChange(t: string): void {
+    setDraft(t);
+    if (draftTimerRef.current) clearTimeout(draftTimerRef.current);
+    draftTimerRef.current = setTimeout(() => {
+      if (!composingRef.current) clientRef.current?.send({ type: "chat.draft", text: t });
+    }, 200);
+  }
+
+  /** 打开当前别名（无别名时当前绑定）所在文件夹；桥接顺手落续聊脚本，folder.opened 反馈在 AliasBar 按钮旁 */
+  function handleOpenFolder(): void {
+    clientRef.current?.send({ type: "folder.open" });
+  }
 
   async function handleBind(p: string): Promise<void> {
     if (!p.trim()) return;
@@ -204,7 +384,8 @@ export default function App(): React.ReactElement {
     const pageCap = PAGE_RICHNESS_CAPS[richness];
     const force = forceAttach; // 本次强制看页面：无视附带开关与同页去重
     if (s.attachEnabled || force) {
-      const snap = await snapshotActiveTab();
+      // 弹窗模式钉住原 tab（弹窗聚焦时活动 tab 是弹窗自己）；侧边栏取当前活动 tab
+      const snap = popupTabId !== null && pinTabId !== null ? await snapshotTab(pinTabId) : await snapshotActiveTab();
       if (snap.page && (snap.page.markdown || snap.page.selection)) page = snap.page; // 无内容则不带
       if (page) {
         const d = decideAttach(lastUrlRef.current, page.url, true);
@@ -224,29 +405,14 @@ export default function App(): React.ReactElement {
     }
     const full = composeMessage(text, page, attachFull, richness);
     const hasUp = uploads.length > 0;
-    // 展示用上传说明块与桥接实际发送同一模板（桥接落盘后按真实路径再拼；重名加 -1 后缀时以桥接为准）
-    const upNote = hasUp ? composeUploadNote(uploads.map((u) => `${bound}/${UPLOAD_DIR}/${u.name}`)) : null;
-    const sentFull = upNote ? `${upNote}\n\n${full}` : full;
-    // 附带标记：📁 上传 > 📄 全文 / 📎 仅选中文字；未附带则无标记
-    const attachKind: UiMsg["attachKind"] = hasUp
-      ? "upload"
-      : !page
-        ? undefined
-        : attachFull && page.markdown
-          ? "full"
-          : page.selection
-            ? "selection"
-            : undefined;
-    setMessages((ms) => {
-      const next: UiMsg[] = [...ms, { id: crypto.randomUUID(), role: "user", text, sentText: sentFull, attachKind }];
-      if (upNote) next.push({ id: crypto.randomUUID(), role: "tool", text: `📁 已上传 ${uploads.length} 个文件至 ${UPLOAD_DIR}：${uploads.map((u) => u.name).join("、")}`, sentText: sentFull });
-      if (attachNote) next.push({ id: crypto.randomUUID(), role: "tool", text: attachNote, sentText: sentFull });
-      return next;
-    });
     const c = clientRef.current;
-    if (!c) return; // 发送途中断线：气泡已上屏，不置 busy（重连后照常可用）
-    c.send({ type: "chat.send", text: full, ...(hasUp ? { uploads } : {}) });
+    if (!c) return; // 未连接：不发（界面本来就禁用输入，此处只是兜底）
+    // 气泡不做乐观上屏：桥接组装后统一广播 chat.user（display=原始输入，note=附带说明）上屏，各视图天然一致；
+    // 上传结果由桥接落盘后广播 chat.tool（真实路径，重名后缀以桥接为准）
+    c.send({ type: "chat.send", text: full, display: text, ...(attachNote ? { note: attachNote } : {}), ...(hasUp ? { uploads } : {}) });
     setBusy(true); // 发送即进入"生成中"：停止键立刻出现，不等首字（思考/工具调用期也可中止）
+    if (draftTimerRef.current) clearTimeout(draftTimerRef.current); // 草稿本地即清；桥接随后广播 chat.draft "" 兜底全部视图
+    setDraft("");
   }
 
   /** 更新设置并把权限模式/模型/effort 全量推给桥接（任一变化桥接都会重建会话） */
@@ -266,16 +432,19 @@ export default function App(): React.ReactElement {
     await applySettings({ permissionMode: m });
   }
 
-  /** 重新配对：保存新连接参数、清掉旧桥的界面状态并重连（conn-open 效应会自动回绑 lastFolder） */
+  /** 重新配对：保存新连接参数、清掉旧桥的界面状态并重连（新桥的 chat.sync 快照会驱动回绑 lastFolder） */
   async function handlePair(info: PairingInfo): Promise<void> {
     await saveSettings({ token: info.t, port: info.p, host: info.h });
     const s = await loadSettings();
     setAuthError("");
     setShowGate(false);
     setSettings(s);
-    // 换桥 = 换世界：清掉旧桥留下的界面状态，由新桥的 folder.bound/history 重建
+    // 换桥 = 换世界：清掉旧桥留下的界面状态，由新桥的 folder.bound/history/chat.sync 重建
     prevFolderRef.current = null;
     prevBoundSidRef.current = null;
+    snapshotPhaseRef.current = false;
+    snapshotBoundRef.current = false;
+    aliasSelectTriedRef.current = false;
     setBound(null);
     setMessages([]);
     setStreaming(null);
@@ -283,6 +452,7 @@ export default function App(): React.ReactElement {
     setAliases([]);
     setCurrentAliasId(null); // 换桥：旧桥别名作废，等新桥 alias.list.data 重建
     setSessionId(null);
+    setDraft("");
     setRuntime({}); // 新桥的实际生效值未知，连缓存一起清，等首轮 chat.done 重建
     void clearRuntimeCache();
     connect(s);
@@ -299,12 +469,28 @@ export default function App(): React.ReactElement {
     );
   }
 
+  const currentAliasName = aliases.find((a) => a.id === currentAliasId)?.name ?? null;
+
   return (
     <div className="app">
       <div className={`conn ${conn}`}>
         <span>{conn === "open" ? "● 已连接" : conn === "connecting" ? "● 连接中…" : "● 已断开（自动重连中）"}</span>
-        <button className="pair-btn" title="重新配对（改端口 / 换桥接）" onClick={() => setShowGate(true)}>⚙ 配对</button>
+        <span>
+          {popupTabId === null ? (
+            <button className="pair-btn" title="在独立窗口打开此会话（镜像模式：两边同步；再点扩展图标可隐藏侧边栏，弹窗不受影响）" onClick={() => void openPopup()}>🗖 弹出</button>
+          ) : null}
+          <button className="pair-btn" title="重新配对（改端口 / 换桥接）" onClick={() => setShowGate(true)}>⚙ 配对</button>
+        </span>
       </div>
+      {popupTabId !== null ? (
+        <div className="popup-bar">
+          <span className="pin-chip" title={pinTabUrl || undefined}>
+            📌 {currentAliasName ?? "未选别名"} · {pinTabTitle || "…"}
+          </span>
+          <button className="mini-btn" title="改钉到最后聚焦窗口的当前页（页面徽标随之换页）" onClick={() => void repointToCurrent()}>🎯 指向当前页</button>
+          <button className="mini-btn" title="在钉住页窗口打开侧边栏并关闭本弹窗（会话完全恢复）" onClick={() => void backToSidepanel()}>⇱ 回侧边栏</button>
+        </div>
+      ) : null}
       <AliasBar
         aliases={aliases}
         currentAliasId={currentAliasId}
@@ -322,6 +508,8 @@ export default function App(): React.ReactElement {
         onNewSession={() => clientRef.current?.send({ type: "session.new" })}
         onSwitchSession={(id) => clientRef.current?.send({ type: "session.switch", sessionId: id })}
         onDeleteSession={(id) => clientRef.current?.send({ type: "session.delete", sessionId: id })}
+        onOpenFolder={handleOpenFolder}
+        openFolderFlash={openFolderFlash}
       />
       <MessageList messages={messages} streaming={streaming} />
       <PermissionCard
@@ -346,6 +534,9 @@ export default function App(): React.ReactElement {
         onModeChange={handleModeChange}
         onModelChange={(v) => void applySettings({ model: v })}
         onEffortChange={(v) => void applySettings({ effort: v })}
+        draft={draft}
+        onDraftChange={handleDraftChange}
+        onComposition={(v) => { composingRef.current = v; }}
         onSend={handleSend}
         onStop={() => clientRef.current?.send({ type: "chat.abort" })}
       />

@@ -57,8 +57,11 @@ export type ClientMessage =
   | { type: "client.ready" }
   | { type: "folder.bind"; path: string }
   | { type: "folder.pick" }
-  | { type: "chat.send"; text: string; uploads?: UploadFile[] }
+  // chat.send：text=组装后的完整发送内容；display=用户原始输入（镜像视图上屏用，可空串=纯文件发送）；note=附带结果说明（随 chat.user 广播成 tool 泡）
+  | { type: "chat.send"; text: string; display?: string; note?: string; uploads?: UploadFile[] }
   | { type: "chat.abort" }
+  // chat.draft：输入框草稿上报（空串=清空；工作区持有并镜像到其它视图，逐键防抖发送，上限见 parse）
+  | { type: "chat.draft"; text: string }
   | { type: "permission.response"; requestId: string; allow: boolean }
   | { type: "session.history" }
   | { type: "session.list" }
@@ -70,6 +73,8 @@ export type ClientMessage =
   | { type: "alias.update"; id: string; name?: string; folder?: string; sessionId?: string | null; pageRichness?: PageRichness }
   | { type: "alias.delete"; id: string }
   | { type: "alias.select"; id: string }
+  // folder.open：无参——服务端按"当前别名.folder ?? 工作区.folder"解析目标，客户端不传路径（杜绝任意路径打开）
+  | { type: "folder.open" }
   | { type: "settings.set"; permissionMode: PermissionModeSetting; model?: string; effort?: EffortLevelSetting };
 
 export type ServerMessage =
@@ -86,7 +91,28 @@ export type ServerMessage =
   | { type: "chat.error"; message: string }
   // chat.aborted：本轮被用户手动停止（桥接立即下发，不等 CLI 收尾帧；客户端据它解除 busy 并保留已生成的部分文字）
   | { type: "chat.aborted" }
+  // chat.user：用户消息回显（广播给全部视图，含发送方——视图不再本地乐观上屏，气泡一致性由桥接保证）
+  // display=气泡正文（用户原始输入）；sent=实际发送全文（右键溯源）；note=附带结果说明（渲染为 tool 泡）
+  | { type: "chat.user"; display: string; sent: string; note?: string }
+  // chat.sync：工作区快照（client.ready 后推送）——新视图/重连视图据它补齐在途轮次、挂起审批与草稿
+  | {
+      type: "chat.sync";
+      busy: boolean;
+      /** 本轮已流出的部分文本（busy 时作 streaming 续播；非 busy 时为空） */
+      streamText: string;
+      /** 在途轮的用户气泡（未落盘，历史回放里没有，靠它补齐） */
+      user: { display: string; sent: string } | null;
+      permReq: { requestId: string; tool: string; detail: string } | null;
+      /** 工作区当前草稿（视图输入框镜像） */
+      draft: string;
+    }
+  // chat.draft：草稿镜像广播（不回显上报方，避免光标被回包顶跳）
+  | { type: "chat.draft"; text: string }
   | { type: "permission.request"; requestId: string; tool: string; detail: string }
+  // permission.resolved：任一视图已裁决，其它视图撤掉卡片（广播）
+  | { type: "permission.resolved"; requestId: string }
+  // folder.opened：folder.open 的定向应答；script=已刷新续聊脚本文件名（无别名时为 null）
+  | { type: "folder.opened"; path: string; script: string | null }
   | { type: "session.history.data"; messages: HistoryMessage[] }
   | { type: "session.list.data"; sessions: SessionInfo[]; currentId: string | null }
   | { type: "alias.list.data"; aliases: AliasInfo[]; currentId: string | null };
@@ -140,12 +166,19 @@ export function parseClientMessage(raw: string): ClientMessage | null {
       case "session.new":
       case "alias.list":
       case "folder.pick":
+      case "folder.open":
         return m;
+      case "chat.draft":
+        // 草稿逐键上报：上限 10 万字符防异常客户端刷屏（正常草稿远低于此）
+        return typeof m.text === "string" && m.text.length <= 100_000 ? m : null;
       case "folder.bind":
         return typeof m.path === "string" && m.path.length > 0 ? m : null;
       case "chat.send": {
         if (typeof m.text !== "string" || m.text.length === 0) return null;
-        if (m.uploads === undefined) return m; // 无附件：原样放行
+        // display/note 为可选镜像字段：只接受字符串（display 允许空串=纯文件发送；note 空串剥掉）
+        const display = typeof m.display === "string" ? m.display : undefined;
+        const note = typeof m.note === "string" && m.note.length > 0 ? m.note : undefined;
+        if (m.uploads === undefined) return { type: "chat.send", text: m.text, ...(display !== undefined ? { display } : {}), ...(note ? { note } : {}) };
         // uploads 全量严格校验：数量/名单/单文件/总量任一越界整帧拒绝（扩展侧已先做友好拦截，这里是防线）
         if (!Array.isArray(m.uploads) || m.uploads.length === 0 || m.uploads.length > MAX_UPLOAD_FILES) return null;
         let total = 0;
@@ -158,7 +191,7 @@ export function parseClientMessage(raw: string): ClientMessage | null {
           if (total > MAX_UPLOAD_TOTAL_B64) return null;
           uploads.push({ name: u.name, dataB64: u.dataB64 });
         }
-        return { type: "chat.send", text: m.text, uploads };
+        return { type: "chat.send", text: m.text, ...(display !== undefined ? { display } : {}), ...(note ? { note } : {}), uploads };
       }
       case "permission.response":
         return typeof m.requestId === "string" && typeof m.allow === "boolean" ? m : null;

@@ -213,3 +213,9 @@
 - 弹窗=同一份 App + URL 参数（?popup=1&tab=&alias=）；钉住 tabId 提取页面；同 tab 去重聚焦；多弹窗=同一工作区多视图。
 - 关联徽标（双端 key）：后台 SW 向被钉页面注入 Shadow DOM 徽标（色点=hash(aliasId)，别名名），点击聚焦弹窗；onUpdated 重注入、窗口/标签关闭全路径清理。
 - 续聊脚本：继续聊天-<别名>.sh（非法字符清洗、空名"未命名"、截 60），标记注释防误删，内容不变跳过写；删别名/改名换文件夹全路径清理。
+
+**实施落地（同日完成）**：
+- 桥接：server.ts 重构为进程内唯一工作区 + broadcast 视图广播（108 测试绿，含 server-mirror.test.ts 8 个镜像用例：双端回显一致/真流式/中途快照顺序/草稿不回显/ws close 不杀会话等）；新增 resume-script.ts（7 用例）；folder-picker.ts 加 openInFileManager（spawn 事件即算成功，explorer 非零退出码不误报）。
+- 扩展：page-extract 拆 snapshotTab(tabId, knownUrl?) 供弹窗钉页提取；popup-mode.ts（URL 参数解析/构造）+ popup-registry.ts（纯状态机钉住注册表，SW 回收后靠扫描弹窗 URL 自愈）+ background.ts 接管弹窗去重打开/Shadow DOM 徽标生命周期；App 镜像化（快照驱动回绑、chat.user 回显上屏取代乐观上屏、草稿受控+200ms 防抖镜像+IME 守卫、弹窗顶栏 📌/🎯/⇱）；InputBox 草稿改受控；AliasBar 详情区加「📂 打开文件夹」。扩展 54 测试绿 + 构建通过。
+- wxt.config 权限未变：tabs.get/读 url 由 host_permissions 覆盖，tabs/windows 事件不需新权限。
+- 坑位记录：node 版 vitest 环境没有 DOMParser，页面提取类单测只能覆盖到守卫与注入参数透传层；heredoc 超 ~170 行在本环境会莫名炸引号，大文件一律分段追加或用写文件工具。

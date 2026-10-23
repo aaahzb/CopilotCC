@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { stripInlineHandlers, snapshotActiveTab } from "../src/lib/page-extract";
+import { stripInlineHandlers, snapshotActiveTab, snapshotTab } from "../src/lib/page-extract";
 
 describe("stripInlineHandlers", () => {
   it("剥离双引号 / 单引号 / 无引号三种属性值", () => {
@@ -65,5 +65,52 @@ describe("snapshotActiveTab 扩展自身页面守卫", () => {
     const r = await snapshotActiveTab();
     expect(r.page).toBeNull();
     expect(r.error).toContain("扩展");
+  });
+});
+
+describe("snapshotTab 指定标签页（弹窗钉住场景）", () => {
+  const OWN = "chrome-extension://cnalihjaacpahpjkpneacjcfbhboglno/";
+
+  afterEach(() => {
+    delete (globalThis as Record<string, unknown>).chrome; // 拆掉 chrome 桩，避免渗漏到其他测试
+  });
+
+  /**
+   * 安装 chrome 桩：tabs.get 返回给定 url（getUrl 为 null 时抛错，模拟无 tabs 权限拿不到地址）。
+   * @param getUrl tabs.get 应返回的 tab 地址；null 表示抛错
+   * @param executeScript 自定义注入桩
+   * @returns 实际安装的 executeScript 桩（便于断言调用参数）
+   */
+  function stubChromeGet(getUrl: string | null, executeScript: ReturnType<typeof vi.fn>): ReturnType<typeof vi.fn> {
+    (globalThis as Record<string, unknown>).chrome = {
+      runtime: { getURL: (p: string) => OWN + p },
+      tabs: { get: vi.fn(() => (getUrl === null ? Promise.reject(new Error("No tab")) : Promise.resolve({ url: getUrl }))) },
+      scripting: { executeScript },
+    };
+    return executeScript;
+  }
+
+  it("tabs.get 报回扩展自身页面（弹窗 tab）时不注入、不附带", async () => {
+    const exec = stubChromeGet(`${OWN}sidepanel.html?popup=1`, vi.fn());
+    const r = await snapshotTab(42);
+    expect(r.page).toBeNull();
+    expect(r.error).toContain("扩展");
+    expect(exec).not.toHaveBeenCalled();
+  });
+
+  it("向钉住的 tabId 注入（target.tabId 原样透传）；注入失败给出可读错误", async () => {
+    const exec = stubChromeGet("https://example.com/", vi.fn(async () => { throw new Error("Cannot access"); }));
+    const r = await snapshotTab(42);
+    expect(exec).toHaveBeenCalledTimes(1);
+    expect((exec.mock.calls[0]?.[0] as { target: { tabId: number } }).target.tabId).toBe(42);
+    expect(r.page).toBeNull();
+    expect(r.error).toContain("脚本注入失败");
+  });
+
+  it("tabs.get 拿不到地址时仍放行注入（双保险交给页面自报 url）", async () => {
+    const exec = stubChromeGet(null, vi.fn(async () => { throw new Error("denied"); }));
+    const r = await snapshotTab(7);
+    expect(exec).toHaveBeenCalledTimes(1); // 没被前置守卫误拦
+    expect(r.error).toContain("脚本注入失败");
   });
 });

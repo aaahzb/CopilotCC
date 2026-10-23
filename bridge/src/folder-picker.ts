@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 
 /** 选择框兜底超时：用户挂着不点也不至于让子进程永远悬挂 */
 const PICK_TIMEOUT_MS = 5 * 60 * 1000;
@@ -41,5 +41,27 @@ function run(cmd: string, args: string[]): Promise<string | null> {
       if (/^[A-Za-z]:$/.test(p)) p += "\\"; // 选中盘符根目录时保住斜杠（"C:" 会被解析成 cwd）
       resolve(p.length > 0 ? p : null);
     });
+  });
+}
+
+/**
+ * 用系统文件管理器打开文件夹（win explorer / mac open / linux xdg-open）。
+ * spawn 成功即视为已打开：explorer.exe 打开成功也常返回非零退出码，看退出码会误报失败。
+ * @param p 要打开的文件夹绝对路径
+ * @returns 是否成功拉起文件管理器进程
+ */
+export function openInFileManager(p: string): Promise<boolean> {
+  const cmd = process.platform === "win32" ? "explorer.exe" : process.platform === "darwin" ? "open" : "xdg-open";
+  return new Promise((resolve) => {
+    try {
+      const child = spawn(cmd, [p], { detached: true, stdio: "ignore", windowsHide: true });
+      child.on("spawn", () => {
+        child.unref(); //  detached+unref：桥接退出不等文件管理器
+        resolve(true);
+      });
+      child.on("error", () => resolve(false));
+    } catch {
+      resolve(false);
+    }
   });
 }

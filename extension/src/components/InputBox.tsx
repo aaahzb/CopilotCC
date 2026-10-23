@@ -24,11 +24,16 @@ export function InputBox(props: {
   onModeChange(m: PermissionModeSetting): void;
   onModelChange(v: string): void;
   onEffortChange(v: EffortLevelSetting | ""): void;
+  /** 草稿（受控）：真源在父组件/桥接工作区，弹窗与侧边栏镜像同一输入内容 */
+  draft: string;
+  /** 草稿本地变更（父组件负责上屏状态与防抖上报桥接） */
+  onDraftChange(t: string): void;
+  /** 输入法组合开始/结束（父组件据它暂缓草稿镜像，防组合中被远端回包顶字） */
+  onComposition?(composing: boolean): void;
   /** 发送：uploads 为待上传文件（无上传时是空数组）；桥接落盘到绑定文件夹的 copilotUploads */
   onSend(text: string, uploads: PendingUpload[]): void;
   onStop(): void;
 }): React.ReactElement {
-  const [text, setText] = useState("");
   const [files, setFiles] = useState<File[]>([]); // 待上传文件（芯片行可单个移除）
   const [uploadError, setUploadError] = useState(""); // 校验失败提示（数量/单文件/总量上限）
   const [dragOver, setDragOver] = useState(false); // 拖拽悬停高亮
@@ -53,11 +58,10 @@ export function InputBox(props: {
   }
 
   const submit = async (): Promise<void> => {
-    if (props.disabled || props.busy || (!text.trim() && files.length === 0)) return; // busy 兜底：防 Enter 竞态连发
+    if (props.disabled || props.busy || (!props.draft.trim() && files.length === 0)) return; // busy 兜底：防 Enter 竞态连发
     // 发送时才把 File 读成 base64：芯片停留期间不占内存
     const uploads = await readFilesAsUploads(files);
-    props.onSend(text.trim(), uploads);
-    setText("");
+    props.onSend(props.draft.trim(), uploads); // 草稿清空由父组件负责（本地即清 + 桥接广播兜底）
     setFiles([]);
     setUploadError("");
   };
@@ -124,9 +128,11 @@ export function InputBox(props: {
       <textarea
         rows={3}
         placeholder={props.disabled ? "先绑定文件夹…" : "针对当前网页提问，Enter 发送 / Shift+Enter 换行；可拖入或点 📁 上传文件"}
-        value={text}
+        value={props.draft}
         disabled={props.disabled}
-        onChange={(e) => setText(e.target.value)}
+        onChange={(e) => props.onDraftChange(e.target.value)}
+        onCompositionStart={() => props.onComposition?.(true)}
+        onCompositionEnd={() => props.onComposition?.(false)}
         onKeyDown={(e) => {
           // Esc = 中止本轮生成（对齐 Claude Code CLI 的 ESC）；输入法组合中的 Esc 是取消拼音，不拦截
           if (e.key === "Escape" && props.busy && !e.nativeEvent.isComposing) {
@@ -177,7 +183,7 @@ export function InputBox(props: {
           {props.busy ? (
             <button type="button" className="stop-btn" title="停止本轮生成（输入框聚焦时按 Esc 同效）" onClick={props.onStop}>■ 停止</button>
           ) : (
-            <button disabled={props.disabled || (!text.trim() && files.length === 0)} onClick={() => void submit()}>发送</button>
+            <button disabled={props.disabled || (!props.draft.trim() && files.length === 0)} onClick={() => void submit()}>发送</button>
           )}
         </span>
       </div>

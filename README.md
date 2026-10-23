@@ -40,6 +40,7 @@
 - **别名**：一个「文件夹 + 会话」组合可保存为命名别名。侧栏顶部平时只有一个别名下拉，选中即切到它的文件夹+会话；点「＋新建」才展开绑定表单（名称 + 文件夹 + 会话），会话可下拉选择或直接粘贴会话 ID（整行 claude --resume 命令也行），文件夹可点「浏览…」弹系统文件夹选择框（Windows 资源管理器对话框 / macOS Finder 对话框，也可手输路径）；平时文件夹与会话栏隐藏，点「详情」随时展开查看修改；「🗑删别名」只删别名本身，文件夹绑定与会话历史全部保留。别名存在桥接端 `~/.ccc-bridge/aliases.json`，重装扩展不丢；选中别名后再换文件夹或会话会自动写回该别名，永不脱钩。
 - **绑定文件夹**：在别名详情区（或新建别名表单）输入绝对路径回车，或点「浏览…」弹系统选择框。绑过会的文件夹显示“已续聊”徽标并回放历史（回放气泡只显示用户实际问题，页面上下文包装不进气泡；完整发送内容与 📄/📎/📁 附带标记保留，右键气泡可溯源，重载前后行为一致）；绑定行右侧的“会话 …⧉”芯片点击即复制 `claude --resume <会话ID>` 命令，用于在 cmd/终端里续接当前侧边栏会话。
 - **多会话**：一个文件夹可有多个会话。详情区有「切换文件夹…」「切换会话…」两个下拉（会话按最近活跃排序，▶ 标记当前）以及「＋新会话」「🗑删会话」按钮；删除会话会弹确认并同时删除本地转录文件，不可恢复。
+- **打开文件夹与续聊脚本**：别名详情区的「📂 打开文件夹」一键用系统文件管理器打开当前别名所在文件夹；桥接同时在文件夹里落一个 `继续聊天-<别名>.sh`（内容跟随当前会话 ID 自动刷新，改名/换绑/删别名全路径同步清理，重复打开不重写）。想回到终端模式接着聊：在该文件夹的终端里运行这个脚本即可（等价 `claude --resume <会话ID>`）。
 - **附带网页**（默认开）：首次提问或 URL 变化时自动带页面全文（文章页走 Defuddle 正文提取并保留低评分内容块；提取结果过少或非文章页时自动改用页面全文纯文本；截断 30000 字符）；同页后续提问只带选中文字，靠会话上下文衔接；每次发送会在消息区显示附带结果（成功字符数或失败原因），不再静默失败。
 - **页面丰富度**（按别名各自配置）：别名详情区顶部可选——精简（约 5 千字，省 token 适合快问）/ 标准（约 3 万字，默认）/ 丰富（约 10 万字，长文求全）；只影响附带网页时注入正文的截断量，新建别名时也可一并选择；配置随别名存桥接 aliases.json，附带状态行会显示实际注入字符数（截断时标注原文字数）。
 - **本次强制看页面**：底部发送行左侧「📄 强制看页面」开关（模型·effort 指示右边）：点亮后变亮蓝底并带 ✓（再点一次熄灭即取消，纯本地开关不发消息），下一条消息无视附带开关与同页去重、强制附带页面全文；用后自动熄灭失效，发送时消息区会显示「📄 已强制附带页面…」状态行作为生效凭证；本轮回答期间若发生过 compact（上下文被压缩、页面内容丢失），按钮自动续亮一轮，确保下一条仍带页面。
@@ -55,17 +56,22 @@
   - `plan`：只规划不执行；
   - `逐条审批`：每次工具调用在侧栏弹卡片，手动允许/拒绝（30 秒无操作默认拒绝）。
 - **停止**：发送后（含思考与工具调用期，不等首字）发送键即变为红色「■ 停止」，点击或在输入框按 Esc 立即中止本轮（等价 CLI 的 Esc）；已生成的部分文字保留并追加 ⏹ 标记，挂起的审批卡片一并取消。
+- **独立窗口（弹窗）模式**：侧栏顶部「🗖 弹出」把聊天开成独立窗口（适合双屏：一块全屏看网页，另一块放聊天窗）。弹窗与侧边栏是**完全镜像的两个视图**：同一份界面，消息、流式输出、输入框草稿两边实时同步（弹窗里打一半，侧边栏接着打）。弹窗钉住弹出时的那个网页（页面提取对它生效，多 Chrome 窗口也不乱），顶栏「🎯 指向当前页」一键改钉新页面，「⇱ 回侧边栏」在钉住页窗口打开侧边栏并关掉弹窗（会话完全恢复）。弹出后再点一次扩展图标可隐藏侧边栏，不影响弹窗与页面的关联；弹窗手动关闭后重新打开侧边栏，会话原样恢复（在途生成、草稿、挂起审批都在）。吐字中途打开弹窗/侧边栏，新视图自动补齐在途气泡与已流出的半截回答，同样可随时按「■ 停止」。
+- **页面关联徽标**：弹窗钉住某个页面后，该页面右下角出现一个徽标（📌 + 别名，颜色按别名取色），一眼确认"弹窗 ↔ 页面+别名"的映射；点徽标把对应弹窗唤到前台。页面刷新/导航后徽标自动重注入，弹窗关闭或换绑时自动摘除。
 
 ## 架构
 
 ```
-Chrome 侧栏(React)  ⇄  ws://127.0.0.1:19280  ⇄  ccc-bridge(Node)  ⇄  Agent SDK  ⇄  claude CLI  ⇄  你的中转 API
-        │                        (token 认证/Origin 白名单)         (stream-json 常驻会话)
-        └─ chrome.scripting 按需提取页面 → Defuddle 转 Markdown → 随消息附带
+Chrome 侧边栏(React) ┐
+                     ├─(镜像视图)⇄ ws://127.0.0.1:19280 ⇄ ccc-bridge(Node) ⇄ Agent SDK ⇄ claude CLI ⇄ 你的中转 API
+独立弹窗(同一 React) ┘              (token 认证/Origin 白名单)      (stream-json 常驻会话)
+        │                                  └─ 唯一工作区：文件夹/会话/busy/流式/草稿/审批，状态广播给全部视图
+        └─ chrome.scripting 按需提取页面（弹窗钉住原 tab）→ Defuddle 转 Markdown → 随消息附带
 ```
 
-- 侧栏页面直连 WebSocket（规避 MV3 service worker 30 秒回收）。
-- 不装常驻 content script；发消息时才按需注入脚本提取 `outerHTML` + 选中文字，正文解析（Defuddle→Markdown）在侧栏页面内完成。
+- 侧边栏/弹窗页面直连 WebSocket（规避 MV3 service worker 30 秒回收；SW 只做弹窗窗口与页面徽标的短命协调，被回收后扫描弹窗 URL 自愈）。
+- **镜像架构**：桥接进程内只有一份工作区状态，侧边栏与弹窗都是它的视图——消息回显（chat.user）、流式增量（chat.delta）、草稿（chat.draft）、审批裁决（permission.resolved）全由桥接广播，视图不做本地乐观上屏，双端天然一致；新视图或断线重连发 client.ready 换一份按序快照（folder.bound → history → lists → chat.sync），中途接入也能补齐在途流式与草稿。关掉任何一个视图都不杀会话，停止生成只有用户亲手点。
+- 不装常驻 content script；发消息时才按需注入脚本提取 `outerHTML` + 选中文字，正文解析（Defuddle→Markdown）在视图页面内完成；弹窗模式钉住原 tab 提取（弹窗聚焦时"活动 tab"是弹窗自己）。
 - 桥接维护 `文件夹 → sessionId` 映射（`~/.ccc-bridge/sessions.json`），重新绑定即 resume 会话；历史消息从 `~/.claude/projects/<slug>/<sessionId>.jsonl` 转录回放。
 
 ## 安全设计
@@ -88,6 +94,8 @@ Chrome 侧栏(React)  ⇄  ws://127.0.0.1:19280  ⇄  ccc-bridge(Node)  ⇄  Age
 - **macOS 报"已损坏，无法打开"？** 免费分发没有 Apple 开发者证书（$99/年的 Developer ID + 公证才有「放行即可」的体验），浏览器下载的隔离标记下 macOS 对 ad-hoc 签名一律报损坏、且对 App 右键打开也绕不过——对 dmg 里的「首次使用-右键打开我.command」右键 → 打开一次即可（解除隔离后，以后双击即用）。
 - **macOS 看不到桥接图标？** 图标在屏幕最上方菜单栏的右侧——菜单栏驻留程序按设计不占底部 Dock；刘海屏菜单栏太挤时系统会藏起新图标，关掉几个菜单栏应用再看。仍没有：终端跑 `cat ~/.ccc-bridge/tray-error.log` 把内容发给开发者。
 - **chrome:// 等特权页无法提取？** 属浏览器限制，会在消息列表显示失败原因，不再静默降级。同理，若把侧栏自身（chrome-extension://…/sidepanel.html）开成普通标签页，该页按设计不附带——否则聊天界面本身会进入上下文，模型可能把扩展内部地址当来源写进产物。
+- **弹窗模式没有页面徽标？** chrome:// 等特权页无法注入脚本，徽标缺席但聊天与钉住不受影响；普通页面刷新后徽标会自动回来。
+- **弹窗里能选别名/换文件夹/切会话吗？** 能，和侧边栏完全一样——两边是同一工作区的镜像视图，任一边的操作两边同时生效。
 - **想换托盘/ exe 图标？** 图标由 `bridge/scripts/gen-icon.mjs` 生成（Claude 橙桥形，a 拱桥 / b 拱桥+桥墩 / c 悬索桥三变体，当前用 c），`node bridge/scripts/gen-icon.mjs a|b` 后重新 `npm run build:exe` 生效；脚本输出浅/深底预览条到 `%TEMP%/ccc-icon-preview.png` 供挑选；扩展图标由 `scripts/gen-ext-icon.mjs` 复用同一形状库生成（extension/public/icon/，改后重新 `npm run build` 生效）。
 
 ## 开发者
@@ -111,12 +119,12 @@ cd extension && npm i && npm run build
 # 协议单一来源是 shared/protocol.ts，两端复制件由脚本同步（改协议只改它）
 node scripts/sync-protocol.mjs
 
-cd bridge && npm test                  # 桥接 60 个单测
+cd bridge && npm test                  # 桥接 108 个单测
 cd bridge && npm run typecheck         # 桥接严格类型检查
 cd bridge && npm run selftest          # 离线：握手 + 绑定流程，不调 API
 cd bridge && npm run selftest:live     # 端到端：向真实 claude 发一条消息（走本机中转配置）
 
-cd extension && npm test               # 扩展 24 个单测
+cd extension && npm test               # 扩展 54 个单测
 cd extension && npm run typecheck      # 严格类型检查（需先 npx wxt prepare 或构建过一次）
 
 # 预编译件架构审计（CI 门禁同款）：读文件头断言 CPU 架构，防"第三方二进制架构发错进包"
@@ -131,12 +139,12 @@ node bridge/scripts/check-arch.mjs bridge/node_modules/systray2/traybin/tray_win
 shared/protocol.ts      # WS 协议单一来源
 scripts/                # sync-protocol / gen-extension-key
 bridge/                 # 本地桥接（Node + ws + Agent SDK）
-  src/{config,session-manager,transcript,claude-session,server,index}.ts
+  src/{config,session-manager,transcript,claude-session,server,resume-script,folder-picker,index}.ts
   scripts/              # build-exe / build-mac-app / build-tray-mac / check-arch / gen-icon / gen-iconset / mac-setup.command / 探针
   tray/main.swift       # 自研 macOS 菜单栏托盘助手（systray2 协议，arm64 原生，CI 现场 swiftc 编译）
 extension/              # Chrome MV3 扩展（WXT + React）
-  src/lib/{protocol,storage,attach-policy,ws-client,page-extract}.ts
-  src/components/       # TokenGate / FolderBar / MessageList / InputBox / PermissionCard
+  src/lib/{protocol,storage,attach-policy,ws-client,page-extract,popup-mode,popup-registry}.ts
+  src/components/       # TokenGate / FolderBar / AliasBar / MessageList / InputBox / PermissionCard
   src/entrypoints/{background.ts, sidepanel/}
 .github/workflows/      # ci.yml（三平台测试）/ release.yml（tag 触发构建发布）
 ```

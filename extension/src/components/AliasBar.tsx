@@ -20,6 +20,10 @@ export function AliasBar(props: {
   /** 更新当前别名配置（页面丰富度；改文件夹/会话绑定仍走 folder.bind/session.switch） */
   onAliasUpdate(id: string, patch: { pageRichness?: PageRichness }): void;
   onAliasDelete(id: string): void;
+  /** 打开当前别名（无别名时当前绑定）所在文件夹；桥接顺手落续聊脚本（folder.open） */
+  onOpenFolder(): void;
+  /** folder.opened 的瞬时反馈文案（约 4 秒）；null 不显示 */
+  openFolderFlash: string | null;
   /** 弹系统文件夹选择框；用户取消返回 null */
   onPickFolder(): Promise<string | null>;
   onBind(path: string): void;
@@ -191,6 +195,17 @@ export function AliasBar(props: {
               <option value="standard">标准（约 3 万字）</option>
               <option value="rich">丰富（约 10 万字）</option>
             </select>
+          </div>
+          <div className="folder-open-row">
+            <button
+              className="mini-btn"
+              title={current ? `打开别名「${current.name}」所在文件夹（内含「继续聊天-${current.name}.sh」续聊脚本，终端运行即可回到 CLI 接着聊）` : "打开当前绑定文件夹"}
+              disabled={!current && !props.bound}
+              onClick={props.onOpenFolder}
+            >
+              📂 打开文件夹
+            </button>
+            {props.openFolderFlash ? <span className="folder-open-flash">{props.openFolderFlash}</span> : null}
           </div>
           <FolderBar
             history={props.history}
