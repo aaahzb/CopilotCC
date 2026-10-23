@@ -47,9 +47,15 @@ iconutil -c icns "$ROOT/dist/ccc.iconset" -o "$BUNDLE/Contents/Resources/icon.ic
 # 3.5 托盘助手：自研 Swift 菜单栏程序现场编译为 arm64 原生。systray2 自带的 tray_darwin_release 是
 # x86_64 单架构——无 Rosetta 的 Apple Silicon 起不来（2026-10-23 实锤：App 能开但菜单栏没图标）
 swiftc -O -target arm64-apple-macos12.0 -o "$BUNDLE/Contents/MacOS/traybin/tray_darwin_release" "$ROOT/tray/main.swift"
-# 协议回路冒烟：启动须先报 ready；喂初始菜单（含中文，验 UTF-8 通路）+ exit 须干净跑完
-SMOKE="$(printf '%s\n' '{"icon":"","title":"","tooltip":"","items":[{"title":"冒烟","tooltip":"","enabled":true,"__id":1}],"isTemplateIcon":false}' '{"type":"exit"}' | "$BUNDLE/Contents/MacOS/traybin/tray_darwin_release" || true)"
-echo "$SMOKE" | grep -q '"type":"ready"' || { echo "✘ 托盘助手冒烟失败：$SMOKE"; exit 1; }
+# 协议回路冒烟：启动须先报 ready；喂初始菜单（含中文，验 UTF-8 通路）+ exit 须干净跑完。
+# CI 无 WindowServer 会话偶发拉起失败（同码 .3 绿 .5 红、零改动）：重试 3 次；stderr 并入捕获，失败信息带真实原因
+SMOKE=""
+for i in 1 2 3; do
+  SMOKE="$(printf '%s\n' '{"icon":"","title":"","tooltip":"","items":[{"title":"冒烟","tooltip":"","enabled":true,"__id":1}],"isTemplateIcon":false}' '{"type":"exit"}' | "$BUNDLE/Contents/MacOS/traybin/tray_darwin_release" 2>&1 || true)"
+  if echo "$SMOKE" | grep -q '"type":"ready"'; then break; fi
+  if [ "$i" -lt 3 ]; then sleep 2; fi
+done
+echo "$SMOKE" | grep -q '"type":"ready"' || { echo "✘ 托盘助手冒烟失败（3 次尝试，输出含 stderr）：$SMOKE"; exit 1; }
 
 # 3.6 主程序运行冒烟：能 exec 且自报平台/架构正确，才证明产物在 arm64 上真实可跑（构建成功 ≠ 能跑）。
 # 此时未签名没关系：CI 编译产物无隔离标记，本机同架构直接可执行
