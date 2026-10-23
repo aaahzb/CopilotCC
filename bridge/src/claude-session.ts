@@ -1,6 +1,7 @@
 import { query as sdkQuery } from "@anthropic-ai/claude-agent-sdk";
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { isEffortLevel } from "./protocol";
 import { readTranscriptEffort } from "./transcript";
@@ -62,23 +63,85 @@ const PERMISSION_TIMEOUT_MS = 30_000;
  * SDK 缺省沿 import.meta.url / CWD 向上找 node_modules 里的原生 CLI 包——开发态碰巧命中项目
  * node_modules 能跑，编译分发的 exe 放在任意目录就找不到并同步抛错（v2026.10.21.7 秒断事故：
  * 异常逃出 WS 消息处理器直接打崩进程）。显式解析绕开这条路径。
+ * 解析顺序：CLAUDE_CODE_PATH → PATH 查找 →（仅 unix）常见安装位置 → 登录 shell 探测。
+ * 后两级为 macOS GUI 应用兜底：从 Finder/Dock 启动的 .app 不读 ~/.zshrc，PATH 只有系统默认。
  * @returns claude 可执行路径；找不到返回 undefined（交回 SDK 默认解析，行为与之前一致）
  */
+
+/** unix 下 claude 的常见安装位置（GUI 应用 PATH 贫瘠时的定点兜底） */
+export function wellKnownClaudePaths(home: string): string[] {
+  return [
+    path.join(home, ".claude", "local", "claude"), // 官方原生安装器默认位置
+    "/opt/homebrew/bin/claude", // Apple Silicon Homebrew
+    "/usr/local/bin/claude", // Intel Homebrew / npm 全局默认前缀
+    path.join(home, ".local", "bin", "claude"),
+  ];
+}
+
+/**
+ * 从登录 shell 探测输出里挑 claude 路径：取倒数第一个"绝对路径且 basename 为 claude"的非空行。
+ * 用户 rc 可能有 echo 噪声（conda base、欢迎语），探测命令的输出在最后面。
+ * @param stdout `shell -lic 'command -v claude'` 的标准输出
+ * @returns 可疑的 claude 路径；无合格行返回 null
+ */
+export function parseShellProbeOutput(stdout: string): string | null {
+  const lines = stdout.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const l = lines[i]!;
+    if (path.isAbsolute(l) && path.basename(l) === "claude") return l;
+  }
+  return null;
+}
+
+/** unix 可执行判定：存在且有执行位 */
+function isExecutable(p: string): boolean {
+  try {
+    fs.accessSync(p, fs.constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 最后手段：借用户的登录+交互 shell 找到它终端里在用的那个 claude（nvm/volta/conda 的 PATH 只有这里齐）。
+ * 一次性代价（rc 重时约一两秒），结果随 resolver 缓存；超时/异常一律静默返回 null。
+ * @returns claude 绝对路径；探测失败返回 null
+ */
+function probeLoginShell(): string | null {
+  const shell = process.platform === "darwin" ? "/bin/zsh" : "/bin/bash";
+  if (!fs.existsSync(shell)) return null;
+  try {
+    const r = spawnSync(shell, ["-lic", "command -v claude"], { encoding: "utf-8", timeout: 15_000, windowsHide: true });
+    if (r.status !== 0 || !r.stdout) return null;
+    const p = parseShellProbeOutput(r.stdout);
+    return p && isExecutable(p) ? p : null;
+  } catch {
+    return null;
+  }
+}
+
 let cachedCliPath: string | null | undefined;
 function resolveClaudeExecutable(): string | undefined {
   if (cachedCliPath !== undefined) return cachedCliPath ?? undefined;
   cachedCliPath = ((): string | null => {
     if (process.env.CLAUDE_CODE_PATH) return process.env.CLAUDE_CODE_PATH; // 显式覆盖优先
     const r = spawnSync(process.platform === "win32" ? "where.exe" : "which", ["claude"], { encoding: "utf-8", windowsHide: true });
-    if (r.status !== 0 || !r.stdout) return null;
-    const first = r.stdout.split(/\r?\n/)[0]?.trim() ?? "";
-    if (!first) return null;
-    if (process.platform === "win32") {
-      // npm 全局 shim（…\npm\claude.cmd 等）无法直接 spawn；优先用同目录 node_modules 里的原生二进制
-      const native = path.join(path.dirname(first), "node_modules", "@anthropic-ai", "claude-code", "bin", "claude.exe");
-      return fs.existsSync(native) ? native : first.endsWith(".exe") ? first : null;
+    const first = r.status === 0 && r.stdout ? (r.stdout.split(/\r?\n/)[0]?.trim() ?? "") : "";
+    if (first) {
+      if (process.platform === "win32") {
+        // npm 全局 shim（…\npm\claude.cmd 等）无法直接 spawn；优先用同目录 node_modules 里的原生二进制
+        const native = path.join(path.dirname(first), "node_modules", "@anthropic-ai", "claude-code", "bin", "claude.exe");
+        return fs.existsSync(native) ? native : first.endsWith(".exe") ? first : null;
+      }
+      return first; // unix 的 shim 是带 shebang 的可执行脚本，可直接 spawn
     }
-    return first; // unix 的 shim 是带 shebang 的可执行脚本，可直接 spawn
+    if (process.platform === "win32") return null;
+    // PATH 没找到（macOS GUI 应用的典型症状）：常见安装位置逐个试执行位 → 登录 shell 探测
+    for (const p of wellKnownClaudePaths(os.homedir())) {
+      if (isExecutable(p)) return p;
+    }
+    return probeLoginShell();
   })();
   return cachedCliPath ?? undefined;
 }

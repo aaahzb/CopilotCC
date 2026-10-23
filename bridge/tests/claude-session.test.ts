@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
-import { createClaudeSession, type SessionEvents } from "../src/claude-session";
+import { createClaudeSession, parseShellProbeOutput, wellKnownClaudePaths, type SessionEvents } from "../src/claude-session";
+import * as path from "node:path";
 
 /** 收集事件的 events 桩 */
 function stubEvents(): SessionEvents & { log: Array<[string, ...unknown[]]> } {
@@ -218,5 +219,29 @@ describe("createClaudeSession", () => {
       await tick(); // 给拒绝一个冒泡窗口：未捕获的 rejection 会被 vitest 标红
       await s.close();
     });
+  });
+});
+
+describe("CLI 路径解析兜底（macOS GUI 应用 PATH 隔离对策）", () => {
+  it("wellKnownClaudePaths：官方安装器位置优先，含 Homebrew 两前缀", () => {
+    const list = wellKnownClaudePaths("/home/u");
+    expect(list[0]).toBe(path.join("/home/u", ".claude", "local", "claude"));
+    expect(list).toContain("/opt/homebrew/bin/claude");
+    expect(list).toContain("/usr/local/bin/claude");
+  });
+
+  it("parseShellProbeOutput：干净输出直取", () => {
+    expect(parseShellProbeOutput("/Users/x/.claude/local/claude\n")).toBe("/Users/x/.claude/local/claude");
+  });
+
+  it("parseShellProbeOutput：rc 噪声在前时取倒数第一个合格行", () => {
+    const noisy = "(base) \x1b[0m\n欢迎使用\n/Users/x/.nvm/versions/node/v22.0.0/bin/claude\n";
+    expect(parseShellProbeOutput(noisy)).toBe("/Users/x/.nvm/versions/node/v22.0.0/bin/claude");
+  });
+
+  it("parseShellProbeOutput：空输出/无合格行/非 claude 结尾一律 null", () => {
+    expect(parseShellProbeOutput("")).toBeNull();
+    expect(parseShellProbeOutput("command not found\n")).toBeNull();
+    expect(parseShellProbeOutput("/usr/bin/claude-old\n")).toBeNull(); // basename 必须是 claude
   });
 });

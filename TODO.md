@@ -247,3 +247,9 @@
 - 症状：.5 的 macOS 构建挂"托盘助手冒烟失败"且输出为空；同一份 Swift 代码 .3 刚绿过（当天零改动），属 runner 无 WindowServer 会话的偶发拉起失败。
 - 处理：冒烟重试 3 次（间隔 2s）；stderr 并入捕获——再失败时 ✘ 行直接带真实崩溃原因，不再盲猜。
 - 注意：脚本有 `set -euo pipefail`，循环体内一律用 if 条件形式（`cmd && break` 清单尾状态会把 set -e 触发在 for 语句级，诊断信息打不出来）。
+
+## 2026-10-23（之七）macOS GUI 环境找不到 claude CLI
+- 症状：Mac 上桥接已连接，发消息报 "Native CLI binary for darwin-arm64 not found"；终端里 claude 明明能跑。
+- 根因：Finder/Dock 启动的 .app 不读 ~/.zshrc，PATH 只有 /usr/bin:/bin 等系统默认，`which claude` 必然失败 → 回落 SDK 默认解析 → pkg 包内没有 darwin-arm64 原生二进制 → 报错。
+- 修复：解析链加两级 unix 兜底——常见安装位置（~/.claude/local/claude、/opt/homebrew/bin、/usr/local/bin、~/.local/bin）逐个验执行位 → 最后借登录 shell（zsh -lic 'command -v claude'）拿到用户终端里的真实 PATH（解析结果缓存，只探一次）。
+- 教训：macOS GUI 应用与终端是两个环境。任何依赖 PATH/环境变量的功能都要追问一句"Finder 双击启动时还成立吗"。
