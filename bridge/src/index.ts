@@ -6,6 +6,7 @@ import WebSocket from "ws";
 import { loadOrCreateConfig, configDir } from "./config";
 import { SessionManager } from "./session-manager";
 import { AliasManager } from "./alias-manager";
+import { WorkspaceStore } from "./workspace-store";
 import { startServer } from "./server";
 import { claimInstance, writeRuntime, releaseRuntimeOnExit } from "./runtime";
 import { encodePairing } from "./pairing";
@@ -25,6 +26,7 @@ async function cmdStart(): Promise<void> {
     config,
     sessions,
     aliases,
+    workspaceStore: new WorkspaceStore(path.join(configDir(), "workspace.json")), // 重启/升级后恢复 文件夹+别名 绑定
     configDir: configDir(), // 在线改端口后写回 config.json
     onPortChanged: (p) => writeRuntime(configDir(), p),
   });

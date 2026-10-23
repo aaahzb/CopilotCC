@@ -14,6 +14,7 @@ import { pickFolder as defaultPickFolder, openInFileManager as defaultOpenFolder
 import { saveUploads } from "./uploads";
 import { composeUploadNote, UPLOAD_DIR } from "./upload-note";
 import { writeResumeScript, removeResumeScript } from "./resume-script";
+import { WorkspaceStore } from "./workspace-store";
 
 /** 服务依赖。createSession 仅供测试注入假会话工厂。 */
 export interface ServerDeps {
@@ -30,6 +31,8 @@ export interface ServerDeps {
   pickFolder?: () => Promise<string | null>;
   /** 系统文件管理器打开实现（folder.open）；测试注入假实现，缺省用平台原生（explorer/open/xdg-open） */
   openFolder?: (path: string) => Promise<boolean>;
+  /** 工作区绑定持久化（桥接重启后恢复 文件夹+别名）；缺省时关闭恢复（测试不注入即不恢复） */
+  workspaceStore?: WorkspaceStore;
 }
 
 /** 启动结果：wss/port 始终指向当前实例（在线改端口后跟随），close 关闭当前实例并终结会话，setPort 在线改端口 */
@@ -114,6 +117,10 @@ interface HandlerCtx {
   syncCurrentAlias: () => void;
   /** 当前别名的续聊脚本保鲜 */
   refreshAliasScript: () => void;
+  /** 持久化工作区绑定（文件夹+当前别名），供桥接重启后恢复 */
+  persistWorkspace: () => void;
+  /** 工作区未绑定且有持久化记录时恢复绑定（首个视图接入触发；已绑定则空转） */
+  restoreWorkspaceIfIdle: () => void;
 }
 
 /**
@@ -475,6 +482,27 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
     writeResumeScript(rec.folder, rec.name, sessions.get(rec.folder)?.sessionId ?? null);
   }
 
+  /** 持久化工作区绑定（文件夹+当前别名）：桥接重启/升级后首个视图接入时据此恢复 */
+  function persistWorkspace(): void {
+    deps.workspaceStore?.save({ folder: workspace.folder, aliasId: workspace.currentAliasId });
+  }
+
+  /**
+   * 懒恢复工作区绑定：仅在工作区未绑定（桥接刚重启）且有持久化记录时执行。
+   * 别名还在就按别名恢复（其 sessionId 为 null 时回退 sessions.json 映射续聊），否则按裸文件夹恢复；
+   * 文件夹已失效则放弃（工作区保持未绑定，扩展侧 lastFolder 回绑兜底）。
+   */
+  function restoreWorkspaceIfIdle(): void {
+    if (workspace.folder || !deps.workspaceStore) return;
+    const b = deps.workspaceStore.load();
+    if (!b) return;
+    const alias = b.aliasId && aliases ? aliases.get(b.aliasId) : undefined;
+    const folder = alias?.folder ?? b.folder;
+    if (!folder || !isValidFolder(folder)) return;
+    if (alias) workspace.currentAliasId = alias.id;
+    bindFolder(folder, alias ? (alias.sessionId ?? undefined) : undefined); // 内含持久化回写与列表广播
+  }
+
   function resetInflight(): void {
     workspace.busy = false;
     workspace.streamText = "";
@@ -529,6 +557,11 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
             updatedAt: new Date().toISOString(),
           });
           refreshAliasScript(); // 会话 ID 落地即有可续目标
+          if (workspace.folder === f) {
+            // 新会话 ID 写回当前别名（null 只是暂态）：再选该别名续聊此会话而非误开新会话
+            syncCurrentAlias();
+            pushAliasList();
+          }
         },
       },
     });
@@ -569,6 +602,7 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
     syncCurrentAlias();
     pushAliasList();
     refreshAliasScript();
+    persistWorkspace();
   }
 
   /**
@@ -637,6 +671,8 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
     aliasListMsg,
     syncCurrentAlias,
     refreshAliasScript,
+    persistWorkspace,
+    restoreWorkspaceIfIdle,
   };
 
   /**
@@ -776,6 +812,8 @@ function attachHandlers(wss: WebSocketServer, deps: ServerDeps, instanceId: stri
     aliasListMsg,
     syncCurrentAlias,
     refreshAliasScript,
+    persistWorkspace,
+    restoreWorkspaceIfIdle,
   } = ctx;
 
   wss.on("connection", (ws: WebSocket, req: http.IncomingMessage) => {
@@ -825,6 +863,7 @@ function attachHandlers(wss: WebSocketServer, deps: ServerDeps, instanceId: stri
         case "auth":
           break; // auth 已在握手完成
         case "client.ready":
+          restoreWorkspaceIfIdle(); // 桥接重启后的首个接入视图：先恢复上次的工作区绑定再发快照
           pushSnapshot(send); // 镜像快照：新视图/重连视图一次性补齐工作区现状
           break;
         case "folder.bind": {
@@ -983,7 +1022,9 @@ function attachHandlers(wss: WebSocketServer, deps: ServerDeps, instanceId: stri
             break;
           }
           workspace.currentAliasId = a.id;
-          bindFolder(a.folder, a.sessionId); // 内含列表广播与续聊脚本保鲜
+          // 别名 sessionId 为 null = "还没定下会话"（不是"永远新开"）：回退 sessions.json 映射续聊，
+          // 避免每次选中都删掉文件夹现有会话映射开新会话（弹窗自动选中路径每次打开都会走这里）
+          bindFolder(a.folder, a.sessionId ?? undefined); // 内含列表广播与续聊脚本保鲜
           break;
         }
         case "alias.update": {
@@ -1006,6 +1047,7 @@ function attachHandlers(wss: WebSocketServer, deps: ServerDeps, instanceId: stri
           if (rec) removeResumeScript(rec.folder, rec.name); // 续聊脚本随别名走（仅删带生成标记的，防误删用户文件）
           if (workspace.currentAliasId === m.id) workspace.currentAliasId = null; // 只删别名：会话、转录、当前绑定全部不动
           pushAliasList();
+          persistWorkspace(); // 当前别名被删：持久化绑定里的 aliasId 同步清掉
           break;
         }
         case "settings.set": {

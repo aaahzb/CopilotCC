@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { RESUME_SCRIPT_MARKER, resumeScriptContent, resumeScriptName, removeResumeScript, writeResumeScript } from "../src/resume-script";
+import { RESUME_SCRIPT_MARKER, resumeScriptBatContent, resumeScriptBatName, resumeScriptContent, resumeScriptName, removeResumeScript, writeResumeScript } from "../src/resume-script";
 
 describe("resumeScriptName 命名清洗", () => {
   it("非法字符与控制字符替换为 -", () => {
@@ -45,14 +45,18 @@ describe("writeResumeScript / removeResumeScript", () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  it("写入脚本并返回文件名；同内容二次调用幂等不重写", () => {
+  it("成对写入 .sh 与 .bat；返回当前平台可直跑的文件名；同内容二次调用幂等不重写", () => {
     const name = writeResumeScript(dir, "测试", "s1");
-    expect(name).toBe("继续聊天-测试.sh");
-    const file = path.join(dir, name!);
-    expect(fs.readFileSync(file, "utf-8")).toContain('exec claude --resume "s1"');
-    const m1 = fs.statSync(file).mtimeMs;
+    expect(name).toBe(process.platform === "win32" ? "继续聊天-测试.bat" : "继续聊天-测试.sh"); // 界面闪示用户能直接跑的那个
+    const sh = path.join(dir, "继续聊天-测试.sh");
+    const bat = path.join(dir, "继续聊天-测试.bat");
+    expect(fs.readFileSync(sh, "utf-8")).toContain('exec claude --resume "s1"');
+    expect(fs.readFileSync(bat, "utf-8")).toContain('claude --resume "s1"');
+    const m1 = fs.statSync(sh).mtimeMs;
+    const m2 = fs.statSync(bat).mtimeMs;
     expect(writeResumeScript(dir, "测试", "s1")).toBe(name);
-    expect(fs.statSync(file).mtimeMs).toBe(m1); // 内容没变没重写
+    expect(fs.statSync(sh).mtimeMs).toBe(m1); // 内容没变没重写
+    expect(fs.statSync(bat).mtimeMs).toBe(m2);
   });
 
   it("文件夹不存在返回 null 不抛异常", () => {
@@ -63,10 +67,48 @@ describe("writeResumeScript / removeResumeScript", () => {
     writeResumeScript(dir, "测试", "s1");
     expect(removeResumeScript(dir, "测试")).toBe(true);
     expect(fs.existsSync(path.join(dir, "继续聊天-测试.sh"))).toBe(false);
+    expect(fs.existsSync(path.join(dir, "继续聊天-测试.bat"))).toBe(false); // 成对删除
     // 用户手写同名文件（无生成标记）绝不动
     fs.writeFileSync(path.join(dir, "继续聊天-手写.sh"), "# 我自己的脚本\n", "utf-8");
     expect(removeResumeScript(dir, "手写")).toBe(false);
     expect(fs.existsSync(path.join(dir, "继续聊天-手写.sh"))).toBe(true);
     expect(removeResumeScript(dir, "不存在")).toBe(false);
+  });
+});
+
+describe("resumeScriptBatName / resumeScriptBatContent（Windows 批处理）", () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "ccc-script-bat-"));
+  });
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("bat 命名与 sh 同主干", () => {
+    expect(resumeScriptBatName("a<b")).toBe("继续聊天-a-b.bat");
+    expect(resumeScriptBatName("")).toBe("继续聊天-未命名.bat");
+  });
+
+  it("有会话：chcp 65001 防乱码 + cd /d 到脚本目录 + claude --resume（CRLF 行尾）", () => {
+    const c = resumeScriptBatContent("我的项目", "sess-1");
+    expect(c).toContain(RESUME_SCRIPT_MARKER);
+    expect(c).toContain("chcp 65001");
+    expect(c).toContain('cd /d "%~dp0"');
+    expect(c).toContain('claude --resume "sess-1"');
+    expect(c).toContain("\r\n");
+  });
+
+  it("无会话：提示并 exit /b 1（不关用户终端窗口），不含续聊命令", () => {
+    const c = resumeScriptBatContent("我的项目", null);
+    expect(c).toContain(RESUME_SCRIPT_MARKER);
+    expect(c).not.toContain("claude --resume");
+    expect(c).toContain("exit /b 1");
+  });
+
+  it("bat 同受生成标记保护：无标记同名 bat 不删", () => {
+    fs.writeFileSync(path.join(dir, "继续聊天-手写.bat"), "@echo off\r\nrem 我自己的\r\n", "utf-8");
+    expect(removeResumeScript(dir, "手写")).toBe(false);
+    expect(fs.existsSync(path.join(dir, "继续聊天-手写.bat"))).toBe(true);
   });
 });

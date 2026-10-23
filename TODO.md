@@ -219,3 +219,20 @@
 - 扩展：page-extract 拆 snapshotTab(tabId, knownUrl?) 供弹窗钉页提取；popup-mode.ts（URL 参数解析/构造）+ popup-registry.ts（纯状态机钉住注册表，SW 回收后靠扫描弹窗 URL 自愈）+ background.ts 接管弹窗去重打开/Shadow DOM 徽标生命周期；App 镜像化（快照驱动回绑、chat.user 回显上屏取代乐观上屏、草稿受控+200ms 防抖镜像+IME 守卫、弹窗顶栏 📌/🎯/⇱）；InputBox 草稿改受控；AliasBar 详情区加「📂 打开文件夹」。扩展 54 测试绿 + 构建通过。
 - wxt.config 权限未变：tabs.get/读 url 由 host_permissions 覆盖，tabs/windows 事件不需新权限。
 - 坑位记录：node 版 vitest 环境没有 DOMParser，页面提取类单测只能覆盖到守卫与注入参数透传层；heredoc 超 ~170 行在本环境会莫名炸引号，大文件一律分段追加或用写文件工具。
+
+## 2026-10-23（之四）兼容修复：升级后聊天记录"丢失" + 续聊脚本 Windows 直跑
+
+用户报告：新版换上去后旧版别名聊天记录"没了"；.sh 在 PowerShell 跑不了。
+
+**根因（数据从未丢：转录在 ~/.claude/projects/，映射在 sessions.json/aliases.json）**：
+- alias.sessionId=null 的语义 bug：alias.select 把 null 当"永远强制新会话"，sessions.delete 毁映射再开新会话；弹窗每次打开自动重发 alias.select，等于每次开弹窗都把会话清空重开。（创建别名后首条消息的 onSessionId 不写回别名，null 是永久态——新旧版都有的老坑，弹窗把它变成必然触发。）
+- 工作区绑定只在内存：桥接重启/升级后文件夹+别名全丢，只剩扩展 lastFolder 回绑兜底（不含别名）。
+
+**修复**：
+- alias.select 的 null → undefined（回退 sessions.json 映射续聊；无映射才新开）；alias.create 保留"显式新会话"语义不变。
+- onSessionId 落地即 syncCurrentAlias + pushAliasList：新会话 ID 立刻写回当前别名，null 变暂态。
+- 新增 workspace-store.ts：bindFolder/alias.delete 时持久化 {folder, aliasId} 到 workspace.json；client.ready 首个视图接入时懒恢复（别名在按别名恢复，文件夹失效放弃，扩展 lastFolder 兜底）。
+- resume-script.ts 成对落盘 .sh + .bat（bat：chcp 65001 防中文乱码、cd /d %~dp0、exit /b 1 不关终端窗口、CRLF 行尾）；删除与标记保护同步覆盖双文件；folder.opened 闪示当前平台可直跑的那个文件名。
+- 测试：桥接 108 → 116（resume-script +4：bat 命名/内容/无会话/标记保护；server-mirror +4：null 别名回退续聊/新会话写回别名/重启恢复快照/失效文件夹放弃）。扩展无代码改动（54 绿）。
+
+**教训**："会话依附的键"（别名.sessionId、工作区绑定）必须随会话生命周期写回与持久化，只在绑定点写一次=换条路径就丢；新视图自动重放用户动作（弹窗自动 alias.select）会把幂等性 bug 变成数据级事故——服务端处理"选中"类消息要默认幂等。
