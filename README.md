@@ -86,7 +86,7 @@ Chrome 侧边栏(React) ┐
 
 ## FAQ
 
-- **中转 API 能用吗？** 能。桥接继承 spawn 时的环境变量，你本机 `claude` 能用，桥接就能用（`permissionMode: "auto"` 已在中转环境下实测通过）。
+- **中转 API 能用吗？** 能。桥接继承 spawn 时的环境变量，你本机 `claude` 能用，桥接就能用（`permissionMode: "auto"` 已在中转环境下实测通过）。macOS 的 .app 不读 `~/.zshrc`：v2026.10.23.9 起桥接会借登录 shell 自动补齐缺失的 `ANTHROPIC_*`/`CLAUDE_*`/代理变量（只补缺的、不覆盖已有的），写在 zshrc 里的中转配置照常生效。
 - **桥接怎么找 claude CLI？** 按 `CLAUDE_CODE_PATH` 环境变量 → PATH 查找 →（仅 mac/linux）常见安装位置（`~/.claude/local/claude`、Homebrew 两前缀等）→ 登录 shell 探测 的顺序解析（win 下自动取 npm 全局包里的原生 claude.exe，.cmd shim 无法直接拉起）。macOS 从 Finder/Dock 启动的 .app 不读 `~/.zshrc`、PATH 只有系统默认——后两级兜底正是为它准备的，终端里能跑 `claude` 的安装都能自动找到；极端情况仍可设 `CLAUDE_CODE_PATH` 显式指定。
 - **配对失败/一直连不上？** 先确认桥接在跑（托盘图标在）。白名单出厂已预置本扩展 Origin；若手动改过 `~/.ccc-bridge/config.json` 的 `allowedOrigins`，确认包含 `chrome-extension://cnalihjaacpahpjkpneacjcfbhboglno` 并重启过桥接。
 - **auto 模式异常怎么办？** 切换为 `acceptEdits`（设计上就是 auto 的降级预案）。

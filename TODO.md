@@ -259,3 +259,9 @@
 - 根因：.3 镜像重写让 folder.bind 连发三条广播（bound → session.list → alias.list），而该测试只消费第一条后断言"下一条即 chat.error"；慢 runner 上 session.list.data 会错开批次晚到，被断言撞上。潜伏四轮 CI 纯属运气。
 - 修复：改为按类型等 chat.error（其他类型跳过）。已枚举 server.test.ts 全部 9 处裸等点，仅此一处同时满足"成功绑定 + 只等首条 + 再发消息 + 断言下一条类型"的竞态条件。
 - 教训：广播架构下"下一条消息"断言天生脆弱——测试等待必须按类型过滤；新增广播消息时，回头审计所有裸 `ws.on("message")` 等待点。
+
+## 2026-10-23（之九）macOS 报 Not logged in：GUI 环境缺 ANTHROPIC 变量
+- 症状：Mac 上发消息报 "Not logged in · Please run /login"；用户走中转 API（zshrc 里的 ANTHROPIC_BASE_URL/AUTH_TOKEN），从不需要 login。
+- 根因：与"找不到 CLI"同源的上一层——.app 不读 ~/.zshrc，密钥/代理变量没带进桥接进程，SDK spawn 出的 claude 无任何凭据。
+- 修复：createClaudeSession 起手调 ensureShellEnvFallback（unix 限定、结果缓存）：密钥类变量缺失时 `zsh -lic env` 取用户终端全量环境，把 ANTHROPIC_*/CLAUDE_*/代理变量中缺失的补进 process.env（只补不覆盖）。
+- 教训：环境隔离不止 PATH 一层——"程序能找到"之后还有"凭据能拿到"。依赖 shell 环境的任何能力都要把 GUI 启动链路整段走通验证。

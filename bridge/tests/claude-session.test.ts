@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { createClaudeSession, parseShellProbeOutput, wellKnownClaudePaths, type SessionEvents } from "../src/claude-session";
+import { createClaudeSession, parseEnvDump, parseShellProbeOutput, wellKnownClaudePaths, type SessionEvents } from "../src/claude-session";
 import * as path from "node:path";
 
 /** 收集事件的 events 桩 */
@@ -243,5 +243,25 @@ describe("CLI 路径解析兜底（macOS GUI 应用 PATH 隔离对策）", () =>
     expect(parseShellProbeOutput("")).toBeNull();
     expect(parseShellProbeOutput("command not found\n")).toBeNull();
     expect(parseShellProbeOutput("/usr/bin/claude-old\n")).toBeNull(); // basename 必须是 claude
+  });
+});
+
+describe("parseEnvDump（macOS GUI 环境变量兜底）", () => {
+  it("只挑 ANTHROPIC_/CLAUDE_/代理变量，PATH/HOME 等一律丢弃", () => {
+    const dump = "PATH=/usr/bin\nANTHROPIC_AUTH_TOKEN=sk-ant-x\nANTHROPIC_BASE_URL=https://relay.example.com\nHOME=/Users/x\nhttps_proxy=http://127.0.0.1:7890\n";
+    expect(parseEnvDump(dump)).toEqual({
+      ANTHROPIC_AUTH_TOKEN: "sk-ant-x",
+      ANTHROPIC_BASE_URL: "https://relay.example.com",
+      https_proxy: "http://127.0.0.1:7890",
+    });
+  });
+
+  it("值含 = 不切错（base64 token）；无 = 的 rc 噪声行跳过", () => {
+    const dump = "欢迎语一行\nANTHROPIC_AUTH_TOKEN=dGVzdA==\n(base) \nCLAUDE_CODE_FOO=1\n";
+    expect(parseEnvDump(dump)).toEqual({ ANTHROPIC_AUTH_TOKEN: "dGVzdA==", CLAUDE_CODE_FOO: "1" });
+  });
+
+  it("空输出 → 空表", () => {
+    expect(parseEnvDump("")).toEqual({});
   });
 });

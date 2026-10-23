@@ -121,6 +121,51 @@ function probeLoginShell(): string | null {
   }
 }
 
+/**
+ * 解析 `shell -lic env` 的输出，挑出密钥/代理类变量（ANTHROPIC_*、CLAUDE_*、HTTP(S)/ALL/NO_PROXY 大小写）。
+ * 按首个 = 切分（值里可能含 =，如 base64 token）；无 = 的行视为 rc 噪声跳过。
+ * @param stdout 登录 shell 的 env 全量输出
+ * @returns 过滤后的键值表
+ */
+export function parseEnvDump(stdout: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const line of stdout.split(/\r?\n/)) {
+    const eq = line.indexOf("=");
+    if (eq <= 0) continue; // 无 = 或键为空：rc 噪声行
+    const k = line.slice(0, eq);
+    if (!/^(ANTHROPIC_|CLAUDE_|HTTPS?_PROXY|https?_proxy|ALL_PROXY|all_proxy|NO_PROXY|no_proxy)/.test(k)) continue;
+    out[k] = line.slice(eq + 1);
+  }
+  return out;
+}
+
+let cachedShellEnv: Record<string, string> | null | undefined;
+/**
+ * macOS GUI 隔离兜底：.app 不读 ~/.zshrc，中转用户的 ANTHROPIC_AUTH_TOKEN/BASE_URL 等只活在终端环境里。
+ * 缺密钥类变量时借登录 shell dump 全量环境，把缺失的补进 process.env（只补缺的，不覆盖显式配置；
+ * 结果缓存只探一次）。Windows 环境变量全局生效，无需此兜底。
+ */
+function ensureShellEnvFallback(): void {
+  if (process.platform === "win32") return;
+  if (process.env.ANTHROPIC_AUTH_TOKEN && process.env.ANTHROPIC_API_KEY) return; // 密钥类变量已在，无需兜底
+  if (cachedShellEnv === undefined) {
+    const shell = process.platform === "darwin" ? "/bin/zsh" : "/bin/bash";
+    cachedShellEnv = ((): Record<string, string> | null => {
+      if (!fs.existsSync(shell)) return null;
+      try {
+        const r = spawnSync(shell, ["-lic", "env"], { encoding: "utf-8", timeout: 15_000, windowsHide: true });
+        return r.status === 0 && r.stdout ? parseEnvDump(r.stdout) : null;
+      } catch {
+        return null;
+      }
+    })();
+  }
+  if (!cachedShellEnv) return;
+  for (const [k, v] of Object.entries(cachedShellEnv)) {
+    if (!process.env[k]) process.env[k] = v; // 只补缺失：显式配置优先
+  }
+}
+
 let cachedCliPath: string | null | undefined;
 function resolveClaudeExecutable(): string | undefined {
   if (cachedCliPath !== undefined) return cachedCliPath ?? undefined;
@@ -159,6 +204,7 @@ interface PendingPermission {
  */
 export function createClaudeSession(cwd: string, opts: SessionOptions): ClaudeSessionLike {
   const events = opts.events;
+  ensureShellEnvFallback(); // 密钥/代理变量兜底（须在 SDK spawn 之前补进 process.env）
   const queryFn = opts.queryFn ?? (sdkQuery as unknown as NonNullable<SessionOptions["queryFn"]>);
   let closed = false;
   let sessionId = opts.resumeId ?? "";
