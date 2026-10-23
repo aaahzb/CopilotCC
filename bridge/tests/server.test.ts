@@ -171,7 +171,7 @@ describe("server 消息路由", () => {
     ws.send(JSON.stringify({ type: "folder.bind", path: dir }));
     await new Promise<ServerMessage>((r) => ws.on("message", (d) => r(JSON.parse(d.toString()))));
     ws.send(JSON.stringify({ type: "chat.send", text: "[用户问题]\n看看", uploads: [{ name: "bad.txt", dataB64: "!!!" }] }));
-    const err = await new Promise<ServerMessage>((r) => ws.on("message", (d) => r(JSON.parse(d.toString()))));
+    const err = await new Promise<ServerMessage>((r) => ws.on("message", (d) => { const m = JSON.parse(d.toString()) as ServerMessage; if (m.type === "chat.error") r(m); })); // 按类型等：绑定尾巴上的 session.list.data 可能还在路上（macOS CI 竞态实证）
     expect(err.type).toBe("chat.error");
     expect(err.type === "chat.error" && err.message).toContain("bad.txt");
     await new Promise((r) => setTimeout(r, 30));

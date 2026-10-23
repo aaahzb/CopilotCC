@@ -253,3 +253,9 @@
 - 根因：Finder/Dock 启动的 .app 不读 ~/.zshrc，PATH 只有 /usr/bin:/bin 等系统默认，`which claude` 必然失败 → 回落 SDK 默认解析 → pkg 包内没有 darwin-arm64 原生二进制 → 报错。
 - 修复：解析链加两级 unix 兜底——常见安装位置（~/.claude/local/claude、/opt/homebrew/bin、/usr/local/bin、~/.local/bin）逐个验执行位 → 最后借登录 shell（zsh -lic 'command -v claude'）拿到用户终端里的真实 PATH（解析结果缓存，只探一次）。
 - 教训：macOS GUI 应用与终端是两个环境。任何依赖 PATH/环境变量的功能都要追问一句"Finder 双击启动时还成立吗"。
+
+## 2026-10-23（之八）macOS CI 测试竞态：裸等"下一条消息"撞上绑定尾巴
+- 症状：macOS CI 挂 uploads 测试（expected 'session.list.data' to be 'chat.error'），本地与 win/ubuntu 一直绿。
+- 根因：.3 镜像重写让 folder.bind 连发三条广播（bound → session.list → alias.list），而该测试只消费第一条后断言"下一条即 chat.error"；慢 runner 上 session.list.data 会错开批次晚到，被断言撞上。潜伏四轮 CI 纯属运气。
+- 修复：改为按类型等 chat.error（其他类型跳过）。已枚举 server.test.ts 全部 9 处裸等点，仅此一处同时满足"成功绑定 + 只等首条 + 再发消息 + 断言下一条类型"的竞态条件。
+- 教训：广播架构下"下一条消息"断言天生脆弱——测试等待必须按类型过滤；新增广播消息时，回头审计所有裸 `ws.on("message")` 等待点。
