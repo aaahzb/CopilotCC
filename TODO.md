@@ -200,3 +200,16 @@
 - check-arch.mjs：纯字节级架构断言（PE Machine / Mach-O cputype / ELF e_machine），任何 runner 几毫秒跑完，挂进 CI 门禁审计第三方预编译托盘组件（win 内嵌件必须 x64）。负例已本地验证：对 x86_64 的 darwin 托盘断言 arm64 必 exit 1——这个测试本来就能抓住那个 bug。
 - 产物级 --smoke：tray.ts 加 `--smoke <platform> <arch>` 分支（能 exec 到这就证明架构对，不匹配退出码 1），win/mac 两个构建 job 打包前都跑；mac 侧托盘助手另有协议回路冒烟（ready + 中文菜单 + exit）。
 **教训**：让"这类 bug 必被 CI 抓住"的关键不是更贵的运行环境，而是断言载体选对——架构写在文件头 8 字节里，读出来比对，ubuntu runner 都能审 mac 包；运行级冒烟则覆盖"字节对但起不来"的剩余空间（缺运行库、签名损坏等）。
+
+## 2026-10-23（之三）独立窗口镜像模式 + 别名打开文件夹/续聊脚本
+
+设计稿：docs/superpowers/specs/2026-10-23-mirror-popup-and-folder-open-design.md（用户已逐轮拍板）
+
+- 架构决策：桥接从"每连接一份状态"重构为"进程内唯一工作区 + 视图广播订阅"。侧边栏/弹窗都是视图，关哪个都不杀会话；视图开关永不中断生成，停止只有用户亲手点。
+- 快照恢复：新视图 client.ready → folder.bound → 主动推 history → lists → chat.sync{busy,streamText,user,permReq,draft}；中途打开补齐在途流与草稿。
+- 用户消息改桥接回显上屏（chat.send 带 display/note → 广播 chat.user），双视图气泡天然一致；附带说明与上传结果走广播 tool 泡。
+- 草稿镜像走 WS 广播（chrome.storage 有每分钟写配额，逐键同步会爆）；IME composition 期间不上报；后到覆盖；发送即清。
+- 视图重连不再自动回绑 lastFolder（会把工作区拽回旧文件夹）；快照为空才引导首绑；folder.bound 一律刷新 lastFolder（修 alias.select 不刷新的 stale 回绑）。
+- 弹窗=同一份 App + URL 参数（?popup=1&tab=&alias=）；钉住 tabId 提取页面；同 tab 去重聚焦；多弹窗=同一工作区多视图。
+- 关联徽标（双端 key）：后台 SW 向被钉页面注入 Shadow DOM 徽标（色点=hash(aliasId)，别名名），点击聚焦弹窗；onUpdated 重注入、窗口/标签关闭全路径清理。
+- 续聊脚本：继续聊天-<别名>.sh（非法字符清洗、空名"未命名"、截 60），标记注释防误删，内容不变跳过写；删别名/改名换文件夹全路径清理。
