@@ -1057,7 +1057,11 @@ function attachHandlers(wss: WebSocketServer, deps: ServerDeps, instanceId: stri
           workspace.model = m.model;
           workspace.effort = m.effort;
           if (changed && workspace.folder && workspace.claude) {
-            // 模式/模型/effort 变更需要重建会话（resumeId 保证上下文不断）
+            // 模式/模型/effort 变更需要重建会话（resumeId 保证上下文不断）。
+            // 旧轮次若仍在跑：先明确释放全部视图，再 close 取消旧 CLI；否则 busy 留在工作区，
+            // 新会话又是空闲态，后续 chat.abort 会被 turnActive=false 吞掉，旧工具却继续执行。
+            if (workspace.busy) broadcast({ type: "chat.aborted" });
+            resetInflight();
             const rec = sessions.get(workspace.folder);
             void workspace.claude.close();
             openSession(rec?.sessionId);

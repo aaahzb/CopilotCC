@@ -186,6 +186,61 @@ describe("镜像工作区（多视图广播与快照）", () => {
     await server.close();
   });
 
+  it("chat.abort 经协议路由到当前会话：广播 chat.aborted 且 busy 快照变 false", async () => {
+    let aborts = 0;
+    const { server, url } = await boot();
+    const a = await connect(url);
+    const ca = collect(a.ws);
+    a.ws.send(JSON.stringify({ type: "folder.bind", path: dir }));
+    await ca.waitFor("folder.bound");
+    const captured = sentClientMessages.find((m) => m.cwd !== "SEND")!;
+    fakeHandle.abort = () => {
+      aborts += 1;
+      (captured.opts.events as { onAborted(): void }).onAborted();
+    };
+    a.ws.send(JSON.stringify({ type: "chat.send", text: "长任务", display: "长任务" }));
+    await ca.waitFor("chat.user");
+    a.ws.send(JSON.stringify({ type: "chat.abort" }));
+    await ca.waitFor("chat.aborted");
+    expect(aborts).toBe(1);
+    const b = await connect(url);
+    const cb = collect(b.ws);
+    b.ws.send(JSON.stringify({ type: "client.ready" }));
+    const sync = (await cb.waitFor("chat.sync")) as Extract<ServerMessage, { type: "chat.sync" }>;
+    expect(sync.busy).toBe(false);
+    a.ws.close();
+    b.ws.close();
+    await server.close();
+  });
+
+  it("生成中切换模型重建会话：旧会话被关闭，界面立即脱离 busy，新会话带新模型", async () => {
+    const { server, url } = await boot();
+    const a = await connect(url);
+    const ca = collect(a.ws);
+    a.ws.send(JSON.stringify({ type: "folder.bind", path: dir }));
+    await ca.waitFor("folder.bound");
+    fakeHandle.close = vi.fn(async () => {});
+    a.ws.send(JSON.stringify({ type: "chat.send", text: "长任务", display: "长任务" }));
+    await ca.waitFor("chat.user");
+    const before = ca.inbox.length;
+    a.ws.send(JSON.stringify({ type: "settings.set", permissionMode: "auto", model: "sonnet" }));
+    await ca.waitFor("chat.aborted", before); // 旧实现只换会话：busy 永真，新会话空闲又让 chat.abort 空操作
+    expect(fakeHandle.close).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => {
+      const creates = sentClientMessages.filter((m) => m.cwd !== "SEND");
+      expect(creates).toHaveLength(2);
+      expect(creates[1]!.opts.model).toBe("sonnet");
+    });
+    const b = await connect(url);
+    const cb = collect(b.ws);
+    b.ws.send(JSON.stringify({ type: "client.ready" }));
+    const sync = (await cb.waitFor("chat.sync")) as Extract<ServerMessage, { type: "chat.sync" }>;
+    expect(sync.busy).toBe(false);
+    a.ws.close();
+    b.ws.close();
+    await server.close();
+  });
+
   it("chat.draft 镜像：上报方不回显，其它视图收到；快照携带草稿", async () => {
     const { server, url } = await boot();
     const a = await connect(url);

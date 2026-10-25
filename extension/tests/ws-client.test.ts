@@ -57,6 +57,26 @@ describe("BridgeClient", () => {
     c.close();
   });
 
+  it("auth.ok 后先补发完整模型设置再 client.ready：桥接重启不回落 CLI 默认模型", () => {
+    const hello: ClientMessage[] = [
+      { type: "settings.set", permissionMode: "auto", model: "sonnet", effort: "high" },
+      { type: "client.ready" },
+    ];
+    const c = new BridgeClient({
+      getUrl: () => "ws://127.0.0.1:1/ws?token=t",
+      onMessage: () => {},
+      onState: () => {},
+      getHelloMessages: () => hello,
+      WebSocketImpl: FakeWS,
+    });
+    c.connect();
+    const ws = FakeWS.instances[0]!;
+    ws.open();
+    ws.push({ type: "auth.ok" });
+    expect(ws.sent.map((x) => JSON.parse(x))).toEqual(hello); // 顺序关键：ready 会触发工作区恢复并创建会话
+    c.close();
+  });
+
   it("断线后指数退避重连，close() 后不再重连", () => {
     const { c, states } = makeClient();
     c.connect();

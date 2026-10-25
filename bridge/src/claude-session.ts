@@ -366,10 +366,22 @@ export function createClaudeSession(cwd: string, opts: SessionOptions): ClaudeSe
       return { model: rtModel, effort: rtEffort };
     },
     async close(): Promise<void> {
+      if (closed) return;
       closed = true;
+      const wasActive = turnActive;
+      turnActive = false;
+      compactPending = false;
+      // 设置/文件夹/会话切换都会关闭旧 Query。必须先取消进行中的轮次，再关 SDK 流；
+      // 旧实现只结束输入流，CLI 会把当前工具跑完，导致换模型后旧任务仍继续写文件。
+      if (wasActive) {
+        abortSwallow = true;
+        void (stream as { interrupt?: () => Promise<void> }).interrupt?.()?.catch(() => {});
+      }
       wake?.();
       for (const [, p] of pending) p.resolve(false);
       pending.clear();
+      // Query.return() 触发 SDK cleanup/子进程收尾；不等待它，避免异常 CLI 卡住切换或退出。
+      void (stream as { return?: () => Promise<unknown> }).return?.()?.catch(() => {});
     },
   };
 }

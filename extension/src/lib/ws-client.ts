@@ -8,6 +8,8 @@ export interface BridgeClientOpts {
   getUrl(): string;
   onMessage(m: ServerMessage): void;
   onState(s: ConnState): void;
+  /** auth.ok 交给界面处理后，按序发送启动消息（完整设置必须先于 client.ready 触发快照/工作区恢复） */
+  getHelloMessages?(): ClientMessage[];
   WebSocketImpl?: unknown;
 }
 
@@ -37,7 +39,11 @@ export class BridgeClient {
     };
     ws.onmessage = (ev) => {
       try {
-        this.opts.onMessage(JSON.parse(ev.data) as ServerMessage);
+        const m = JSON.parse(ev.data) as ServerMessage;
+        this.opts.onMessage(m);
+        if (m.type === "auth.ok") {
+          for (const hello of this.opts.getHelloMessages?.() ?? []) this.send(hello);
+        }
       } catch {
         // 忽略坏帧
       }

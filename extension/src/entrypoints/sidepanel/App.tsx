@@ -77,7 +77,7 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
       case "auth.ok":
         snapshotPhaseRef.current = true; // 进入快照窗口期
         snapshotBoundRef.current = false;
-        clientRef.current?.send({ type: "client.ready" });
+        // 完整设置 + client.ready 由 BridgeClient 在本回调返回后按序补发：先同步模型，再恢复快照/会话
         break;
       case "auth.fail":
         setAuthError(m.reason);
@@ -216,10 +216,19 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
 
   /** 建立（或重建）WS 连接 */
   function connect(s: ExtSettings): void {
+    settingsRef.current = s; // auth.ok 的启动消息同步读取，避免等待下一次 React 渲染
     clientRef.current?.close();
     const c = new BridgeClient({
       getUrl: () => `ws://${s.host}:${s.port}/ws?token=${encodeURIComponent(s.token)}`,
       onMessage: onServerMessage,
+      getHelloMessages: () => {
+        const current = settingsRef.current;
+        if (!current) return [{ type: "client.ready" }]; // 连接必由已加载设置发起；仅作防御性兜底
+        return [
+          { type: "settings.set", permissionMode: current.permissionMode, model: current.model || undefined, effort: current.effort || undefined },
+          { type: "client.ready" },
+        ];
+      },
       onState: (state) => {
         setConn(state);
         if (state !== "open") setBusy(false); // 断线即丢失在途帧：解除 busy 防界面卡死（重连后快照恢复真实 busy）
@@ -419,6 +428,7 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
   async function applySettings(patch: Partial<ExtSettings>): Promise<void> {
     await saveSettings(patch);
     const s = await loadSettings();
+    settingsRef.current = s;
     setSettings(s);
     clientRef.current?.send({
       type: "settings.set",

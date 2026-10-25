@@ -14,6 +14,12 @@
 - [x] Task 12: page-extract.ts + UI 组件 + App 装配
 - [ ] Task 13: 端到端手动验收 + README.md
 
+## 修复记录（2026-10-26）
+
+- **偶发停止失效 + 旧任务继续写文件**：根因是生成中切换模型触发会话重建，旧 `close()` 只结束输入流，没有取消 CLI 轮次，且工作区 `busy` 未清；新会话空闲，后续 `chat.abort` 又被 `turnActive=false` 空操作。现在设置重建会先广播 `chat.aborted` 并清在途状态，旧会话 `close()` 对进行中轮次调用 SDK `interrupt()` 并关闭 Query 流；文件夹/会话切换与桥接退出也复用这条关闭链。
+- **界面选 Sonnet、实际回落 Fable**：另一个 CMD 不会共享模型。桥接内存中的模型设置会在重启后丢失，而扩展旧逻辑只在手动修改时推送；现改为每次 `auth.ok` 后按序发送完整 `settings.set` → `client.ready`，确保恢复会话前模型已生效。
+- **回归与实测**：新增关闭进行中会话、生成中切换模型、认证后补发设置三类回归；桥接 126 个测试、扩展 55 个测试及两端类型检查通过。真实 CLI 探针在 Sonnet 会话的 Bash 工具执行中关闭旧会话，等待 22 秒后延迟文件未生成、无迟到事件。
+
 ## 配对信息
 
 - 扩展 ID: `cnalihjaacpahpjkpneacjcfbhboglno`

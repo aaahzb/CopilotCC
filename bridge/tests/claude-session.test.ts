@@ -196,6 +196,24 @@ describe("createClaudeSession", () => {
       await s.close();
     });
 
+    it("close 进行中的会话也会 interrupt 并关闭 SDK 流：重建后旧工具不能继续跑", async () => {
+      const interrupt = vi.fn(() => Promise.resolve());
+      const returnStream = vi.fn(() => Promise.resolve({ done: true as const, value: undefined }));
+      const stream = Object.assign(
+        (async function* () {
+          await new Promise<void>(() => {}); // 永不自然结束，模拟正在执行工具的真实 SDK 流
+        })(),
+        { interrupt, return: returnStream },
+      );
+      const ev = stubEvents();
+      const s = createClaudeSession("D:\\notes", { permissionMode: "auto", events: ev, queryFn: () => stream });
+      s.send("长任务");
+      await s.close();
+      expect(interrupt).toHaveBeenCalledTimes(1);
+      expect(returnStream).toHaveBeenCalledTimes(1);
+      expect(ev.log.map(([k]) => k)).not.toContain("aborted"); // close 是静默生命周期收尾，由 server 决定界面通知
+    });
+
     it("空闲时 abort 是空操作：不触发 onAborted、不调 interrupt（竞态：done 在途时点了停止）", async () => {
       const { fn, interrupt, push } = manualQuery();
       const ev = stubEvents();
