@@ -17,7 +17,11 @@ VER="$(node -p "require('$ROOT/package.json').version")"
 # 1. 组装 .app 骨架：主程序放 Contents/MacOS；traybin/ 目录留给第 3.5 步现场编译的托盘助手（tray.ts 按 exe 旁 traybin/ 解析，零改动兼容）
 rm -rf "$BUNDLE" "$STAGE"
 mkdir -p "$BUNDLE/Contents/MacOS/traybin" "$BUNDLE/Contents/Resources"
-cp "$SRC/ccc-bridge" "$BUNDLE/Contents/MacOS/ccc-bridge"
+# Bun 编译的 Mach-O 若含稀疏区，cp/clonefile 可能保留稀疏布局；hdiutil -srcfolder 按已分配块估算
+# 临时镜像、复制时却按逻辑尺寸写入，会误报 No space left on device。cat 显式读写全部字节以消除
+# 稀疏区，cmp 保证重写前后内容逐字一致；磁盘与文件块数诊断见打包前日志。
+cat "$SRC/ccc-bridge" > "$BUNDLE/Contents/MacOS/ccc-bridge"
+cmp -s "$SRC/ccc-bridge" "$BUNDLE/Contents/MacOS/ccc-bridge"
 chmod +x "$BUNDLE/Contents/MacOS/ccc-bridge"
 
 # 2. Info.plist（LSUIElement：菜单栏常驻程序，不占 Dock）
@@ -73,6 +77,12 @@ mv "$BUNDLE" "$STAGE/$APP"
 cp "$ROOT/scripts/mac-setup.command" "$STAGE/首次使用-右键打开我.command"
 chmod +x "$STAGE/首次使用-右键打开我.command"
 ln -s /Applications "$STAGE/Applications"
+# 2026-10-26 Release #28 在 hdiutil 报空间不足：保留主机空间、舞台逻辑大小和实际块数，
+# 下次日志可直接区分 runner 真缺盘与稀疏文件导致的临时镜像容量误判。
+echo "DMG 打包前磁盘与舞台占用："
+df -h "$REPO" /Volumes
+du -sh "$STAGE"
+find "$STAGE" -type f -exec ls -ls {} \;
 hdiutil create -volname "CopilotCC Bridge" -srcfolder "$STAGE" -ov -format UDZO "$REPO/ccc-bridge-darwin-arm64.dmg"
 rm -rf "$STAGE" "$ROOT/dist/ccc.iconset"
 # 教训：变量后紧跟全角标点（，。（等）时，mac runner 的 bash 会把标点首字节吞进变量名 → 一律 ${} 花括号
