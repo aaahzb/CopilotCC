@@ -8,13 +8,15 @@ import "katex/dist/katex.min.css";
 import "highlight.js/styles/github-dark.css";
 import { isWebHref } from "../lib/format";
 
-/** 界面消息：user/assistant 聊天气泡，tool 为折叠工具卡片 */
+/** 界面消息：user/assistant 聊天气泡；tool 为工具活动行或附带状态行 */
 export interface UiMsg {
   id: string;
   role: "user" | "assistant" | "tool";
   text: string;
   /** 实际发送给 Claude 的完整文本（含页面上下文/上传说明），仅用户消息与附带状态行有 */
   sentText?: string;
+  /** 实际工具调用的原始名称；附带状态行没有此字段，保持原 clickable 分支 */
+  toolName?: string;
   /** 附带标记：full=页面全文，selection=选中文字，upload=上传文件；无标记=未附带 */
   attachKind?: "full" | "selection" | "upload";
 }
@@ -68,6 +70,32 @@ function MdLink(props: { href?: string; children?: React.ReactNode }): React.Rea
   );
 }
 
+/** 常见工具与 MCP 语义回退的跨平台图标；未知工具保留通用扳手。 */
+function toolIcon(name: string): string {
+  const normalized = name.toLowerCase();
+  const icons: Record<string, string> = {
+    websearch: "🔍", webfetch: "🌐", read: "📄", edit: "✏️", multiedit: "✏️",
+    write: "📝", bash: "💻", grep: "🔎", glob: "📁", upload: "📁",
+  };
+  if (icons[normalized]) return icons[normalized];
+  if (normalized.startsWith("mcp__")) {
+    if (normalized.includes("search")) return "🔍";
+    if (["fetch", "crawl", "extract", "map"].some((part) => normalized.includes(part))) return "🌐";
+  }
+  return "🔧";
+}
+
+/** 紧凑工具活动行：图标、名称和摘要分离，绝不使用 assistant 正文气泡类。 */
+function ToolActivity(props: { name: string; summary: string }): React.ReactElement {
+  const title = props.summary ? `${props.name}: ${props.summary}` : props.name;
+  return (
+    <div className="tool-card tool-activity" data-tool={props.name} title={title}>
+      <span className="tool-icon" aria-hidden="true">{toolIcon(props.name)}</span>
+      <span className="tool-name">{props.name}</span>
+      {props.summary ? <span className="tool-summary">{props.summary}</span> : null}
+    </div>
+  );
+}
 /** react-markdown 渲染配置：GFM + 数学公式 + 语法高亮 + 代码块复制按钮 + 非网页链接降级纯文本（MdLink） */
 const MD = {
   remarkPlugins: [remarkGfm, remarkMath],
@@ -129,7 +157,9 @@ export function MessageList(props: { messages: UiMsg[]; streaming: string | null
       <div className="message-list" ref={listRef} onScroll={onScroll}>
         {props.messages.map((m) =>
           m.role === "tool" ? (
-            m.sentText ? (
+            m.toolName ? (
+              <ToolActivity key={m.id} name={m.toolName} summary={m.text} />
+            ) : m.sentText ? (
               // 附带状态行：平时一行折叠态，点击弹出临时浮层查看完整发送内容，关闭即消失
               <div key={m.id} className="tool-card clickable" title="点击查看实际发送内容" onClick={() => setViewing(m)}>
                 {m.text} 🔍

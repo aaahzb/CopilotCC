@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { shortModelName, isWebHref } from "../src/lib/format";
+import { shortModelName, isWebHref, fastStatusText, fastDisabledReasonText } from "../src/lib/format";
 
 describe("shortModelName", () => {
   it("标准 claude- 前缀 ID 压短并转版本号", () => {
@@ -35,5 +35,21 @@ describe("isWebHref", () => {
     expect(isWebHref("javascript:alert(1)")).toBe(false);
     expect(isWebHref("mailto:a@b.c")).toBe(false);
     expect(isWebHref("")).toBe(false);
+  });
+});
+
+
+describe("原生 fast 状态文案", () => {
+  it("区分等待回报、on、off 和原生冷却期", () => {
+    expect(fastStatusText(undefined)).toBe("等待 CC 回报");
+    expect(fastStatusText({ state: "on" })).toBe("CC fast on");
+    expect(fastStatusText({ state: "off" })).toBe("CC fast off");
+    expect(fastStatusText({ state: "cooldown" })).toBe("冷却中（cooldown）");
+  });
+
+  it("禁用原因使用可读文案，不把请求开关当成实际生效", () => {
+    expect(fastDisabledReasonText("model_not_allowed")).toContain("当前模型");
+    expect(fastDisabledReasonText("not_first_party")).toContain("第一方");
+    expect(fastDisabledReasonText("network_error")).toContain("网络");
   });
 });

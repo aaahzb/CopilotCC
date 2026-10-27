@@ -15,7 +15,7 @@ import type { ServerMessage } from "../src/protocol";
 let dir: string;
 let sessions: SessionManager;
 let sentClientMessages: Array<{ cwd: string; opts: Record<string, unknown> }>;
-let fakeHandle: { send(t: string): void; abort(): void; respondPermission(id: string, a: boolean): void; close(): Promise<void> };
+let fakeHandle: { send(t: string): void; abort(): void; respondPermission(id: string, a: boolean): void; setFastMode(enabled: boolean, model?: string | null): Promise<void>; fastAutoModel(): Promise<string | undefined>; close(): Promise<void> };
 
 /** 构造测试配置，默认端口 0（系统分配） */
 function makeConfig(over: Partial<BridgeConfig> = {}): BridgeConfig {
@@ -78,6 +78,8 @@ beforeEach(() => {
     },
     abort: () => {},
     respondPermission: () => {},
+    setFastMode: vi.fn(() => Promise.resolve()),
+    fastAutoModel: vi.fn(() => Promise.resolve(undefined)),
     close: async () => {},
   };
 });
@@ -408,4 +410,624 @@ describe("别名会话恢复与工作区持久化（升级/重启不丢聊天记
     ws.close();
     await server.close();
   });
+});
+
+describe("原生 fast 工作区镜像", () => {
+  it("busy 中 fast-only 不关闭/中止旧轮次，原生接口与双视图状态同步", async () => {
+    const { server, url } = await boot();
+    const a = await connect(url);
+    const ca = collect(a.ws);
+    a.ws.send(JSON.stringify({ type: "folder.bind", path: dir }));
+    await ca.waitFor("folder.bound");
+    const close = vi.fn(async () => {});
+    const setFast = vi.fn(() => Promise.resolve());
+    fakeHandle.close = close;
+    fakeHandle.setFastMode = setFast;
+    const b = await connect(url);
+    const cb = collect(b.ws);
+    a.ws.send(JSON.stringify({ type: "chat.send", text: "长任务", display: "长任务" }));
+    await ca.waitFor("chat.user");
+    const before = ca.inbox.length;
+    const beforeB = cb.inbox.length;
+    a.ws.send(JSON.stringify({ type: "settings.set", permissionMode: "auto", fastMode: true }));
+    await vi.waitFor(() => expect(setFast).toHaveBeenCalledWith(true));
+    const state = (await ca.waitFor("settings.state", before)) as Extract<ServerMessage, { type: "settings.state" }>;
+    const stateB = (await cb.waitFor("settings.state", beforeB)) as Extract<ServerMessage, { type: "settings.state" }>;
+    expect(state.fastMode).toBe(true);
+    expect(stateB.fastMode).toBe(true);
+    expect(close).not.toHaveBeenCalled();
+    expect(ca.inbox.slice(before).some((m) => m.type === "chat.aborted")).toBe(false);
+    expect(sentClientMessages.filter((m) => m.cwd !== "SEND")).toHaveLength(1);
+    const c = await connect(url);
+    const cc = collect(c.ws);
+    c.ws.send(JSON.stringify({ type: "client.ready" }));
+    const sync = (await cc.waitFor("chat.sync")) as Extract<ServerMessage, { type: "chat.sync" }>;
+    expect(sync.busy).toBe(true);
+    a.ws.close(); b.ws.close(); c.ws.close();
+    await server.close();
+  });
+
+  it("模型+fast 同改只重建一次；旧客户端省略 fast 不会清除偏好", async () => {
+    const { server, url } = await boot();
+    const a = await connect(url);
+    const ca = collect(a.ws);
+    a.ws.send(JSON.stringify({ type: "folder.bind", path: dir }));
+    await ca.waitFor("folder.bound");
+    const setFast = vi.fn(() => Promise.resolve());
+    fakeHandle.setFastMode = setFast;
+    a.ws.send(JSON.stringify({ type: "settings.set", permissionMode: "auto", fastMode: true }));
+    await vi.waitFor(() => expect(setFast).toHaveBeenCalledWith(true));
+    a.ws.send(JSON.stringify({ type: "client.ready" })); // 后续无标记完整帧是 ready 后的旧客户端手动设置，不是启动 hello
+    await ca.waitFor("chat.sync");
+    a.ws.send(JSON.stringify({ type: "settings.set", permissionMode: "auto" }));
+    await new Promise((r) => setTimeout(r, 40));
+    expect(setFast).toHaveBeenCalledTimes(1);
+    expect(sentClientMessages.filter((m) => m.cwd !== "SEND")).toHaveLength(1);
+    a.ws.send(JSON.stringify({ type: "settings.set", permissionMode: "auto", model: "sonnet", fastMode: false }));
+    await vi.waitFor(() => expect(sentClientMessages.filter((m) => m.cwd !== "SEND")).toHaveLength(2));
+    let creates = sentClientMessages.filter((m) => m.cwd !== "SEND");
+    expect(creates[1]!.opts).toMatchObject({ model: "sonnet", fastMode: false });
+    expect(setFast).toHaveBeenCalledTimes(1);
+    a.ws.send(JSON.stringify({ type: "settings.set", permissionMode: "auto", model: "sonnet", fastMode: true }));
+    await vi.waitFor(() => expect(setFast).toHaveBeenCalledWith(true));
+    a.ws.send(JSON.stringify({ type: "settings.set", permissionMode: "auto", model: "fable" }));
+    await vi.waitFor(() => expect(sentClientMessages.filter((m) => m.cwd !== "SEND")).toHaveLength(3));
+    creates = sentClientMessages.filter((m) => m.cwd !== "SEND");
+    expect(creates[2]!.opts).toMatchObject({ model: "fable", fastMode: true });
+    a.ws.close();
+    await server.close();
+  });
+
+  it("CC onRuntime 与 chat.done 把真实 fast 状态广播给全部视图", async () => {
+    const { server, url } = await boot();
+    const a = await connect(url);
+    const ca = collect(a.ws);
+    a.ws.send(JSON.stringify({ type: "folder.bind", path: dir }));
+    await ca.waitFor("folder.bound");
+    const b = await connect(url);
+    const cb = collect(b.ws);
+    const captured = sentClientMessages.find((m) => m.cwd !== "SEND")!;
+    const events = captured.opts.events as {
+      onRuntime(info: unknown): void;
+      onDone(sessionId: string, info: unknown): void;
+    };
+    const info = { model: "claude-opus-5-5", effort: "high", fast: { state: "cooldown", disabledReason: "network_error" } };
+    const before = ca.inbox.length;
+    const beforeB = cb.inbox.length;
+    events.onRuntime(info);
+    const [sa, sb] = await Promise.all([ca.waitFor("settings.state", before), cb.waitFor("settings.state", beforeB)]);
+    expect(sa).toMatchObject({ fastMode: false, runtime: info });
+    expect(sb).toMatchObject({ runtime: info });
+    events.onDone("sid-fast", info);
+    const [da, db] = await Promise.all([ca.waitFor("chat.done", before), cb.waitFor("chat.done", beforeB)]);
+    expect(da).toMatchObject({ fast: info.fast });
+    expect(db).toMatchObject({ fast: info.fast });
+    a.ws.close(); b.ws.close();
+    await server.close();
+  });
+
+  it("原生 fast 应用失败只回设置错误并回滚请求，不释放仍在运行的轮次", async () => {
+    const { server, url } = await boot();
+    const a = await connect(url);
+    const ca = collect(a.ws);
+    a.ws.send(JSON.stringify({ type: "folder.bind", path: dir }));
+    await ca.waitFor("folder.bound");
+    fakeHandle.setFastMode = vi.fn(() => Promise.reject(new Error("native denied")));
+    a.ws.send(JSON.stringify({ type: "chat.send", text: "长任务", display: "长任务" }));
+    await ca.waitFor("chat.user");
+    const before = ca.inbox.length;
+    a.ws.send(JSON.stringify({ type: "settings.set", permissionMode: "auto", fastMode: true }));
+    const error = await ca.waitFor("settings.error", before);
+    expect(error).toMatchObject({ message: expect.stringContaining("native denied") });
+    await vi.waitFor(() => {
+      const states = ca.inbox.filter((m) => m.type === "settings.state") as Array<Extract<ServerMessage, { type: "settings.state" }>>;
+      expect(states.at(-1)?.fastMode).toBe(false);
+    });
+    expect(ca.inbox.slice(before).some((m) => m.type === "chat.aborted")).toBe(false);
+    const b = await connect(url);
+    const cb = collect(b.ws);
+    b.ws.send(JSON.stringify({ type: "client.ready" }));
+    const sync = (await cb.waitFor("chat.sync")) as Extract<ServerMessage, { type: "chat.sync" }>;
+    expect(sync.busy).toBe(true);
+    a.ws.close(); b.ws.close();
+    await server.close();
+  });
+
+  it("旧会话的迟到 fast 拒绝不会回滚新会话设置或产生设置错误", async () => {
+    const first = fakeHandle;
+    const second = {
+      send: () => {},
+      abort: () => {},
+      respondPermission: () => {},
+      setFastMode: vi.fn(() => Promise.resolve()),
+      close: vi.fn(() => Promise.resolve()),
+    };
+    let creates = 0;
+    const { server, url } = await boot({
+      createSession: ((cwd: string, opts: Record<string, unknown>) => {
+        sentClientMessages.push({ cwd, opts });
+        return creates++ === 0 ? first : second;
+      }) as never,
+    });
+    const a = await connect(url);
+    const ca = collect(a.ws);
+    a.ws.send(JSON.stringify({ type: "folder.bind", path: dir }));
+    await ca.waitFor("folder.bound");
+    let rejectFirst!: (e: Error) => void;
+    first.setFastMode = vi.fn(() => new Promise<void>((_resolve, reject) => { rejectFirst = reject; }));
+    a.ws.send(JSON.stringify({ type: "settings.set", permissionMode: "auto", fastMode: true }));
+    await vi.waitFor(() => expect(first.setFastMode).toHaveBeenCalledWith(true));
+    a.ws.send(JSON.stringify({ type: "settings.set", permissionMode: "auto", model: "sonnet", fastMode: true, fields: ["model"] }));
+    await vi.waitFor(() => expect(creates).toBe(2));
+    const before = ca.inbox.length;
+    rejectFirst(new Error("stale session denied"));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(ca.inbox.slice(before).some((m) => m.type === "settings.error")).toBe(false);
+    const states = ca.inbox.filter((m) => m.type === "settings.state") as Array<Extract<ServerMessage, { type: "settings.state" }>>;
+    expect(states.at(-1)?.fastMode).toBe(true);
+    expect(sentClientMessages.filter((m) => m.cwd !== "SEND")[1]?.opts).toMatchObject({ model: "sonnet", fastMode: true });
+    a.ws.close();
+    await server.close();
+  });
+
+  it("被新请求取代的迟到 fast 拒绝被忽略，当前请求值不回滚", async () => {
+    const { server, url } = await boot();
+    const a = await connect(url);
+    const ca = collect(a.ws);
+    a.ws.send(JSON.stringify({ type: "folder.bind", path: dir }));
+    await ca.waitFor("folder.bound");
+    let rejectFirst!: (e: Error) => void;
+    let resolveSecond!: () => void;
+    fakeHandle.setFastMode = vi.fn()
+      .mockImplementationOnce(() => new Promise<void>((_resolve, reject) => { rejectFirst = reject; }))
+      .mockImplementationOnce(() => new Promise<void>((resolve) => { resolveSecond = resolve; }));
+    a.ws.send(JSON.stringify({ type: "settings.set", permissionMode: "auto", fastMode: true }));
+    await vi.waitFor(() => expect(fakeHandle.setFastMode).toHaveBeenCalledTimes(1));
+    a.ws.send(JSON.stringify({ type: "settings.set", permissionMode: "auto", fastMode: false, fastOnly: true }));
+    await vi.waitFor(() => expect(fakeHandle.setFastMode).toHaveBeenCalledTimes(2));
+    const before = ca.inbox.length;
+    rejectFirst(new Error("superseded request denied"));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(ca.inbox.slice(before).some((m) => m.type === "settings.error")).toBe(false);
+    const states = ca.inbox.filter((m) => m.type === "settings.state") as Array<Extract<ServerMessage, { type: "settings.state" }>>;
+    expect(states.at(-1)?.fastMode).toBe(false);
+    resolveSecond();
+    a.ws.close();
+    await server.close();
+  });
+
+  it("连续 fast 请求都被原生拒绝时，回滚到最后已接受的请求值", async () => {
+    const { server, url } = await boot();
+    const a = await connect(url);
+    const ca = collect(a.ws);
+    a.ws.send(JSON.stringify({ type: "folder.bind", path: dir }));
+    await ca.waitFor("folder.bound");
+    let rejectFirst!: (e: Error) => void;
+    let rejectSecond!: (e: Error) => void;
+    fakeHandle.setFastMode = vi.fn()
+      .mockImplementationOnce(() => new Promise<void>((_resolve, reject) => { rejectFirst = reject; }))
+      .mockImplementationOnce(() => new Promise<void>((_resolve, reject) => { rejectSecond = reject; }));
+    a.ws.send(JSON.stringify({ type: "settings.set", permissionMode: "auto", fastMode: true }));
+    await vi.waitFor(() => expect(fakeHandle.setFastMode).toHaveBeenCalledTimes(1));
+    a.ws.send(JSON.stringify({ type: "settings.set", permissionMode: "auto", fastMode: false, fastOnly: true }));
+    await vi.waitFor(() => expect(fakeHandle.setFastMode).toHaveBeenCalledTimes(2));
+    rejectFirst(new Error("first denied"));
+    await new Promise((r) => setTimeout(r, 20));
+    const before = ca.inbox.length;
+    rejectSecond(new Error("second denied"));
+    await ca.waitFor("settings.error", before);
+    const states = ca.inbox.filter((m) => m.type === "settings.state") as Array<Extract<ServerMessage, { type: "settings.state" }>>;
+    expect(states.at(-1)?.fastMode).toBe(false);
+    a.ws.close();
+    await server.close();
+  });
+
+  it("fast on-off-on 的旧迟到拒绝不会回滚最新同值请求", async () => {
+    const { server, url } = await boot();
+    const a = await connect(url);
+    const ca = collect(a.ws);
+    a.ws.send(JSON.stringify({ type: "folder.bind", path: dir }));
+    await ca.waitFor("folder.bound");
+    const rejectors: Array<(e: Error) => void> = [];
+    const resolvers: Array<() => void> = [];
+    fakeHandle.setFastMode = vi.fn(() => new Promise<void>((resolve, reject) => {
+      resolvers.push(resolve);
+      rejectors.push(reject);
+    }));
+    for (const fastMode of [true, false, true]) {
+      a.ws.send(JSON.stringify({ type: "settings.set", permissionMode: "auto", fastMode, fastOnly: true }));
+    }
+    await vi.waitFor(() => expect(fakeHandle.setFastMode).toHaveBeenCalledTimes(3));
+    const before = ca.inbox.length;
+    rejectors[0]!(new Error("stale same-value denied"));
+    await new Promise((r) => setTimeout(r, 30));
+    resolvers[1]!();
+    resolvers[2]!();
+    await new Promise((r) => setTimeout(r, 30));
+    expect(ca.inbox.slice(before).some((m) => m.type === "settings.error")).toBe(false);
+    const states = ca.inbox.filter((m) => m.type === "settings.state") as Array<Extract<ServerMessage, { type: "settings.state" }>>;
+    expect(states.at(-1)?.fastMode).toBe(true);
+    a.ws.close();
+    await server.close();
+  });
+
+
+  it("重启后的非默认 hello 与恢复快照均省略空 runtime，保留扩展缓存", async () => {
+    const storeFile = path.join(dir, "workspace.json");
+    new WorkspaceStore(storeFile).save({ folder: dir, aliasId: null });
+    const { server, url } = await boot({ workspaceStore: new WorkspaceStore(storeFile) });
+    const a = await connect(url);
+    const ca = collect(a.ws);
+    a.ws.send(JSON.stringify({ type: "settings.set", permissionMode: "auto", model: "sonnet", effort: "high", fastMode: true }));
+    a.ws.send(JSON.stringify({ type: "client.ready" }));
+    await ca.waitFor("chat.sync");
+    const states = ca.inbox.filter((m) => m.type === "settings.state");
+    expect(states.length).toBeGreaterThanOrEqual(2);
+    for (const state of states) expect(state).not.toHaveProperty("runtime");
+    a.ws.close();
+    await server.close();
+  });
+
+  it("主动新建会话广播权威空 runtime，随后接入的新视图也不能沿用旧真值", async () => {
+    const { server, url } = await boot();
+    const a = await connect(url);
+    const ca = collect(a.ws);
+    a.ws.send(JSON.stringify({ type: "folder.bind", path: dir }));
+    await ca.waitFor("folder.bound");
+    const captured = sentClientMessages.find((m) => m.cwd !== "SEND")!;
+    const events = captured.opts.events as { onRuntime(info: unknown): void };
+    events.onRuntime({ model: "claude-opus-5-5", effort: "high", fast: { state: "on" } });
+    await ca.waitFor("settings.state");
+    const before = ca.inbox.length;
+    a.ws.send(JSON.stringify({ type: "session.new" }));
+    await ca.waitFor("folder.bound", before);
+    await new Promise((r) => setTimeout(r, 30));
+    const reset = ca.inbox.slice(before).find((m) => m.type === "settings.state");
+    expect(reset).toMatchObject({ runtime: {} });
+    const b = await connect(url);
+    const cb = collect(b.ws);
+    b.ws.send(JSON.stringify({ type: "client.ready" }));
+    const snapshot = await cb.waitFor("settings.state");
+    expect(snapshot).toMatchObject({ runtime: {} });
+    a.ws.close(); b.ws.close();
+    await server.close();
+  });
+
+
+  it("fastOnly 请求忽略视图里的旧模型权限 effort，不把 fast 切换变成重建", async () => {
+    const { server, url } = await boot();
+    const a = await connect(url);
+    const ca = collect(a.ws);
+    a.ws.send(JSON.stringify({ type: "folder.bind", path: dir }));
+    await ca.waitFor("folder.bound");
+    a.ws.send(JSON.stringify({ type: "settings.set", permissionMode: "auto", model: "sonnet", effort: "high", fastMode: false }));
+    await vi.waitFor(() => expect(sentClientMessages.filter((m) => m.cwd !== "SEND")).toHaveLength(2));
+    const beforeCreates = sentClientMessages.filter((m) => m.cwd !== "SEND").length;
+    const setFast = vi.fn(() => Promise.resolve());
+    fakeHandle.setFastMode = setFast;
+    const before = ca.inbox.length;
+    a.ws.send(JSON.stringify({ type: "settings.set", permissionMode: "plan", model: "fable", effort: "low", fastMode: true, fastOnly: true }));
+    await vi.waitFor(() => expect(setFast).toHaveBeenCalledWith(true, "opus"));
+    expect(sentClientMessages.filter((m) => m.cwd !== "SEND")).toHaveLength(beforeCreates);
+    const states = ca.inbox.slice(before).filter((m) => m.type === "settings.state");
+    expect(states.at(-1)).toMatchObject({ permissionMode: "auto", model: "opus", effort: "high", fastMode: true });
+    expect(ca.inbox.slice(before).some((m) => m.type === "chat.aborted")).toBe(false);
+    a.ws.close();
+    await server.close();
+  });
+
+
+  it("fastOnly 缺少合法 fastMode 时不按其他字段重建或中止轮次", async () => {
+    const { server, url } = await boot();
+    const a = await connect(url);
+    const ca = collect(a.ws);
+    a.ws.send(JSON.stringify({ type: "folder.bind", path: dir }));
+    await ca.waitFor("folder.bound");
+    a.ws.send(JSON.stringify({ type: "settings.set", permissionMode: "auto", model: "sonnet", effort: "high", fastMode: false }));
+    await vi.waitFor(() => expect(sentClientMessages.filter((m) => m.cwd !== "SEND")).toHaveLength(2));
+    const beforeCreates = sentClientMessages.filter((m) => m.cwd !== "SEND").length;
+    const before = ca.inbox.length;
+    a.ws.send(JSON.stringify({ type: "settings.set", permissionMode: "plan", model: "fable", effort: "low", fastOnly: true }));
+    const state = await ca.waitFor("settings.state", before);
+    await new Promise((r) => setTimeout(r, 30));
+    const createsAfter = sentClientMessages.filter((m) => m.cwd !== "SEND").length;
+    const aborted = ca.inbox.slice(before).some((m) => m.type === "chat.aborted");
+    a.ws.close();
+    await server.close();
+    expect(state).toMatchObject({ permissionMode: "auto", model: "sonnet", effort: "high", fastMode: false });
+    expect(createsAfter).toBe(beforeCreates);
+    expect(aborted).toBe(false);
+  });
+
+
+  it("重启恢复后切换 fast 不广播权威空 runtime", async () => {
+    const storeFile = path.join(dir, "workspace.json");
+    new WorkspaceStore(storeFile).save({ folder: dir, aliasId: null });
+    const { server, url } = await boot({ workspaceStore: new WorkspaceStore(storeFile) });
+    const a = await connect(url);
+    const ca = collect(a.ws);
+    a.ws.send(JSON.stringify({ type: "settings.set", permissionMode: "auto", model: "sonnet", effort: "high", fastMode: false }));
+    a.ws.send(JSON.stringify({ type: "client.ready" }));
+    await ca.waitFor("chat.sync");
+    const before = ca.inbox.length;
+    a.ws.send(JSON.stringify({ type: "settings.set", permissionMode: "plan", model: "fable", effort: "low", fastMode: true, fastOnly: true }));
+    const state = await ca.waitFor("settings.state", before);
+    a.ws.close();
+    await server.close();
+    expect(state).toMatchObject({ fastMode: true });
+    expect(state).not.toHaveProperty("runtime");
+  });
+
+  it("主动新建会话的 folder.bound 标记 reset，快照绑定不标记", async () => {
+    const { server, url } = await boot();
+    const a = await connect(url);
+    const ca = collect(a.ws);
+    a.ws.send(JSON.stringify({ type: "folder.bind", path: dir }));
+    await ca.waitFor("folder.bound");
+    a.ws.send(JSON.stringify({ type: "chat.send", text: "首轮尚未落地" }));
+    await ca.waitFor("chat.user");
+    const before = ca.inbox.length;
+    a.ws.send(JSON.stringify({ type: "session.new" }));
+    const active = await ca.waitFor("folder.bound", before);
+    const b = await connect(url);
+    const cb = collect(b.ws);
+    b.ws.send(JSON.stringify({ type: "client.ready" }));
+    const snapshot = await cb.waitFor("folder.bound");
+    a.ws.close(); b.ws.close();
+    await server.close();
+    expect(active).toMatchObject({ sessionId: null, reset: true });
+    expect(snapshot).not.toHaveProperty("reset");
+  });
+
+  it("自动 hello 只给未初始化桥播种，运行中旧 hello 不覆盖服务器状态", async () => {
+    const { server, url } = await boot();
+    const a = await connect(url);
+    const ca = collect(a.ws);
+    a.ws.send(JSON.stringify({ type: "settings.set", permissionMode: "plan", model: "sonnet", effort: "high", fastMode: true, hello: true }));
+    await ca.waitFor("settings.state");
+    const b = await connect(url);
+    const cb = collect(b.ws);
+    b.ws.send(JSON.stringify({ type: "settings.set", permissionMode: "auto", model: "fable", effort: "low", fastMode: false, hello: true }));
+    b.ws.send(JSON.stringify({ type: "client.ready" }));
+    await cb.waitFor("chat.sync");
+    const mirrored = cb.inbox.filter((m) => m.type === "settings.state").at(-1);
+    const before = cb.inbox.length;
+    b.ws.send(JSON.stringify({ type: "settings.set", permissionMode: "auto", model: "sonnet", effort: "high", fastMode: false, fastOnly: true }));
+    const explicit = await cb.waitFor("settings.state", before);
+    a.ws.close(); b.ws.close();
+    await server.close();
+    expect(mirrored).toMatchObject({ permissionMode: "plan", model: "sonnet", effort: "high", fastMode: true });
+    expect(explicit).toMatchObject({ fastMode: false }); // 只有自动 hello 被忽略，显式用户操作仍生效
+  });
+
+  it("未初始化桥先收 fastOnly 仍按完整字段播种，后续 hello 不锁定默认值", async () => {
+    const storeFile = path.join(dir, "workspace.json");
+    new WorkspaceStore(storeFile).save({ folder: dir, aliasId: null }); // ready 恢复绑定后才应创建 Query；execution 仍保持未初始化
+    const { server, url } = await boot({ workspaceStore: new WorkspaceStore(storeFile) });
+    const a = await connect(url);
+    const ca = collect(a.ws);
+    a.ws.send(JSON.stringify({ type: "settings.set", permissionMode: "plan", model: "sonnet", effort: "high", fastMode: true, fastOnly: true }));
+    a.ws.send(JSON.stringify({ type: "settings.set", permissionMode: "auto", model: "fable", effort: "low", fastMode: false, hello: true }));
+    a.ws.send(JSON.stringify({ type: "client.ready" }));
+    await ca.waitFor("chat.sync");
+    const state = ca.inbox.filter((m) => m.type === "settings.state").at(-1);
+    const persisted = JSON.parse(fs.readFileSync(storeFile, "utf-8")) as { execution?: unknown };
+    const created = sentClientMessages.filter((m) => m.cwd !== "SEND").at(-1);
+    a.ws.close();
+    await server.close();
+    const expected = { permissionMode: "plan", model: "sonnet", effort: "high", fastMode: true };
+    expect(state).toMatchObject(expected);
+    expect(persisted.execution).toMatchObject(expected);
+    expect(created?.opts).toMatchObject(expected);
+  });
+
+  it("显式字段补丁只更新指定字段，不带回其他视图或存储里的旧 fast", async () => {
+    const { server, url } = await boot();
+    const a = await connect(url);
+    const ca = collect(a.ws);
+    a.ws.send(JSON.stringify({ type: "settings.set", permissionMode: "plan", model: "sonnet", effort: "high", fastMode: false, hello: true }));
+    await ca.waitFor("settings.state");
+    const before = ca.inbox.length;
+    a.ws.send(JSON.stringify({ type: "settings.set", permissionMode: "auto", model: "fable", effort: "low", fastMode: true, fields: ["model"] }));
+    const state = await ca.waitFor("settings.state", before);
+    a.ws.close();
+    await server.close();
+    expect(state).toMatchObject({ permissionMode: "plan", model: "fable", effort: "high", fastMode: false });
+  });
+
+  it("旧客户端无 hello 的自动启动设置不覆盖已初始化桥", async () => {
+    const storeFile = path.join(dir, "workspace.json");
+    const execution = { permissionMode: "plan" as const, model: "sonnet", effort: "high" as const, fastMode: true };
+    new WorkspaceStore(storeFile).save({ folder: dir, aliasId: null, execution: { ...execution, fastRestore: { request: "sonnet" } } });
+    const { server, url } = await boot({ workspaceStore: new WorkspaceStore(storeFile) });
+    const a = await connect(url);
+    const ca = collect(a.ws);
+    a.ws.send(JSON.stringify({ type: "settings.set", permissionMode: "auto", model: "fable", effort: "low", fastMode: false }));
+    a.ws.send(JSON.stringify({ type: "client.ready" }));
+    await ca.waitFor("chat.sync");
+    const state = ca.inbox.filter((m) => m.type === "settings.state").at(-1);
+    const persisted = JSON.parse(fs.readFileSync(storeFile, "utf-8")) as { execution?: unknown };
+    const created = sentClientMessages.filter((m) => m.cwd !== "SEND").at(-1);
+    a.ws.close();
+    await server.close();
+    expect(state).toMatchObject(execution);
+    expect(persisted.execution).toMatchObject(execution);
+    expect(created?.opts).toMatchObject(execution);
+  });
+
+  it("旧客户端断线前排队的显式完整设置先于自动 hello 生效", async () => {
+    const storeFile = path.join(dir, "workspace.json");
+    const execution = { permissionMode: "plan" as const, model: "sonnet", effort: "high" as const, fastMode: true };
+    new WorkspaceStore(storeFile).save({ folder: dir, aliasId: null, execution: { ...execution, fastRestore: { request: "sonnet" } } });
+    const { server, url } = await boot({ workspaceStore: new WorkspaceStore(storeFile) });
+    const a = await connect(url);
+    const ca = collect(a.ws);
+    a.ws.send(JSON.stringify({ type: "settings.set", permissionMode: "acceptEdits", model: "opus", effort: "max", fastMode: false }));
+    a.ws.send(JSON.stringify({ type: "settings.set", permissionMode: "auto", model: "fable", effort: "low", fastMode: true }));
+    a.ws.send(JSON.stringify({ type: "client.ready" }));
+    await ca.waitFor("chat.sync");
+    const state = ca.inbox.filter((m) => m.type === "settings.state").at(-1);
+    a.ws.close();
+    await server.close();
+    expect(state).toMatchObject({ permissionMode: "acceptEdits", model: "opus", effort: "max", fastMode: false });
+  });
+
+  it("旧客户端离线显式完整设置与自动 hello 间夹有草稿时仍生效", async () => {
+    const storeFile = path.join(dir, "workspace.json");
+    const execution = { permissionMode: "plan" as const, model: "sonnet", effort: "high" as const, fastMode: true };
+    new WorkspaceStore(storeFile).save({ folder: dir, aliasId: null, execution: { ...execution, fastRestore: { request: "sonnet" } } });
+    const { server, url } = await boot({ workspaceStore: new WorkspaceStore(storeFile) });
+    const a = await connect(url);
+    const ca = collect(a.ws);
+    a.ws.send(JSON.stringify({ type: "settings.set", permissionMode: "acceptEdits", model: "opus", effort: "max", fastMode: false }));
+    a.ws.send(JSON.stringify({ type: "chat.draft", text: "离线草稿" }));
+    a.ws.send(JSON.stringify({ type: "settings.set", permissionMode: "auto", model: "fable", effort: "low", fastMode: true }));
+    a.ws.send(JSON.stringify({ type: "client.ready" }));
+    await ca.waitFor("chat.sync");
+    const state = ca.inbox.filter((m) => m.type === "settings.state").at(-1);
+    const sync = ca.inbox.find((m) => m.type === "chat.sync");
+    a.ws.close();
+    await server.close();
+    expect(state).toMatchObject({ permissionMode: "acceptEdits", model: "opus", effort: "max", fastMode: false });
+    expect(sync).toMatchObject({ draft: "离线草稿" });
+  });
+
+  it("旧客户端离线显式完整设置与自动 hello 间夹有 fastOnly 时仍生效", async () => {
+    const storeFile = path.join(dir, "workspace.json");
+    const execution = { permissionMode: "plan" as const, model: "sonnet", effort: "high" as const, fastMode: true };
+    new WorkspaceStore(storeFile).save({ folder: dir, aliasId: null, execution: { ...execution, fastRestore: { request: "sonnet" } } });
+    const { server, url } = await boot({ workspaceStore: new WorkspaceStore(storeFile) });
+    const a = await connect(url);
+    const ca = collect(a.ws);
+    a.ws.send(JSON.stringify({ type: "settings.set", permissionMode: "acceptEdits", model: "opus", effort: "max", fastMode: true }));
+    a.ws.send(JSON.stringify({ type: "settings.set", permissionMode: "auto", fastMode: false, fastOnly: true }));
+    a.ws.send(JSON.stringify({ type: "settings.set", permissionMode: "auto", model: "fable", effort: "low", fastMode: true }));
+    a.ws.send(JSON.stringify({ type: "client.ready" }));
+    await ca.waitFor("chat.sync");
+    const state = ca.inbox.filter((m) => m.type === "settings.state").at(-1);
+    a.ws.close();
+    await server.close();
+    expect(state).toMatchObject({ permissionMode: "acceptEdits", model: "opus", effort: "max", fastMode: false });
+  });
+
+  it("旧客户端自动启动后排队的显式 fast 设置仍生效", async () => {
+    const storeFile = path.join(dir, "workspace.json");
+    const execution = { permissionMode: "plan" as const, model: "sonnet", effort: "high" as const, fastMode: true };
+    new WorkspaceStore(storeFile).save({ folder: dir, aliasId: null, execution: { ...execution, fastRestore: { request: "sonnet" } } });
+    const { server, url } = await boot({ workspaceStore: new WorkspaceStore(storeFile) });
+    const a = await connect(url);
+    const ca = collect(a.ws);
+    a.ws.send(JSON.stringify({ type: "settings.set", permissionMode: "auto", model: "fable", effort: "low", fastMode: false }));
+    a.ws.send(JSON.stringify({ type: "settings.set", permissionMode: "auto", fastMode: false, fastOnly: true }));
+    a.ws.send(JSON.stringify({ type: "client.ready" }));
+    await ca.waitFor("chat.sync");
+    const state = ca.inbox.filter((m) => m.type === "settings.state").at(-1);
+    a.ws.close();
+    await server.close();
+    expect(state).toMatchObject({ permissionMode: "plan", model: "sonnet", effort: "high", fastMode: false });
+  });
+
+  it("执行设置跨重启由桥接恢复，旧 hello 不回滚且提前写入不清绑定", async () => {
+    const storeFile = path.join(dir, "workspace.json");
+    new WorkspaceStore(storeFile).save({ folder: dir, aliasId: null });
+    const firstBoot = await boot({ workspaceStore: new WorkspaceStore(storeFile) });
+    const a = await connect(firstBoot.url);
+    const ca = collect(a.ws);
+    a.ws.send(JSON.stringify({ type: "settings.set", permissionMode: "plan", model: "sonnet", effort: "high", fastMode: true, hello: true }));
+    a.ws.send(JSON.stringify({ type: "client.ready" }));
+    await ca.waitFor("chat.sync");
+    const persisted = JSON.parse(fs.readFileSync(storeFile, "utf-8")) as { folder?: string; execution?: unknown };
+    a.ws.close();
+    await firstBoot.server.close();
+    const secondBoot = await boot({ workspaceStore: new WorkspaceStore(storeFile) });
+    const b = await connect(secondBoot.url);
+    const cb = collect(b.ws);
+    b.ws.send(JSON.stringify({ type: "settings.set", permissionMode: "auto", model: "fable", effort: "low", fastMode: false, hello: true }));
+    b.ws.send(JSON.stringify({ type: "client.ready" }));
+    await cb.waitFor("chat.sync");
+    const restored = cb.inbox.filter((m) => m.type === "settings.state").at(-1);
+    const created = sentClientMessages.filter((m) => m.cwd !== "SEND").at(-1)?.opts;
+    b.ws.close();
+    await secondBoot.server.close();
+    expect(persisted.folder).toBe(dir);
+    expect(persisted.execution).toMatchObject({ permissionMode: "plan", model: "sonnet", effort: "high", fastMode: true });
+    expect(restored).toMatchObject({ permissionMode: "plan", model: "sonnet", effort: "high", fastMode: true });
+    expect(created).toMatchObject({ permissionMode: "plan", model: "sonnet", effort: "high", fastMode: true });
+  });
+
+  it("fast-only 标记 fastPending 并延续到快照，CC fast 真值到达后清除", async () => {
+    const { server, url } = await boot();
+    const a = await connect(url);
+    const ca = collect(a.ws);
+    a.ws.send(JSON.stringify({ type: "folder.bind", path: dir }));
+    await ca.waitFor("folder.bound");
+    const before = ca.inbox.length;
+    a.ws.send(JSON.stringify({ type: "settings.set", permissionMode: "auto", fastMode: true, fastOnly: true }));
+    const pending = await ca.waitFor("settings.state", before);
+    const b = await connect(url);
+    const cb = collect(b.ws);
+    b.ws.send(JSON.stringify({ type: "client.ready" }));
+    const snapshot = await cb.waitFor("settings.state");
+    const captured = sentClientMessages.find((m) => m.cwd !== "SEND")!;
+    const events = captured.opts.events as { onRuntime(info: unknown): void };
+    const confirmedBefore = ca.inbox.length;
+    events.onRuntime({ model: "claude-opus-5-5", fast: { state: "on" }, fastFresh: true });
+    const confirmed = await ca.waitFor("settings.state", confirmedBefore);
+    a.ws.close(); b.ws.close();
+    await server.close();
+    expect(pending).toMatchObject({ fastMode: true, fastPending: true });
+    expect(snapshot).toMatchObject({ fastMode: true, fastPending: true });
+    expect(confirmed).toMatchObject({ runtime: { fast: { state: "on" } } });
+    expect(confirmed).not.toHaveProperty("fastPending");
+  });
+
+  it("fastPending 不被缓存 fast 或 stale onDone 清除，仅新真值确认", async () => {
+    const { server, url } = await boot();
+    const a = await connect(url);
+    const ca = collect(a.ws);
+    a.ws.send(JSON.stringify({ type: "folder.bind", path: dir }));
+    await ca.waitFor("folder.bound");
+    const before = ca.inbox.length;
+    a.ws.send(JSON.stringify({ type: "settings.set", permissionMode: "auto", fastMode: true, fastOnly: true }));
+    await ca.waitFor("settings.state", before);
+    const captured = sentClientMessages.find((m) => m.cwd !== "SEND")!;
+    const events = captured.opts.events as {
+      onRuntime(info: { model?: string; fast?: { state: "off" | "on" }; fastFresh?: boolean }): void;
+      onDone(sessionId: string, info: { model?: string; fast?: { state: "off" | "on" }; fastFresh?: boolean }): void;
+    };
+    const staleBefore = ca.inbox.length;
+    events.onRuntime({ model: "claude-opus-5-5", fast: { state: "off" }, fastFresh: false });
+    const stale = await ca.waitFor("settings.state", staleBefore);
+    const doneBefore = ca.inbox.length;
+    events.onDone("sid-stale", { model: "claude-opus-5-5", fast: { state: "off" }, fastFresh: false });
+    const staleDone = await ca.waitFor("chat.done", doneBefore);
+    const freshBefore = ca.inbox.length;
+    events.onRuntime({ fast: { state: "on" }, fastFresh: true });
+    const confirmed = await ca.waitFor("settings.state", freshBefore);
+    a.ws.close();
+    await server.close();
+    expect(stale).toMatchObject({ fastPending: true });
+    expect(stale).not.toHaveProperty("runtime.fast");
+    expect(staleDone).not.toHaveProperty("fast");
+    expect(confirmed).toMatchObject({ runtime: { fast: { state: "on" } } });
+    expect(confirmed).not.toHaveProperty("fastPending");
+  });
+
+  it("client.ready 恢复绑定不标记 reset，主动新建仍标记", async () => {
+    const storeFile = path.join(dir, "workspace.json");
+    new WorkspaceStore(storeFile).save({ folder: dir, aliasId: null });
+    const { server, url } = await boot({ workspaceStore: new WorkspaceStore(storeFile) });
+    const a = await connect(url);
+    const ca = collect(a.ws);
+    a.ws.send(JSON.stringify({ type: "client.ready" }));
+    const restored = await ca.waitFor("folder.bound");
+    const before = ca.inbox.length;
+    a.ws.send(JSON.stringify({ type: "session.new" }));
+    const active = await ca.waitFor("folder.bound", before);
+    a.ws.close();
+    await server.close();
+    expect(restored).not.toHaveProperty("reset");
+    expect(active).toMatchObject({ reset: true });
+  });
+
 });

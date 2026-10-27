@@ -16,23 +16,40 @@ body { margin: 0; font-family: "Segoe UI", system-ui, sans-serif; font-size: 13p
 .msg.streaming { opacity: 0.85; }
 .msg pre, .tool-card pre { background: #17181c; padding: 6px; border-radius: 4px; overflow-x: auto; }
 .tool-card { color: #9aa0a6; font-size: 12px; }
+/* 实际工具活动：透明无圆角的紧凑状态行，不使用回答正文气泡；长摘要省略，完整值在 title */
+.tool-activity { display: flex; flex-shrink: 0; align-items: baseline; gap: 4px; width: 100%; max-width: 100%; padding: 0 4px; border: 0; border-radius: 0; background: transparent; color: #9aa0a6; font-size: 11px; line-height: 1.5; white-space: nowrap; overflow: hidden; }
+.tool-activity .tool-icon, .tool-activity .tool-name { flex: 0 0 auto; }
+.tool-activity .tool-name { color: #c9cdd4; }
+.tool-activity .tool-summary { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tool-activity .tool-summary::before { content: "· "; color: #5f6368; }
 .permission-card { border: 1px solid #ff9800; border-radius: 8px; margin: 6px 10px; padding: 8px 10px; }
 .permission-card .row { display: flex; gap: 8px; margin-top: 6px; }
 .permission-card .allow { background: #2e7d32; color: #fff; border: none; border-radius: 4px; padding: 4px 14px; }
 .permission-card .deny { background: #c62828; color: #fff; border: none; border-radius: 4px; padding: 4px 14px; }
 .input-box { border-top: 1px solid #333; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; }
-.input-box .toggles { display: flex; flex-wrap: nowrap; gap: 6px 8px; align-items: center; font-size: 12px; color: #9aa0a6; }
+.input-box .toggles { display: flex; flex-wrap: nowrap; overflow: hidden; min-width: 0; gap: 6px 8px; align-items: center; font-size: 12px; color: #9aa0a6; }
 .input-box .toggles > label { flex-shrink: 0; }
-/* 三个下拉可压缩省略（选中值截断显示，完整值在下拉里选），保证输入框上方恒为一行 */
-.input-box .toggles > select { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* 执行选项固定一行；保留下拉可压缩省略，窄侧栏也不能生成第二层 */
+.input-box .toggles > select { flex: 1 1 6rem; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.input-box .toggles .fast-toggle.on { color: #81c995; }
+.input-box .fast-runtime { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.input-box .fast-runtime.on { color: #81c995; }
+.input-box .fast-runtime.cooldown { color: #fdd663; }
+.input-box .fast-runtime.pending { color: #9aa0a6; }
+.input-box .settings-error { color: #ff8a80; font-size: 11px; line-height: 1.4; overflow-wrap: anywhere; }
 .input-box select { background: #2a2b31; color: inherit; border: 1px solid #444; border-radius: 4px; }
 .input-box textarea { display: block; width: 100%; background: #2a2b31; color: inherit; border: 1px solid #444; border-radius: 6px; padding: 6px 8px; resize: vertical; }
 /* 强制看页面开关：发送行内（模型·effort 指示右侧）；点亮态 = 亮蓝底 + 文案带 ✓ 双通道反馈（深灰→深蓝的单色差在深色主题下分辨不出，教训见 TODO）；曾经悬浮在输入框右上角，会盖住输入文字 */
 .input-box .force-attach { font-size: 11px; line-height: 1.6; padding: 1px 8px; border-radius: 10px; border: 1px solid #444; background: #2a2b31; color: #9aa0a6; cursor: pointer; white-space: nowrap; flex-shrink: 0; }
 .input-box .force-attach.on { background: #3b82f6; border-color: #60a5fa; color: #fff; }
-.input-box .send-row { display: flex; align-items: center; gap: 6px; }
-/* 模型·effort 指示：可被压缩省略但保底 4.5em，永不被按钮挤没；完整文本在悬浮提示 */
-.input-box .send-row .model-effort { font-size: 11px; color: #9aa0a6; opacity: 0.85; flex: 0 1 auto; min-width: 4.5em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.input-box .send-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+/* 下方执行状态：模型·effort 按钮与 CC fast 真值同组，状态组内部永不换行 */
+.input-box .send-row .execution-status { position: relative; display: flex; align-items: center; gap: 4px; flex: 1 1 8rem; min-width: 4.5em; max-width: 100%; }
+.input-box .send-row .model-effort { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border: 0; padding: 0; background: none; color: #9aa0a6; opacity: 0.85; cursor: pointer; font-size: 11px; }
+.input-box .send-row .model-effort::after { content: " ▾"; }
+.input-box .send-row .effort-picker { position: absolute; left: 0; bottom: calc(100% + 4px); z-index: 20; display: flex; flex-direction: column; min-width: 10rem; padding: 4px; border: 1px solid #555; border-radius: 6px; background: #24252b; box-shadow: 0 6px 20px #0008; }
+.input-box .send-row .effort-picker button { padding: 5px 8px; text-align: left; background: transparent; color: #e4e6eb; }
+.input-box .send-row .effort-picker button[aria-selected="true"] { background: #2f4f7f; }
 .input-box .send-row button { background: #2f4f7f; color: #fff; border: none; border-radius: 4px; padding: 5px 18px; }
 .input-box .send-row button:disabled { opacity: 0.4; }
 .token-gate { padding: 20px; display: flex; flex-direction: column; gap: 10px; }

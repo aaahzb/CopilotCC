@@ -14,9 +14,66 @@
 - [x] Task 12: page-extract.ts + UI 组件 + App 装配
 - [ ] Task 13: 端到端手动验收 + README.md
 
+## 原生 fast 模式（2026-10-26，进行中）
+
+- [x] 协议：原生 fast 类型、settings.set/state/error、fields 显式变更掩码与同步测试（20 个协议测试通过）。
+- [x] 会话：settings.fastMode 启动、applyFlagSettings 运行时切换、init/result 真值与 fastFresh 逐帧新鲜度（32 个会话测试通过）。
+- [x] 工作区：fast-only 不打断当前轮次，多视图设置与状态镜像（40 个镜像测试通过，含 ABA、连续失败、fastOnly、权威执行设置、字段补丁、旧客户端启动序列与交错帧、fastPending 与主动/恢复重置回归）。
+- [x] 扩展：持久化、执行选项行 fast off/on、CC 实际状态和窄栏布局（完整扩展 76 个测试通过，含输入区渲染、设置写队列、settingsRef 权威内存合并、字段补丁与 fastOnly 回归）。
+- [x] CLI 2.1.301 模型一致性：真正 off→on 保存恢复基线并请求 Opus，off 恢复进入 fast 前的模型；重复 on 幂等，seeding/hello 不触发新提升，fast 期间手动或同值模型选择会更新基线。fast 引发的模型变化不重建 Query、不打断在途轮次。
+- [x] 自动档恢复与迁移：提升前保存 CC `applied.model` 的完整实际模型 ID，off 恢复该具体 ID；恢复基线仅由桥接持久化，旧版 fast-on 无基线记录一次性迁移。元数据不可用时回退提升前 init，仍无证据则保留当前模型并给出非致命警告。
+- [x] 状态机边界：新增 15 项服务器提升/恢复测试，覆盖 Sonnet 与自动档往返、跨重启、手动模型、同帧矩阵、失败完整回滚、延迟快照、旧 Query 和在途同值基线更新；多视图与 busy 不变量保留。
+- [x] 自动回归：桥接 194 项、扩展 76 项测试及两端类型检查、桥接离线自检通过；扩展 build/zip 完成，zip 68 条目与构建目录字节一致。协议复制件一致；本轮 Windows exe 构建、冒烟和隔离复验单独记录。
+- [x] 本轮 Windows 构建与隔离：标准 `npm run build:exe` 清理被 PID 3824 占用的 dist exe 时返回 EPERM/EBUSY；未停止用户进程，也未覆盖旧 dist exe。macOS 产物已由同一脚本重建；Windows 使用相同 Bun 参数输出到 `D:/ccc-fast-final-verify-20261026/candidate-win-1793030001835/ccc-bridge.exe`，SHA-256 为 `51e1a668637eec6aa9576728a1324eff59138d4df7ae1b47e18799a969cd5e01`。
+- [x] 隔离运行记录：`run-1793030092698-55c7707d` 的冒烟、WS、交错帧、执行设置与绑定持久化均通过，进程树已停止，stderr 仅有开发模式 allowedOrigins 警告；所有验证文件保留。
+- [ ] 手动验收：本轮新 exe 已通过隔离冒烟、WS、交错帧、执行设置和绑定落盘复验，未调用真实 API；Chrome 中 Sonnet→on→Opus/on、off→Sonnet/off、自动档恢复、生成中停止和多视图同步仍待用户实测。
+  - [ ] Sonnet/off → fast on：请求模型切到 Opus，实际 fast/model 以 CC 回报为准；fast off 后请求恢复 Sonnet。
+  - [ ] 自动档（含首轮前）→ on/off：off 恢复当次 CC 完整实际模型；fast 期间手动改模型或同值选择后，off 不回到更早模型。
+  - [ ] 生成中切换 fast 不打断当前轮次；停止按钮真正停止；侧边栏与弹窗的设置、草稿、流式和运行时状态同步。
+- [x] 本轮候选产物：Windows exe `51e1a668637eec6aa9576728a1324eff59138d4df7ae1b47e18799a969cd5e01`；根目录 Windows zip `7e42870e547db83c755dba85f3d2ba8d6481ba79b05f37444b72f81e1927e390`，唯一文件条目为 `ccc-bridge-win-x64/ccc-bridge.exe` 且与候选字节一致；扩展 zip `dd66f5862d80726d2d58fdb34f57310168845f8ca114286c1fc842756d5962ef`（68 条目一致）；macOS arm64 二进制 `8649714aef5137d217ee06f12fecefd8325ca401a8ec9a1a567cb02c6b3b1f88`。
+- [x] 上一候选产物（fast 模型一致性修正前）：Windows exe SHA-256 `7286c8922ce52a0bc11f47b3e5474e1b5b17306a4a2b0b39fca71585191f6f23`；Windows zip `a404e08a0f0529de936e7a044ee07297f2c1256fec0c49f00d312f0df72577dc`；扩展 zip `dd66f5862d80726d2d58fdb34f57310168845f8ca114286c1fc842756d5962ef`。
+- [x] 真实探针：本机 CLI 2.1.301 + 当前中转，Opus 启动 fast=true 回报 on；同一 Query 运行时 off → on → off，三轮实际状态依次为 off/on/off，首轮不被切换打断。Fable 启动 fast=true 时实际回报 off，产品按 CC 真值显示，不自行改写模型。
+- [x] Sonnet/fast 故障定位（修正第一次不完整结论）：直接 Agent SDK + CLI 2.1.301 的早期探针只证明“Sonnet + 单独 fast 标志”仍回报 off；用户随后在交互式 CLI 实测 `/fast on` 会同时切到 Opus，`/fast off` 会恢复之前模型，证明 CopilotCC 还缺模型提升与恢复层，不能把问题只归因于上游。真实组合探针已验证 on+Opus、off+恢复模型可在同一 Query 生效，首轮不被切换打断。
+  首个组合探针在第四轮有效帧采集完成后，清理代码因对 void 返回值调用 .catch 报 TypeError；启动对照已独立重跑并成功，非密钥结果均保存在获批隔离目录。
+- [x] 自动档恢复探针：`model:null`、`model:"default"` 与 `setModel()` 都只恢复到 CC 内建默认 Opus，不能恢复用户 settings 自动解析的 Fable；首轮前 `getSettings().applied.model` 可取得完整 `claude-fable-5-1`，保存后用 off+该具体 ID 可恢复 Fable/off。显式 Opus Query 的 applied 不能冒充旧自动档基线；未公开元数据只做局部能力检测和降级。
+
+## 历史工具活动与本地命令回放（2026-10-27，真实浏览器链路已验证）
+
+- [x] 首轮根因复现：旧版 readTranscript 不输出 assistant tool_use，并把 /model 的 caveat/command/stdout 当成用户正文。首轮修复后真实转录已能恢复工具，但用户实测历史与实时仍不可见，因此首轮 DOM/WS 通过不能视为产品验收完成。
+- [x] App 集成 RED：真实 BridgeClient + App + MessageList 下，实时 chat.tool 通过；历史 toolName 恢复失败，证明此前组件测试漏掉了重载链路。
+- [x] 桥接 RED：transcript 目标 13 项测试实际执行，3 项分别因工具块缺失、顺序不符和本地命令被当作用户正文而失败。
+- [x] 桥接 GREEN：历史保留工具活动和顺序，/model 命令与 stdout 合并为一条活动，普通用户正文不丢失；桥接目标 45 项、扩展消息链 6 项通过。
+- [x] 完整回归与真实转录复读：桥接 15 个文件共 196 项、扩展 14 个文件共 88 项测试通过，两端类型检查及桥接离线 selftest 通过，`git diff --check` 无错误。生产解析器对真实会话返回 60 条消息（user 17、assistant 15、tool 28），包含 Write/Edit/Bash 和 7 条 /model 活动，simpleTable.md 的 Write 已恢复，用户正文中的原始本地命令标签为 0。
+- [x] 扩展分发：build/zip 成功，zip 完整性通过，68 个文件与 chrome-mv3 文件集合一致且逐字节相同；SHA-256 `7f4201a9db235f604517182d3747582eacc8c40d6b793bbae6962b41adc07747`。
+- [x] 隔离 exe 验证：新 exe 在 `D:\ccc-fast-final-verify-20261026\tool-history-20261027\run-1793083480471` 通过架构冒烟和真实 WS 历史回放；9 条消息覆盖 Write/Edit/Bash、/model、正文顺序和普通用户相似标签保护，chat.send 帧数为 0。stderr 仅有隔离配置刻意使用空 allowedOrigins 的开发模式警告；验证进程已停止，未停止或替换用户当时运行的桥接；二次诊断时用户进程为 PID 16852。
+- [x] 桥接分发打包：根目录 zip 通过完整性检查，唯一条目为 `ccc-bridge-win-x64/ccc-bridge.exe`，包内 exe 与新 dist exe 逐字节一致；zip SHA-256 `eb74d4518101e7edd23a5edb8c7541b010f167da6fce76e6572a9ac96863d082`，exe SHA-256 `0b62b8f12655efa3f443512734f502d7ceff91eca01a30f30a63331f7e427772`。未替换正在使用的 exe。
+- [x] 二次根因与 RED/GREEN：真实 Chrome 复现 65 条消息中的 31 条工具均已进入 DOM，但高度全部为 0；纵向 flex 消息列表中工具行默认允许收缩，overflow:hidden 又使自动最小高度可为 0，长会话因此把历史和实时工具行一起压没。新增 CSS 回归测试先有效 RED，再在 .tool-activity 加 flex-shrink:0 后转绿；扩展 15 个文件共 89 项测试、类型检查和构建通过。
+- [x] 二次桥接实证：真实 CLI 2.1.301 在本机假上游下同时输出 stream_event 与完整 assistant/tool_use；生产 SDK 会话实际发出 Write onTool。隔离 dist exe 经真实 CLI 执行只读 Read 后广播 chat.tool，并收到 chat.delta/chat.done，无 chat.error；无需修改桥接生产代码，也未调用真实 API。
+- [x] 真实 Chrome 自动验收：修复后同一真实会话 31/31 工具行高度均为 16.5px，包含 kimi-code-console.md 的 Write、/model、Read/Edit/Bash 和分类 emoji，caveat 不可见且运行时错误为空。隔离 exe + 真实 CLI + 本机假上游 + 真实 Chrome 的完整实时 Read 同样收到 chat.tool/chat.done，活动行高度 16.5px。
+- [ ] 用户现有 Chrome 人工复核：加载新 zip 或新构建目录并重载扩展后，在自己的窄侧栏和独立弹窗确认视觉效果；未擅改 Desktop 当前加载目录。
+
+## 工具活动行与分类图标（2026-10-27）
+
+- [x] 设计确认：工具调用使用区别于回答正文的紧凑活动行，按工具显示跨平台 emoji；不改桥接、协议或工具执行。
+- [x] RED：新增工具活动结构、图标映射、CSS 单行和既有附带状态兼容测试；实际 4 项中 3 项按预期失败，既有附带状态兼容项通过。
+- [x] GREEN：保留 chat.tool 的 name/summary，扩展以可选 toolName 渲染结构化活动行；常用工具、MCP 和未知工具回退均有真实 DOM 测试。目标 4 项、完整扩展 13 个文件共 86 项测试及 TypeScript 类型检查通过。
+- [x] 构建分发：扩展 build/zip 成功；zip 通过完整性检查，68 个文件与 chrome-mv3 构建目录的文件集合一致且逐字节相同。SHA-256 为 `00575bbb06d89a3a08122868cf36e96eedce9a1fbce915de96ff29bb3b33a3e7`；未重建桥接 exe。
+- [ ] Chrome 手动验收：窄侧栏和独立弹窗中的工具活动行、分类 emoji、长摘要省略及与正文气泡的视觉区分仍待用户实测；附带状态行兼容已由 DOM 测试覆盖。
+
+## 输入区单行与 effort 入口（2026-10-27）
+
+- [x] 单行排版：输入框上方执行选项固定一行，只保留附带网页、fast off/on、权限模式和模型下拉；移除常驻 effort 下拉与 CC fast 真值，窄栏通过下拉收缩和省略避免生成第二层。
+- [x] 下方交互：模型·effort 文本改为按钮，点击向上展开 effort 选项；选择后仍调用原有 onEffortChange，点击外部或 Escape 关闭且不触发停止。CC fast on/off、pending 与 cooldown 真值紧跟模型状态右侧。
+- [x] 边界保持：未修改 App、桥接、WS 协议、fast 状态机、busy、草稿、上传或停止逻辑；effectiveEffort=null 仍表示 CC 明确未下发，不回退请求值。
+- [x] TDD 与回归：新增交互测试先取得 6 项有效 RED，再完成实现；输入区 9 项、扩展 12 个文件共 82 项测试和 TypeScript 类型检查通过。旧 CSS 的 wrap 变异产生预期单行断言 RED，随后已逐字节恢复。jsdom 中改用 node:fs 读取 CSS，并补 Node 类型，避开 HTTP import.meta.url 与空 CSS 查询导入问题。
+- [x] 构建分发：扩展 build/zip 成功；zip 通过完整性检查，68 个文件条目与 chrome-mv3 构建目录的文件集合一致且逐字节相同。新 SHA-256 为 `073d5608dd61bca621f0d383e841ff37c4c885c9be12b2f2c170c70f604ceb28`；未重建桥接 exe。
+- [ ] Chrome 手动验收：窄侧栏与独立弹窗中的上方单行、下方 effort 弹层、点击外部/Escape 关闭及 fast 真值位置仍待用户实测，自动测试不代替视觉验收。
+
 ## 修复记录（2026-10-26）
 
-- **macOS DMG 打包误报空间不足（Release #28）**：编译、架构冒烟和签名均通过，`hdiutil -srcfolder` 复制主程序时报 `No space left on device`，发布作业因此跳过。错误形态与稀疏文件导致临时镜像容量误判一致；主程序入包改为 `cat` 显式重写全部字节并用 `cmp` 校验，打包前新增 `df/du/ls -ls` 诊断，由下一标签的真实 macOS CI 验证。
+- **托盘 exe 工作区未落盘**：项目树外隔离探针发现托盘入口漏传 `workspaceStore`，内存设置与绑定正常但 `workspace.json` 从不更新，普通 CLI 入口原本装配正确。`tray.ts` 现已注入同一配置目录下的 `WorkspaceStore`；新增两个生产入口装配回归，先确认托盘用例 RED、修复后双入口转绿。重新构建的 exe 已通过隔离复验：`settings.state` 后执行设置立即落盘，绑定后文件夹与执行设置均保留，进程树已停止，首次失败证据与修复后运行目录均保留。
+
+- **macOS DMG 打包误报空间不足（Release #28）**：编译、架构冒烟和签名均通过，`hdiutil -srcfolder` 复制主程序时报 `No space left on device`，发布作业因此跳过。错误形态与稀疏文件导致临时镜像容量误判一致；主程序入包改为 `cat` 显式重写全部字节并用 `cmp` 校验，打包前新增 `df/du/ls -ls` 诊断；`v2026.10.26.2` 的真实 macOS CI 已验证通过，三个发布资产完整。
 
 - **偶发停止失效 + 旧任务继续写文件**：根因是生成中切换模型触发会话重建，旧 `close()` 只结束输入流，没有取消 CLI 轮次，且工作区 `busy` 未清；新会话空闲，后续 `chat.abort` 又被 `turnActive=false` 空操作。现在设置重建会先广播 `chat.aborted` 并清在途状态，旧会话 `close()` 对进行中轮次调用 SDK `interrupt()` 并关闭 Query 流；文件夹/会话切换与桥接退出也复用这条关闭链。
 - **界面选 Sonnet、实际回落 Fable**：另一个 CMD 不会共享模型。桥接内存中的模型设置会在重启后丢失，而扩展旧逻辑只在手动修改时推送；现改为每次 `auth.ok` 后按序发送完整 `settings.set` → `client.ready`，确保恢复会话前模型已生效。

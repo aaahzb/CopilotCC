@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { EffortLevelSetting, HistoryMessage, SessionInfo } from "./protocol";
-import { GUARD_PREFIX } from "./claude-session";
+import { GUARD_PREFIX, summarizeTool } from "./claude-session";
 
 /**
  * Claude 项目转录根目录。测试可用 CCC_FAKE_HOME 环境变量替换 home。
@@ -51,10 +51,98 @@ function parseUserText(raw: string): { text: string; sentText?: string; attachKi
   return { text, sentText: sent, ...(attachKind ? { attachKind } : {}) };
 }
 
+interface TranscriptBlock {
+  type?: string;
+  text?: string;
+  name?: string;
+  input?: Record<string, unknown>;
+}
+
+interface TranscriptEntry {
+  type: "user" | "assistant";
+  uuid?: string;
+  parentUuid?: string;
+  isMeta?: boolean;
+  message?: { content?: string | TranscriptBlock[] };
+}
+
 /**
- * 读取某 session 的转录，抽取 user/assistant 纯文本消息（跳过工具块），取最后 max 条。
- * 桥接来源的用户消息拆成 text（问题）+ sentText（完整发送内容）+ attachKind（附带标记），
- * 保证重载回放的显示与溯源行为和当前会话气泡一致。
+ * 提取一条转录记录的纯文本；数组内容只拼接文本块，工具块由调用方单独处理。
+ * @param entry 已限定为 user/assistant 的转录记录
+ * @returns 字符串内容或文本块拼接结果
+ */
+function transcriptText(entry: TranscriptEntry): string {
+  const content = entry.message?.content;
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter((b) => b?.type === "text")
+    .map((b) => b.text ?? "")
+    .join("\n");
+}
+
+/**
+ * 读取成对 XML 标签之间的文本。只用于已验证父链的本地命令，不做全局标签过滤。
+ * @param text 原始消息文本
+ * @param tag 不含尖括号的标签名
+ * @returns 去除首尾空白的内容；标签不完整时返回 null
+ */
+function localTagText(text: string, tag: string): string | null {
+  const open = `<${tag}>`;
+  const close = `</${tag}>`;
+  const start = text.indexOf(open);
+  if (start < 0) return null;
+  const end = text.indexOf(close, start + open.length);
+  return end < 0 ? null : text.slice(start + open.length, end).trim();
+}
+
+/**
+ * 找出具有 caveat → command → stdout 真实父子关系的本地命令。
+ * @param entries 按转录顺序排列的 user/assistant 记录
+ * @returns command uuid 对应的活动消息，以及应被合并隐藏的原始记录 uuid
+ */
+function findLocalCommands(entries: TranscriptEntry[]): {
+  activities: Map<string, HistoryMessage>;
+  consumed: Set<string>;
+} {
+  const byId = new Map<string, TranscriptEntry>();
+  const stdoutByParent = new Map<string, { id: string; text: string }>();
+  for (const e of entries) {
+    if (typeof e.uuid === "string") byId.set(e.uuid, e);
+    if (e.type !== "user" || typeof e.uuid !== "string" || typeof e.parentUuid !== "string") continue;
+    const stdout = localTagText(transcriptText(e), "local-command-stdout");
+    if (stdout !== null && !stdoutByParent.has(e.parentUuid)) {
+      stdoutByParent.set(e.parentUuid, { id: e.uuid, text: stdout });
+    }
+  }
+
+  const activities = new Map<string, HistoryMessage>();
+  const consumed = new Set<string>();
+  for (const command of entries) {
+    if (command.type !== "user" || typeof command.uuid !== "string" || typeof command.parentUuid !== "string") continue;
+    const commandText = transcriptText(command);
+    const name = localTagText(commandText, "command-name");
+    if (!name) continue;
+    const caveat = byId.get(command.parentUuid);
+    const stdout = stdoutByParent.get(command.uuid);
+    // 三重校验防止用户手动输入相似标签时被误吞：元数据 caveat、直接父链、直接 stdout 子记录缺一不可。
+    if (caveat?.type !== "user" || caveat.isMeta !== true || caveat.uuid !== command.parentUuid) continue;
+    if (localTagText(transcriptText(caveat), "local-command-caveat") === null || !stdout) continue;
+    const args = localTagText(commandText, "command-args") ?? "";
+    activities.set(command.uuid, {
+      role: "tool",
+      toolName: name,
+      text: [args, stdout.text].filter(Boolean).join(" → "),
+    });
+    consumed.add(command.parentUuid).add(command.uuid).add(stdout.id);
+  }
+  return { activities, consumed };
+}
+
+/**
+ * 读取某 session 的转录，按原顺序抽取用户正文、回答正文和工具活动，取最后 max 条。
+ * 桥接来源的用户消息拆成 text（问题）+ sentText（完整发送内容）+ attachKind（附带标记）。
+ * 本地命令只在真实父链完整时合并为活动，普通用户输入的相似标签仍按正文保留。
  * @param cwd 会话工作目录
  * @param sessionId 会话 ID
  * @param max 最多返回条数，默认 100
@@ -63,38 +151,62 @@ function parseUserText(raw: string): { text: string; sentText?: string; attachKi
 export function readTranscript(cwd: string, sessionId: string, max = 100): HistoryMessage[] {
   const file = path.join(projectsDir(), slugifyPath(path.resolve(cwd)), `${sessionId}.jsonl`);
   if (!fs.existsSync(file)) return [];
-  const out: HistoryMessage[] = [];
+  const entries: TranscriptEntry[] = [];
   for (const line of fs.readFileSync(file, "utf-8").split("\n")) {
     if (!line.trim()) continue;
     try {
-      const e = JSON.parse(line);
-      if (e.type !== "user" && e.type !== "assistant") continue;
-      const content = e.message?.content;
-      let text = "";
-      if (typeof content === "string") {
-        text = content;
-      } else if (Array.isArray(content)) {
-        text = content
-          .filter((b: { type?: string }) => b?.type === "text")
-          .map((b: { text?: string }) => b.text ?? "")
-          .join("\n");
-      }
-      if (e.type === "user") {
-        const p = parseUserText(text); // 拆包装：显示与溯源口径同当前会话
-        if (p.text) {
-          out.push({
-            role: "user",
-            text: p.text.slice(0, 2000),
-            ...(p.sentText ? { sentText: p.sentText } : {}),
-            ...(p.attachKind ? { attachKind: p.attachKind } : {}),
-          });
-        }
-      } else if (text) {
-        out.push({ role: e.type, text: text.slice(0, 2000) });
-      }
+      const e = JSON.parse(line) as TranscriptEntry;
+      if (e.type === "user" || e.type === "assistant") entries.push(e);
     } catch {
       // 跳过坏行
     }
+  }
+
+  const { activities, consumed } = findLocalCommands(entries);
+  const out: HistoryMessage[] = [];
+  for (const e of entries) {
+    if (typeof e.uuid === "string") {
+      const activity = activities.get(e.uuid);
+      if (activity) {
+        out.push(activity);
+        continue;
+      }
+      if (consumed.has(e.uuid)) continue;
+    }
+    if (e.type === "user") {
+      const p = parseUserText(transcriptText(e)); // 拆包装：显示与溯源口径同当前会话
+      if (p.text) {
+        out.push({
+          role: "user",
+          text: p.text.slice(0, 2000),
+          ...(p.sentText ? { sentText: p.sentText } : {}),
+          ...(p.attachKind ? { attachKind: p.attachKind } : {}),
+        });
+      }
+      continue;
+    }
+
+    const content = e.message?.content;
+    if (typeof content === "string") {
+      if (content) out.push({ role: "assistant", text: content.slice(0, 2000) });
+      continue;
+    }
+    if (!Array.isArray(content)) continue;
+    let textParts: string[] = [];
+    const flushText = (): void => {
+      const text = textParts.join("\n");
+      if (text) out.push({ role: "assistant", text: text.slice(0, 2000) });
+      textParts = [];
+    };
+    for (const b of content) {
+      if (b?.type === "text") {
+        textParts.push(b.text ?? "");
+      } else if (b?.type === "tool_use") {
+        flushText(); // 工具与正文严格按 content 原始顺序回放
+        out.push({ role: "tool", toolName: b.name ?? "tool", text: summarizeTool(b) });
+      }
+    }
+    flushText();
   }
   return out.slice(-max);
 }

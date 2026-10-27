@@ -1,12 +1,15 @@
 import { describe, it, expect, vi } from "vitest";
-import { createClaudeSession, parseEnvDump, parseShellProbeOutput, wellKnownClaudePaths, type SessionEvents } from "../src/claude-session";
+import { createClaudeSession, parseEnvDump, parseShellProbeOutput, wellKnownClaudePaths, type SessionEvents, type SessionRuntimeInfo } from "../src/claude-session";
 import * as path from "node:path";
 
 /** 收集事件的 events 桩 */
-function stubEvents(): SessionEvents & { log: Array<[string, ...unknown[]]> } {
+function stubEvents(): SessionEvents & { log: Array<[string, ...unknown[]]>; runtime: SessionRuntimeInfo[] } {
   const log: Array<[string, ...unknown[]]> = [];
+  const runtime: SessionRuntimeInfo[] = [];
   return {
     log,
+    runtime,
+    onRuntime: (info) => runtime.push(info),
     onDelta: (t) => log.push(["delta", t]),
     onTool: (n, s) => log.push(["tool", `${n}:${s}`]),
     onDone: (s, info) => log.push(["done", s, info]),
@@ -18,13 +21,21 @@ function stubEvents(): SessionEvents & { log: Array<[string, ...unknown[]]> } {
 }
 
 /** 假 SDK query：记录入参，按脚本产出消息 */
-function fakeQuery(script: unknown[]) {
+function fakeQuery(
+  script: unknown[],
+  applyFlagSettings?: (settings: { fastMode: boolean; model?: string }) => Promise<void>,
+  getSettings?: () => Promise<unknown>,
+) {
   const calls: Array<{ prompt: unknown; options: Record<string, unknown> }> = [];
   const fn = (args: { prompt: unknown; options: Record<string, unknown> }) => {
     calls.push(args);
-    return (async function* () {
+    const gen = (async function* () {
       for (const m of script) yield m;
     })();
+    return Object.assign(gen, {
+      ...(applyFlagSettings ? { applyFlagSettings } : {}),
+      ...(getSettings ? { getSettings } : {}),
+    });
   };
   return { fn, calls };
 }
@@ -148,6 +159,196 @@ describe("createClaudeSession", () => {
     await new Promise((r) => setTimeout(r, 50));
     expect(ev.log).toContainEqual(["done", "sid-1", { model: undefined, effort: undefined, compacted: true }]);
     await s.close();
+  });
+
+  describe("原生 fast 设置与真值", () => {
+    it("启动时 true/false 都显式进入 SDK settings，不发明顶层参数", async () => {
+      for (const enabled of [true, false]) {
+        const { fn, calls } = fakeQuery([INIT, DONE]);
+        const ev = stubEvents();
+        const s = createClaudeSession("D:\notes", { permissionMode: "auto", fastMode: enabled, events: ev, queryFn: fn });
+        await new Promise((r) => setTimeout(r, 20));
+        expect(calls[0]!.options.settings).toEqual({ fastMode: enabled });
+        expect(calls[0]!.options.fastMode).toBeUndefined();
+        await s.close();
+      }
+    });
+
+    it("setFastMode 只调用原生 applyFlagSettings，并保持快速连切顺序", async () => {
+      let releaseFirst!: () => void;
+      const apply = vi.fn()
+        .mockImplementationOnce(() => new Promise<void>((resolve) => { releaseFirst = resolve; }))
+        .mockResolvedValueOnce(undefined);
+      const { fn } = fakeQuery([], apply);
+      const ev = stubEvents();
+      const s = createClaudeSession("D:\notes", { permissionMode: "auto", events: ev, queryFn: fn });
+      const first = s.setFastMode(true);
+      const second = s.setFastMode(false);
+      await new Promise((r) => setTimeout(r, 20));
+      expect(apply).toHaveBeenCalledTimes(1);
+      expect(apply).toHaveBeenLastCalledWith({ fastMode: true });
+      releaseFirst();
+      await first;
+      await second;
+      expect(apply.mock.calls).toEqual([[{ fastMode: true }], [{ fastMode: false }]]);
+      await s.close();
+    });
+
+    it("原生设置拒绝会传播，且后续切换仍可执行", async () => {
+      const apply = vi.fn().mockRejectedValueOnce(new Error("native denied")).mockResolvedValueOnce(undefined);
+      const { fn } = fakeQuery([], apply);
+      const ev = stubEvents();
+      const s = createClaudeSession("D:\notes", { permissionMode: "auto", events: ev, queryFn: fn });
+      await expect(s.setFastMode(true)).rejects.toThrow("native denied");
+      await s.setFastMode(false);
+      expect(apply).toHaveBeenCalledTimes(2);
+      await s.close();
+    });
+
+    it("单次组合控制携带 Opus 或恢复模型，undefined 省略 model 键", async () => {
+      const apply = vi.fn(() => Promise.resolve());
+      const { fn } = fakeQuery([], apply);
+      const ev = stubEvents();
+      const s = createClaudeSession("D:/notes", { permissionMode: "auto", events: ev, queryFn: fn });
+      await s.setFastMode(true, "opus");
+      await s.setFastMode(false, "claude-sonnet-5-5");
+      await s.setFastMode(false, undefined);
+      expect(apply.mock.calls).toEqual([
+        [{ fastMode: true, model: "opus" }],
+        [{ fastMode: false, model: "claude-sonnet-5-5" }],
+        [{ fastMode: false }],
+      ]);
+      await s.close();
+    });
+
+    it("自动档从 CC applied.model 捕获恢复目标，快速 on/off 仍严格串行", async () => {
+      let releaseSettings!: () => void;
+      const getSettings = vi.fn(() => new Promise((resolve) => {
+        releaseSettings = () => resolve({
+          effective: { model: "fable" },
+          applied: { model: "claude-fable-5-1" },
+        });
+      }));
+      const apply = vi.fn(() => Promise.resolve());
+      const { fn } = fakeQuery([], apply, getSettings);
+      const ev = stubEvents();
+      const s = createClaudeSession("D:/notes", { permissionMode: "auto", events: ev, queryFn: fn });
+      const on = s.setFastMode(true, "opus");
+      const off = s.setFastMode(false, null);
+      await new Promise((r) => setTimeout(r, 20));
+      expect(apply).not.toHaveBeenCalled(); // 后续 off 不得越过首个 on 的异步模型捕获
+      releaseSettings();
+      await on;
+      await off;
+      expect(getSettings).toHaveBeenCalledTimes(1);
+      expect(apply.mock.calls).toEqual([
+        [{ fastMode: true, model: "opus" }],
+        [{ fastMode: false, model: "claude-fable-5-1" }],
+      ]);
+      await expect(s.fastAutoModel()).resolves.toBe("claude-fable-5-1");
+      await s.close();
+    });
+
+    it("启动即 fast-on 的自动档在首轮前缓存 applied.model，off 不读取提升后的 Opus", async () => {
+      const getSettings = vi.fn()
+        .mockResolvedValueOnce({ applied: { model: "claude-fable-5-1" } })
+        .mockResolvedValueOnce({ applied: { model: "claude-opus-5-5" } });
+      const apply = vi.fn(() => Promise.resolve());
+      const { fn } = fakeQuery([], apply, getSettings);
+      const ev = stubEvents();
+      const s = createClaudeSession("D:/notes", { permissionMode: "auto", fastMode: true, events: ev, queryFn: fn });
+      await new Promise((r) => setTimeout(r, 20));
+      expect(getSettings).toHaveBeenCalledTimes(1);
+      await s.setFastMode(false, null);
+      expect(apply).toHaveBeenCalledWith({ fastMode: false, model: "claude-fable-5-1" });
+      expect(getSettings).toHaveBeenCalledTimes(1);
+      await s.close();
+    });
+
+    it("CC 元数据不可用时回退到开启前 init 的实际模型", async () => {
+      const getSettings = vi.fn(() => Promise.reject(new Error("old CLI")));
+      const apply = vi.fn(() => Promise.resolve());
+      const init = { ...INIT, model: "claude-fable-5-1" };
+      const { fn } = fakeQuery([init], apply, getSettings);
+      const ev = stubEvents();
+      const s = createClaudeSession("D:/notes", { permissionMode: "auto", events: ev, queryFn: fn });
+      await new Promise((r) => setTimeout(r, 20));
+      await s.setFastMode(true, "opus");
+      await s.setFastMode(false, null);
+      expect(apply.mock.calls).toEqual([
+        [{ fastMode: true, model: "opus" }],
+        [{ fastMode: false, model: "claude-fable-5-1" }],
+      ]);
+      await s.close();
+    });
+
+    it("旧 CLI 无元数据且首轮前无 init 时仍关 fast，但不伪造恢复模型", async () => {
+      const apply = vi.fn(() => Promise.resolve());
+      const { fn } = fakeQuery([], apply); // 没有 getSettings 方法
+      const ev = stubEvents();
+      const s = createClaudeSession("D:/notes", { permissionMode: "auto", events: ev, queryFn: fn });
+      await s.setFastMode(true, "opus");
+      await s.setFastMode(false, null);
+      expect(apply.mock.calls).toEqual([
+        [{ fastMode: true, model: "opus" }],
+        [{ fastMode: false }],
+      ]);
+      await expect(s.fastAutoModel()).resolves.toBeUndefined();
+      await s.close();
+    });
+
+    it("result 覆盖 init 的 fast 状态，新状态无原因时清除旧原因", async () => {
+      const init = { ...INIT, model: "claude-opus-5-5", fast_mode_state: "off", fast_mode_disabled_reason: "model_not_allowed" };
+      const done = { ...DONE, fast_mode_state: "on" };
+      const { fn } = fakeQuery([init, done]);
+      const ev = stubEvents();
+      const s = createClaudeSession("D:\notes", { permissionMode: "auto", events: ev, queryFn: fn });
+      await new Promise((r) => setTimeout(r, 30));
+      expect(ev.runtime[0]).toMatchObject({ model: "claude-opus-5-5", fast: { state: "off", disabledReason: "model_not_allowed" } });
+      expect(s.runtimeInfo().fast).toEqual({ state: "on" });
+      expect(ev.log).toContainEqual(["done", "sid-1", { model: "claude-opus-5-5", effort: undefined, fast: { state: "on" }, fastFresh: true }]);
+      await s.close();
+    });
+
+    it("后续帧缺少 fast 字段保留最近真值，cooldown 原样上报", async () => {
+      const init = { ...INIT, fast_mode_state: "cooldown", fast_mode_disabled_reason: "network_error" };
+      const { fn } = fakeQuery([init, DONE]);
+      const ev = stubEvents();
+      const s = createClaudeSession("D:\notes", { permissionMode: "auto", events: ev, queryFn: fn });
+      await new Promise((r) => setTimeout(r, 30));
+      expect(s.runtimeInfo().fast).toEqual({ state: "cooldown", disabledReason: "network_error" });
+      await s.close();
+    });
+    it("fast 缓存回放带非新鲜标记，onDone 同样保留该标记", async () => {
+      const init = { ...INIT, model: "claude-opus-5-5", fast_mode_state: "off" };
+      const { fn } = fakeQuery([init, DONE]);
+      const ev = stubEvents();
+      const s = createClaudeSession("D:/notes", { permissionMode: "auto", events: ev, queryFn: fn });
+      await new Promise((r) => setTimeout(r, 30));
+      expect(ev.runtime).toHaveLength(2);
+      expect(ev.runtime[0]).toMatchObject({ fast: { state: "off" }, fastFresh: true });
+      expect(ev.runtime[1]).toMatchObject({ fast: { state: "off" }, fastFresh: false });
+      const done = ev.log.find((entry) => entry[0] === "done");
+      expect(done?.[2]).toMatchObject({ fast: { state: "off" }, fastFresh: false });
+      expect(s.runtimeInfo().fast).toEqual({ state: "off" });
+      expect(s.runtimeInfo().fastFresh).toBeUndefined();
+      await s.close();
+    });
+
+    it("同值 fast 新回报仍标为新鲜，不能靠值变化推断", async () => {
+      const init = { ...INIT, fast_mode_state: "off" };
+      const done = { ...DONE, fast_mode_state: "off" };
+      const { fn } = fakeQuery([init, done]);
+      const ev = stubEvents();
+      const s = createClaudeSession("D:/notes", { permissionMode: "auto", events: ev, queryFn: fn });
+      await new Promise((r) => setTimeout(r, 30));
+      expect(ev.runtime[0]).toMatchObject({ fastFresh: true });
+      expect(ev.runtime[1]).toMatchObject({ fastFresh: true });
+      const doneEvent = ev.log.find((entry) => entry[0] === "done");
+      expect(doneEvent?.[2]).toMatchObject({ fastFresh: true });
+      await s.close();
+    });
+
   });
 
   describe("abort 手动中止", () => {

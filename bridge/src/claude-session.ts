@@ -3,9 +3,9 @@ import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { isEffortLevel } from "./protocol";
+import { isEffortLevel, isFastModeDisabledReason, isFastModeState } from "./protocol";
 import { readTranscriptEffort } from "./transcript";
-import type { PermissionModeSetting, EffortLevelSetting } from "./protocol";
+import type { PermissionModeSetting, EffortLevelSetting, FastModeRuntime } from "./protocol";
 
 /** 会话运行时信息（SDK system/init 每轮开头重发，取最新一帧为准） */
 export interface SessionRuntimeInfo {
@@ -13,6 +13,10 @@ export interface SessionRuntimeInfo {
   model?: string;
   /** 实际生效的 effort（init 上报值或转录最近一次请求的真值，null=该会话不下发 effort 参数）；均无证据时为 undefined */
   effort?: EffortLevelSetting | null;
+  /** CC 最近回报的 fast 真值；缺省表示老 CLI 或尚无回报，不等于 off */
+  fast?: FastModeRuntime;
+  /** 本次事件是否显式收到合法 fast_mode_state；false=缓存回放，不得确认 fastPending */
+  fastFresh?: boolean;
   /** 最近一轮是否发生过 compact（仅 onDone 携带时有意义：扩展据此在下一轮强制附带页面） */
   compacted?: boolean;
 }
@@ -22,6 +26,8 @@ export interface SessionEvents {
   onDelta(text: string): void;
   onTool(name: string, summary: string): void;
   onDone(sessionId: string, info: SessionRuntimeInfo): void;
+  /** init/result 确认新的实际执行值时立即上报，不等整轮结束 */
+  onRuntime(info: SessionRuntimeInfo): void;
   onError(message: string): void;
   /** 本轮被用户手动中止：abort() 立即触发（不等 CLI 收尾帧），server 据此下发 chat.aborted 释放客户端 */
   onAborted(): void;
@@ -34,7 +40,14 @@ export interface ClaudeSessionLike {
   send(text: string): void;
   abort(): void;
   respondPermission(requestId: string, allow: boolean): void;
-  /** 最近一次 init 上报的运行时信息（模型/effort 实际生效值） */
+  /**
+   * 切换原生 fast 并可在同一次控制中请求模型；不取消当前轮次。
+   * model=undefined 不改模型，null 表示恢复自动档缓存的具体模型，字符串原样下发。
+   */
+  setFastMode(enabled: boolean, model?: string | null): Promise<void>;
+  /** 返回自动档在提升前由 CC applied.model 或 init 确认的具体模型；无证据时为 undefined */
+  fastAutoModel(): Promise<string | undefined>;
+  /** 最近一次 init/result 上报的运行时信息（模型/effort/fast 实际生效值） */
   runtimeInfo(): SessionRuntimeInfo;
   close(): Promise<void>;
 }
@@ -47,6 +60,8 @@ export interface SessionOptions {
   model?: string;
   /** 推理强度；缺省用 CLI 默认 */
   effort?: EffortLevelSetting;
+  /** 原生 fast 会话开关；缺省显式传 false，避免继承 CLI 全局 fast-on */
+  fastMode?: boolean;
   events: SessionEvents;
   queryFn?: (args: { prompt: AsyncIterable<unknown>; options: Record<string, unknown> }) => AsyncIterable<unknown>;
 }
@@ -195,6 +210,17 @@ interface PendingPermission {
   resolve: (allow: boolean) => void;
 }
 
+/** 工具调用摘要：实时与历史共用，优先 file_path/command，其余截断 JSON。
+ * @param block SDK tool_use 块或其历史子集
+ * @returns 用于活动行的简短摘要
+ */
+export function summarizeTool(block: { name?: string; input?: Record<string, unknown> }): string {
+  const input = block.input ?? {};
+  if (typeof input.file_path === "string") return input.file_path;
+  if (typeof input.command === "string") return input.command.slice(0, 120);
+  return JSON.stringify(input).slice(0, 120);
+}
+
 /**
  * 创建一条 Claude 会话（Agent SDK streaming-input 常驻模式）。
  * 权限模式映射：approve-each → SDK "default" + canUseTool 转发侧栏；其余直接透传 permissionMode。
@@ -210,6 +236,8 @@ export function createClaudeSession(cwd: string, opts: SessionOptions): ClaudeSe
   let sessionId = opts.resumeId ?? "";
   let rtModel: string | undefined; // init 上报的实际模型
   let rtEffort: EffortLevelSetting | null | undefined; // init 上报的实际 effort（null=不下发）
+  let rtFast: FastModeRuntime | undefined; // init/result 上报的原生 fast 真值
+  let fastChain: Promise<void> = Promise.resolve(); // 快速连切按调用顺序送达 CLI；失败后不阻塞后续调用
   let compactPending = false; // 本轮是否出现过 compact 帧
   let turnActive = false; // 有未完结的生成轮（send 起、result 帧止）；abort 据此区分"中止"与"空闲空操作"
   let abortSwallow = false; // abort 后吞掉该轮的收尾 result 帧：客户端已被 chat.aborted 释放，不再发 done/error
@@ -253,12 +281,30 @@ export function createClaudeSession(cwd: string, opts: SessionOptions): ClaudeSe
       : { behavior: "deny", message: "用户在侧边栏拒绝了该操作" };
   }
 
-  /** 工具调用摘要：优先 file_path/command，其余截断 JSON */
-  function summarizeTool(block: { name?: string; input?: Record<string, unknown> }): string {
-    const input = block.input ?? {};
-    if (typeof input.file_path === "string") return input.file_path;
-    if (typeof input.command === "string") return input.command.slice(0, 120);
-    return JSON.stringify(input).slice(0, 120);
+  /** 当前 CC 真值快照；fast 没有证据时省略，不伪造 off。事件携带新鲜度，runtimeInfo 查询不带。 */
+  function currentRuntime(fastFresh?: boolean): SessionRuntimeInfo {
+    return {
+      model: rtModel,
+      effort: rtEffort,
+      ...(rtFast ? { fast: rtFast } : {}),
+      ...(rtFast && fastFresh !== undefined ? { fastFresh } : {}),
+    };
+  }
+
+  /** 从 init/result 提取原生 fast；返回本帧是否含新状态，未带原因时清除旧原因。 */
+  function updateFastRuntime(msg: Record<string, unknown>): boolean {
+    if (isFastModeState(msg.fast_mode_state)) {
+      rtFast = {
+        state: msg.fast_mode_state,
+        ...(isFastModeDisabledReason(msg.fast_mode_disabled_reason)
+          ? { disabledReason: msg.fast_mode_disabled_reason }
+          : {}),
+      };
+      return true; // 同值新回报也算新鲜，不能靠比较 on/off 推断
+    } else if (rtFast && isFastModeDisabledReason(msg.fast_mode_disabled_reason)) {
+      rtFast = { ...rtFast, disabledReason: msg.fast_mode_disabled_reason };
+    }
+    return false; // 缓存 fast 或仅原因更新都不是新的状态证据
   }
 
   /** 分发 SDK 消息到事件回调 */
@@ -268,6 +314,8 @@ export function createClaudeSession(cwd: string, opts: SessionOptions): ClaudeSe
       // init 每轮开头重发：模型/effort 实际生效值取最新一帧；effort 缺字段（老 CLI 不上报）不覆盖旧值
       if (typeof msg.model === "string" && msg.model.length > 0) rtModel = msg.model;
       if (msg.effort === null || isEffortLevel(msg.effort)) rtEffort = msg.effort;
+      const fastFresh = updateFastRuntime(msg);
+      events.onRuntime(currentRuntime(fastFresh));
       events.onSessionId(sessionId);
       return;
     }
@@ -297,15 +345,20 @@ export function createClaudeSession(cwd: string, opts: SessionOptions): ClaudeSe
         return;
       }
       turnActive = false; // 本轮正常完结
+      const fastFresh = updateFastRuntime(msg); // result 可能带来比 init 更新的 fast 状态
       if (msg.subtype === "success") {
         // effort 真值：SDK 流不下发（探针实证 init/assistant/result 均无），但 CLI 会把每次请求参数
         // 持久化进转录 jsonl 的 api-request-blob —— 以最近一次请求为准（每回答粒度）
         const tEffort = sessionId ? readTranscriptEffort(cwd, sessionId) : undefined;
         if (tEffort !== undefined) rtEffort = tEffort; // 转录有证据（值或 null）时覆盖 init 上报值
         // compacted 仅在 true 时下发（undefined 序列化省略），减少帧噪音
-        events.onDone(sessionId, { model: rtModel, effort: rtEffort, ...(compactPending ? { compacted: true } : {}) });
+        events.onRuntime(currentRuntime(fastFresh));
+        events.onDone(sessionId, { ...currentRuntime(fastFresh), ...(compactPending ? { compacted: true } : {}) });
         compactPending = false;
-      } else events.onError(`会话异常结束: ${String(msg.subtype)}`);
+      } else {
+        events.onRuntime(currentRuntime(fastFresh));
+        events.onError(`会话异常结束: ${String(msg.subtype)}`);
+      }
     }
   }
 
@@ -328,6 +381,8 @@ export function createClaudeSession(cwd: string, opts: SessionOptions): ClaudeSe
       resume: opts.resumeId,
       permissionMode: opts.permissionMode === "approve-each" ? "default" : opts.permissionMode,
       includePartialMessages: true,
+      // 原生 flag overlay：false 也必须显式下发，不能让 CLI 用户级 fast-on 穿透 CopilotCC 的关闭状态
+      settings: { fastMode: opts.fastMode === true },
       stderr: (line: string) => console.error("[claude-stderr]", line),
       canUseTool,
       ...(cliPath ? { pathToClaudeCodeExecutable: cliPath } : {}),
@@ -335,6 +390,51 @@ export function createClaudeSession(cwd: string, opts: SessionOptions): ClaudeSe
       ...(opts.effort ? { effort: opts.effort } : {}),
     },
   });
+  type NativeFastSettings = { fastMode: boolean; model?: string };
+  type NativeFastQuery = {
+    applyFlagSettings?: (settings: NativeFastSettings) => Promise<void>;
+    getSettings?: () => Promise<unknown>;
+  };
+  const nativeQuery = stream as NativeFastQuery;
+  let autoModelRead: Promise<string | undefined> | null = null;
+  let autoModelSnapshot: string | undefined;
+  let autoCaptureStarted = false;
+
+  /** 读取当前 SDK 运行时存在但未公开类型化的 getSettings，只取 applied.model；失败一律降级。 */
+  function readAutoModel(): Promise<string | undefined> {
+    if (!autoModelRead) {
+      autoModelRead = (async (): Promise<string | undefined> => {
+        try {
+          if (opts.model !== undefined) return undefined; // 显式 query 模型的 applied 不是自动档基线
+          const getSettings = nativeQuery.getSettings;
+          if (typeof getSettings !== "function") return undefined;
+          const response: unknown = await getSettings.call(nativeQuery);
+          if (!response || typeof response !== "object" || Array.isArray(response)) return undefined;
+          const applied = (response as { applied?: unknown }).applied;
+          if (!applied || typeof applied !== "object" || Array.isArray(applied)) return undefined;
+          const model = (applied as { model?: unknown }).model;
+          return typeof model === "string" && model.length > 0 ? model : undefined;
+        } catch {
+          return undefined; // 老 CLI 拒绝或字段形状变化不能让 fast 开关失效
+        }
+      })();
+    }
+    return autoModelRead;
+  }
+
+  /** 每个 Query 只在首次自动提升/恢复前捕获一次，避免重复 on 把 Opus 写成基线。 */
+  async function captureAutoModel(): Promise<string | undefined> {
+    if (opts.model !== undefined) return undefined;
+    if (!autoCaptureStarted) {
+      autoCaptureStarted = true;
+      const appliedModel = await readAutoModel();
+      autoModelSnapshot = appliedModel ?? rtModel; // init 是公开的实际模型证据，但不混入 runtime 回报通道
+    }
+    return autoModelSnapshot;
+  }
+
+  // 自动档启动即 fast-on 时，在首轮可能提升模型之前缓存 CC 的原始解析结果。
+  if (opts.model === undefined && opts.fastMode === true) void readAutoModel();
   void consume(stream);
 
   return {
@@ -355,6 +455,27 @@ export function createClaudeSession(cwd: string, opts: SessionOptions): ClaudeSe
       // 通知 CLI 停止本轮（等价交互模式的 ESC）；无此方法或拒绝（CLI 侧轮次已结束）都不影响已下发的中止
       void (stream as { interrupt?: () => Promise<void> }).interrupt?.()?.catch(() => {});
     },
+    setFastMode(enabled: boolean, model?: string | null): Promise<void> {
+      const operation = fastChain.then(async () => {
+        if (closed) throw new Error("会话已关闭，无法切换 fast");
+        const applyFlagSettings = nativeQuery.applyFlagSettings;
+        if (typeof applyFlagSettings !== "function") throw new Error("当前 Claude Agent SDK 不支持原生 fast 设置");
+        // 自动模型捕获也放在同一条 fastChain 内，快速 off 不能越过尚未完成的 on。
+        const autoModel = model === null || (enabled && opts.model === undefined)
+          ? await captureAutoModel()
+          : undefined;
+        const settings: NativeFastSettings = { fastMode: enabled };
+        if (typeof model === "string") settings.model = model;
+        else if (model === null && autoModel) settings.model = autoModel;
+        // 不把内部 null 原样交给 CC：原生 model:null 会重置内建默认，而非恢复用户自动配置。
+        await applyFlagSettings.call(nativeQuery, settings);
+      });
+      fastChain = operation.catch(() => {}); // 拒绝透传给 server；队列本身恢复，允许后续重试
+      return operation;
+    },
+    fastAutoModel(): Promise<string | undefined> {
+      return captureAutoModel();
+    },
     respondPermission(requestId: string, allow: boolean): void {
       const p = pending.get(requestId);
       if (p) {
@@ -363,7 +484,7 @@ export function createClaudeSession(cwd: string, opts: SessionOptions): ClaudeSe
       }
     },
     runtimeInfo(): SessionRuntimeInfo {
-      return { model: rtModel, effort: rtEffort };
+      return currentRuntime();
     },
     async close(): Promise<void> {
       if (closed) return;

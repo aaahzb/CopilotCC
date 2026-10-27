@@ -21,6 +21,7 @@ import { claimInstance, writeRuntime, releaseRuntimeOnExit } from "./runtime";
 import { encodePairing } from "./pairing";
 import { SessionManager } from "./session-manager";
 import { AliasManager } from "./alias-manager";
+import { WorkspaceStore } from "./workspace-store";
 import { ICON_ICO_B64, ICON_PNG_B64 } from "./icon";
 import { TRAYBIN_WIN_B64 } from "./traybin-win-b64";
 
@@ -150,7 +151,14 @@ async function main(): Promise<void> {
     });
   };
 
-  const server = await startServer({ config, sessions, aliases, configDir: configDir(), onPortChanged });
+  const server = await startServer({
+    config,
+    sessions,
+    aliases,
+    workspaceStore: new WorkspaceStore(path.join(configDir(), "workspace.json")), // 托盘重启后恢复绑定与执行设置
+    configDir: configDir(),
+    onPortChanged,
+  });
   writeRuntime(configDir(), server.port);
   releaseRuntimeOnExit(configDir());
   console.log(`[ccc-bridge] 已启动 ws://127.0.0.1:${server.port}/ws（托盘模式）`);

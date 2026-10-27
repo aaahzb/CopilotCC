@@ -3,9 +3,11 @@ import * as http from "node:http";
 import { WebSocketServer, WebSocket } from "ws";
 import type { AddressInfo } from "node:net";
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { encode, parseClientMessage, type PermissionModeSetting, type EffortLevelSetting, type ServerMessage } from "./protocol";
+import { encode, parseClientMessage, type PermissionModeSetting, type EffortLevelSetting, type ServerMessage, type ExecutionRuntime } from "./protocol";
+import type { ClientMessage } from "./protocol";
 import { isValidFolder, normalizeFolder, SessionManager } from "./session-manager";
 import { createClaudeSession, type ClaudeSessionLike } from "./claude-session";
+import type { SessionRuntimeInfo } from "./claude-session";
 import { readTranscript, listSessions, deleteTranscript } from "./transcript";
 import { saveConfig, type BridgeConfig } from "./config";
 import { encodePairing } from "./pairing";
@@ -14,7 +16,7 @@ import { pickFolder as defaultPickFolder, openInFileManager as defaultOpenFolder
 import { saveUploads } from "./uploads";
 import { composeUploadNote, UPLOAD_DIR } from "./upload-note";
 import { writeResumeScript, removeResumeScript } from "./resume-script";
-import { WorkspaceStore } from "./workspace-store";
+import { WorkspaceStore, type FastRestoreBaseline, type WorkspaceExecutionSettings } from "./workspace-store";
 
 /** 服务依赖。createSession 仅供测试注入假会话工厂。 */
 export interface ServerDeps {
@@ -66,6 +68,35 @@ type ProbeVerdict = "ok" | "duplicate" | "foreign";
  * 镜像工作区：桥接进程内唯一的会话工作区。侧边栏/弹窗等全部视图共享这一份状态；
  * 视图（WS 连接）可以随便断开重连，工作区与进行中的会话都原地不动（桥接进程退出才终结）。
  */
+/** 一次 fast 控制涉及的完整请求快照；模型仍是请求值，不是 CC 真值。 */
+interface FastExecutionSnapshot {
+  fastMode: boolean;
+  model: string | undefined;
+  fastRestore?: FastRestoreBaseline;
+}
+
+/** 克隆恢复基线，避免请求、工作区与回滚快照共享可变对象。 */
+function cloneFastRestore(restore: FastRestoreBaseline | undefined): FastRestoreBaseline | undefined {
+  return restore ? { ...restore } : undefined;
+}
+
+/** 克隆完整 fast 请求快照。 */
+function cloneFastSnapshot(snapshot: FastExecutionSnapshot): FastExecutionSnapshot {
+  return {
+    fastMode: snapshot.fastMode,
+    model: snapshot.model,
+    ...(snapshot.fastRestore ? { fastRestore: cloneFastRestore(snapshot.fastRestore) } : {}),
+  };
+}
+
+/** 比较 fast、请求模型与恢复证据是否全部一致。 */
+function sameFastSnapshot(a: FastExecutionSnapshot, b: FastExecutionSnapshot): boolean {
+  return a.fastMode === b.fastMode
+    && a.model === b.model
+    && a.fastRestore?.request === b.fastRestore?.request
+    && a.fastRestore?.actualModel === b.fastRestore?.actualModel;
+}
+
 interface Workspace {
   /** 当前绑定的文件夹 */
   folder: string | null;
@@ -74,6 +105,24 @@ interface Workspace {
   mode: PermissionModeSetting;
   model: string | undefined;
   effort: EffortLevelSetting | undefined;
+  /** 用户请求的 CC 原生 fast 设置；旧客户端省略时保留 */
+  fastMode: boolean;
+  /** fast on 前的请求模型与可选 CC 实际模型证据，仅桥接和磁盘使用 */
+  fastRestore?: FastRestoreBaseline;
+  /** 最近一次原生接受或新 Query 携带的完整快照；只用于失败回滚，不是实际状态 */
+  fastRollback: FastExecutionSnapshot;
+  /** fast-only 请求序号；同值 ABA 场景也不能让旧结果回滚新请求 */
+  fastRequestSeq: number;
+  /** 已计入回滚基线的请求序号，防止较旧的成功结果倒写基线 */
+  fastRollbackSeq: number;
+  /** 已初始化后自动 hello 不再覆盖工作区 */
+  settingsInitialized: boolean;
+  /** fast-only 请求后等待 CC 新 fast 真值 */
+  fastPending: boolean;
+  /** CC init/result 最近确认的执行真值；与请求设置分开保存 */
+  runtime: ExecutionRuntime;
+  /** true 时 runtime 是权威快照，即使为空也应清客户端旧值；重启尚未恢复时保持 false */
+  runtimeAuthoritative: boolean;
   /** 当前进行中的别名（alias.select/create 设置，粘性跟随文件夹/会话变化） */
   currentAliasId: string | null;
   /** 本轮回答进行中（chat.send 受理 → done/error/aborted） */
@@ -95,8 +144,10 @@ interface HandlerCtx {
   clients: Set<WebSocket>;
   /** 广播状态事件给全部视图；except 用于 chat.draft 回显抑制（上报方已有本地草稿，回包会顶跳光标） */
   broadcast: (m: ServerMessage, except?: WebSocket) => void;
+  /** 组装当前执行设置；includeRuntime=true 时携带/清空 CC 运行时真值 */
+  settingsStateMsg: (includeRuntime?: boolean) => ServerMessage;
   /** 绑定文件夹并重建会话（folder.bind 与 alias.select/create 共用） */
-  bindFolder: (p: string, forceSessionId?: string | null) => void;
+  bindFolder: (p: string, forceSessionId?: string | null, reset?: boolean) => void;
   /** 为当前文件夹创建（或重建）Claude 会话 */
   openSession: (resumeId?: string) => void;
   /** 清空在途轮次状态（换绑/换会话/删当前会话时：旧轮次随会话一起没了） */
@@ -119,6 +170,12 @@ interface HandlerCtx {
   refreshAliasScript: () => void;
   /** 持久化工作区绑定（文件夹+当前别名），供桥接重启后恢复 */
   persistWorkspace: () => void;
+  /** 读取当前完整 fast 请求快照 */
+  currentFastSnapshot: () => FastExecutionSnapshot;
+  /** 一次性提交完整 fast 请求快照 */
+  applyFastSnapshot: (snapshot: FastExecutionSnapshot) => void;
+  /** 只持久化执行设置，不写 hello 前尚未恢复的绑定 */
+  persistExecutionSettings: () => void;
   /** 工作区未绑定且有持久化记录时恢复绑定（首个视图接入触发；已绑定则空转） */
   restoreWorkspaceIfIdle: () => void;
 }
@@ -405,6 +462,7 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
   const instanceId = randomBytes(8).toString("hex"); // 本进程实例 ID：自探测认亲用
   const { config, sessions, aliases } = deps;
   const newSession = deps.createSession ?? createClaudeSession;
+  const persistedExecution = deps.workspaceStore?.loadExecutionSettings() ?? null;
   const openFolderImpl = deps.openFolder ?? defaultOpenFolder;
   let current: Running; // 当前监听着的服务（在线改端口会整体替换）
 
@@ -412,9 +470,22 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
   const workspace: Workspace = {
     folder: null,
     claude: null,
-    mode: "auto",
-    model: undefined,
-    effort: undefined,
+    mode: persistedExecution?.permissionMode ?? "auto",
+    model: persistedExecution?.model,
+    effort: persistedExecution?.effort,
+    fastMode: persistedExecution?.fastMode ?? false,
+    fastRestore: cloneFastRestore(persistedExecution?.fastRestore),
+    fastRollback: {
+      fastMode: persistedExecution?.fastMode ?? false,
+      model: persistedExecution?.model,
+      fastRestore: cloneFastRestore(persistedExecution?.fastRestore),
+    },
+    fastRequestSeq: 0,
+    fastRollbackSeq: 0,
+    settingsInitialized: persistedExecution !== null,
+    fastPending: false,
+    runtime: {},
+    runtimeAuthoritative: false,
     currentAliasId: null,
     busy: false,
     streamText: "",
@@ -422,6 +493,22 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
     pendingPerm: null,
     draft: "",
   };
+  /** 读取当前完整 fast 请求快照。 */
+  function currentFastSnapshot(): FastExecutionSnapshot {
+    return {
+      fastMode: workspace.fastMode,
+      model: workspace.model,
+      fastRestore: cloneFastRestore(workspace.fastRestore),
+    };
+  }
+
+  /** 一次性提交完整 fast 请求快照，禁止模型与恢复基线分别漂移。 */
+  function applyFastSnapshot(snapshot: FastExecutionSnapshot): void {
+    workspace.fastMode = snapshot.fastMode;
+    workspace.model = snapshot.model;
+    workspace.fastRestore = cloneFastRestore(snapshot.fastRestore);
+  }
+
   const clients = new Set<WebSocket>();
 
   function broadcast(m: ServerMessage, except?: WebSocket): void {
@@ -429,6 +516,32 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
     for (const c of clients) {
       if (c !== except && c.readyState === WebSocket.OPEN) c.send(frame);
     }
+  }
+
+  /** 运行时真值只由 CC 回报更新；每次整体替换，缺字段不伪造 */
+  function setRuntime(info: SessionRuntimeInfo): void {
+    const fastFresh = info.fast !== undefined && info.fastFresh === true;
+    if (fastFresh) workspace.fastPending = false; // 只有本帧显式携带合法 fast_mode_state 才能确认等待
+    workspace.runtimeAuthoritative = true;
+    workspace.runtime = {
+      ...(typeof info.model === "string" && info.model.length > 0 ? { model: info.model } : {}),
+      ...(info.effort !== undefined ? { effort: info.effort } : {}),
+      ...(info.fast && (!workspace.fastPending || fastFresh) ? { fast: info.fast } : {}), // pending 期间不回收缓存 fast
+    };
+  }
+
+
+  /** 请求设置始终全量携带；runtime 仅在需要替换/清空客户端真值时下发 */
+  function settingsStateMsg(includeRuntime = false): ServerMessage {
+    return {
+      type: "settings.state",
+      permissionMode: workspace.mode,
+      model: workspace.model,
+      effort: workspace.effort,
+      fastMode: workspace.fastMode,
+      ...(workspace.fastPending ? { fastPending: true } : {}),
+      ...(includeRuntime ? { runtime: workspace.runtime } : {}),
+    };
   }
 
   function sessionListMsg(): ServerMessage | null {
@@ -487,6 +600,18 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
     deps.workspaceStore?.save({ folder: workspace.folder, aliasId: workspace.currentAliasId });
   }
 
+  /** 执行设置独立合并保存，hello 在 client.ready 前写入也不会清掉待恢复绑定 */
+  function persistExecutionSettings(): void {
+    const execution: WorkspaceExecutionSettings = {
+      permissionMode: workspace.mode,
+      model: workspace.model,
+      effort: workspace.effort,
+      fastMode: workspace.fastMode,
+      fastRestore: cloneFastRestore(workspace.fastRestore),
+    };
+    deps.workspaceStore?.saveExecutionSettings(execution);
+  }
+
   /**
    * 懒恢复工作区绑定：仅在工作区未绑定（桥接刚重启）且有持久化记录时执行。
    * 别名还在就按别名恢复（其 sessionId 为 null 时回退 sessions.json 映射续聊），否则按裸文件夹恢复；
@@ -500,7 +625,7 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
     const folder = alias?.folder ?? b.folder;
     if (!folder || !isValidFolder(folder)) return;
     if (alias) workspace.currentAliasId = alias.id;
-    bindFolder(folder, alias ? (alias.sessionId ?? undefined) : undefined); // 内含持久化回写与列表广播
+    bindFolder(folder, alias ? (alias.sessionId ?? undefined) : undefined, false); // 恢复不是主动换绑
   }
 
   function resetInflight(): void {
@@ -514,20 +639,32 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
   function openSession(resumeId?: string): void {
     if (!workspace.folder) return;
     const f = workspace.folder;
+    const replacing = workspace.claude !== null;
+    workspace.fastRollback = currentFastSnapshot(); // 新 Query 启动设置成为后续运行时切换的完整回滚基线
+    workspace.fastRollbackSeq = workspace.fastRequestSeq;
+    workspace.runtime = {}; // 新 Query 尚无真值；是否清扩展缓存由 runtimeAuthoritative 明确区分
+    if (replacing) workspace.runtimeAuthoritative = true; // 主动替换旧 Query：空快照也是权威失效通知
     workspace.claude = newSession(f, {
       resumeId,
       permissionMode: workspace.mode,
       model: workspace.model,
       effort: workspace.effort,
+      fastMode: workspace.fastMode,
       events: {
         onDelta: (text) => {
           workspace.streamText += text; // 真流式：每个 delta 立即广播一帧，同时记账供快照补齐
           broadcast({ type: "chat.delta", text });
         },
         onTool: (name, summary) => broadcast({ type: "chat.tool", name, summary }),
+        onRuntime: (info) => {
+          setRuntime(info);
+          broadcast(settingsStateMsg(true));
+        },
         onDone: (sessionId, info) => {
+          if (info) setRuntime(info); // onRuntime 已即时上报；这里兜底快照数据源并兼容测试事件
           // info 字段为 undefined 时 JSON 序列化自动省略；effort 为 null 时显式下发（表示该会话无 effort 参数）
-          broadcast({ type: "chat.done", sessionId, model: info?.model, effort: info?.effort, compacted: info?.compacted });
+          const doneFast = info?.fast && (!workspace.fastPending || info.fastFresh === true) ? info.fast : undefined;
+          broadcast({ type: "chat.done", sessionId, model: info?.model, effort: info?.effort, fast: doneFast, compacted: info?.compacted });
           workspace.busy = false;
           workspace.streamText = "";
           workspace.inflightUser = null;
@@ -565,6 +702,7 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
         },
       },
     });
+    if (replacing) broadcast(settingsStateMsg(true)); // 新建/切换/普通重建：全部视图立即丢弃旧 Query 真值
   }
 
   /**
@@ -572,29 +710,29 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
    * @param p 目标文件夹
    * @param forceSessionId 别名指定的会话：string=续聊该会话（已删则退回新会话），null=强制新会话；缺省=按 sessions.json 映射走
    */
-  function bindFolder(p: string, forceSessionId?: string | null): void {
+  function bindFolder(p: string, forceSessionId?: string | null, reset = true): void {
     void workspace.claude?.close();
     workspace.folder = p;
     resetInflight(); // 换绑即换会话：旧轮次的在途状态对新工作区无意义
     if (forceSessionId === undefined) {
       const rec = sessions.get(workspace.folder);
       openSession(rec?.sessionId);
-      broadcast({ type: "folder.bound", path: workspace.folder, resumed: Boolean(rec), title: rec?.title ?? "", sessionId: rec?.sessionId ?? null });
+      broadcast({ type: "folder.bound", ...(reset ? { reset: true } : {}), path: workspace.folder, resumed: Boolean(rec), title: rec?.title ?? "", sessionId: rec?.sessionId ?? null });
     } else if (forceSessionId === null) {
       sessions.delete(workspace.folder); // 别名指向"新会话"：清掉映射，下一条消息开全新会话
       openSession(undefined);
-      broadcast({ type: "folder.bound", path: workspace.folder, resumed: false, title: "", sessionId: null });
+      broadcast({ type: "folder.bound", ...(reset ? { reset: true } : {}), path: workspace.folder, resumed: false, title: "", sessionId: null });
     } else {
       const target = listSessions(workspace.folder).find((s) => s.sessionId === forceSessionId);
       if (target) {
         sessions.set(workspace.folder, { sessionId: target.sessionId, title: target.title, updatedAt: new Date(target.updatedAt).toISOString() });
         openSession(target.sessionId);
-        broadcast({ type: "folder.bound", path: workspace.folder, resumed: true, title: target.title, sessionId: target.sessionId });
+        broadcast({ type: "folder.bound", ...(reset ? { reset: true } : {}), path: workspace.folder, resumed: true, title: target.title, sessionId: target.sessionId });
       } else {
         // 别名指向的会话已被删除：退回新会话，别名的 sessionId 由 syncCurrentAlias 顺带修正
         sessions.delete(workspace.folder);
         openSession(undefined);
-        broadcast({ type: "folder.bound", path: workspace.folder, resumed: false, title: "", sessionId: null });
+        broadcast({ type: "folder.bound", ...(reset ? { reset: true } : {}), path: workspace.folder, resumed: false, title: "", sessionId: null });
         broadcast({ type: "folder.error", message: `会话 ${forceSessionId} 在该文件夹下没有转录，已改为开新会话` }); // 必须在 folder.bound 之后发：客户端收 bound 会清屏，先发警告会被抹掉
       }
     }
@@ -621,6 +759,7 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
     // 别名列表是全局数据（不依附文件夹绑定）：未绑定也必须下发，否则空工作区时别名下拉永空
     const al = aliasListMsg();
     if (al) send(al);
+    send(settingsStateMsg(workspace.runtimeAuthoritative)); // 重启恢复省略空快照；主动重建后显式空快照清旧缓存
     send({
       type: "chat.sync",
       busy: workspace.busy,
@@ -661,6 +800,7 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
     workspace,
     clients,
     broadcast,
+    settingsStateMsg,
     bindFolder,
     openSession,
     resetInflight,
@@ -673,6 +813,9 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
     syncCurrentAlias,
     refreshAliasScript,
     persistWorkspace,
+    currentFastSnapshot,
+    applyFastSnapshot,
+    persistExecutionSettings,
     restoreWorkspaceIfIdle,
   };
 
@@ -802,6 +945,7 @@ function attachHandlers(wss: WebSocketServer, deps: ServerDeps, instanceId: stri
     workspace,
     clients,
     broadcast,
+    settingsStateMsg,
     bindFolder,
     openSession,
     resetInflight,
@@ -814,6 +958,9 @@ function attachHandlers(wss: WebSocketServer, deps: ServerDeps, instanceId: stri
     syncCurrentAlias,
     refreshAliasScript,
     persistWorkspace,
+    currentFastSnapshot,
+    applyFastSnapshot,
+    persistExecutionSettings,
     restoreWorkspaceIfIdle,
   } = ctx;
 
@@ -853,13 +1000,34 @@ function attachHandlers(wss: WebSocketServer, deps: ServerDeps, instanceId: stri
       if (ws.readyState === WebSocket.OPEN) ws.send(encode(m));
     };
     let pickSeq = 0; // folder.pick 代际号：新请求使旧请求的迟到结果作废（每连接独立）
+    let sawReady = false; // 旧客户端只在首个 ready 前发送无标记的自动完整设置
+    let pendingLegacyHello: Extract<ClientMessage, { type: "settings.set" }> | null = null;
+    let pendingLegacyTail: ClientMessage[] = []; // 候选后的交错帧：待候选身份判明后按原序释放
 
     ws.on("message", (raw) => {
       // 处理器内任何同步异常都不能逃出：会冒泡成 uncaughtException 打崩整个桥接进程
       // （v2026.10.21.7 秒断事故：SDK 初始化抛错 → 进程死 → WS 1006）。switch 体保持原缩进，避免整段重排刷屏 diff。
       try {
-      const m = parseClientMessage(raw.toString());
-      if (!m) return;
+      const parsed = parseClientMessage(raw.toString());
+      if (!parsed) return;
+      const messages: ClientMessage[] = [];
+      // 未初始化桥的首个完整帧直接播种；已初始化桥只有 ready 前最后一个旧完整帧可能是自动 hello。
+      // 候选后的交错帧先排队：再出现候选时，前一个候选及尾巴都是离线显式流量，按原序释放。
+      if (!sawReady && workspace.settingsInitialized && parsed.type === "settings.set"
+        && parsed.hello !== true && parsed.fastOnly !== true && parsed.fields === undefined) {
+        if (pendingLegacyHello) messages.push(pendingLegacyHello, ...pendingLegacyTail);
+        pendingLegacyTail = [];
+        pendingLegacyHello = parsed;
+      } else if (pendingLegacyHello && parsed.type !== "client.ready") {
+        pendingLegacyTail.push(parsed);
+      } else {
+        if (pendingLegacyHello) messages.push({ ...pendingLegacyHello, hello: true }, ...pendingLegacyTail);
+        pendingLegacyHello = null;
+        pendingLegacyTail = [];
+        messages.push(parsed);
+      }
+      if (parsed.type === "client.ready") sawReady = true;
+      for (const m of messages) {
       switch (m.type) {
         case "auth":
           break; // auth 已在握手完成
@@ -872,7 +1040,7 @@ function attachHandlers(wss: WebSocketServer, deps: ServerDeps, instanceId: stri
             send({ type: "folder.error", message: `路径不存在或不是文件夹: ${m.path}` });
             break;
           }
-          bindFolder(m.path);
+          bindFolder(m.path, undefined, m.reset !== false);
           break;
         }
         case "folder.pick": {
@@ -952,7 +1120,7 @@ function attachHandlers(wss: WebSocketServer, deps: ServerDeps, instanceId: stri
           sessions.delete(workspace.folder); // 清掉映射：下一条消息走全新会话
           resetInflight();
           openSession(undefined);
-          broadcast({ type: "folder.bound", path: workspace.folder, resumed: false, title: "", sessionId: null });
+          broadcast({ type: "folder.bound", reset: true, path: workspace.folder, resumed: false, title: "", sessionId: null });
           pushSessionList();
           syncCurrentAlias();
           pushAliasList();
@@ -970,7 +1138,7 @@ function attachHandlers(wss: WebSocketServer, deps: ServerDeps, instanceId: stri
           sessions.set(workspace.folder, { sessionId: target.sessionId, title: target.title, updatedAt: new Date(target.updatedAt).toISOString() });
           resetInflight();
           openSession(target.sessionId);
-          broadcast({ type: "folder.bound", path: workspace.folder, resumed: true, title: target.title, sessionId: target.sessionId });
+          broadcast({ type: "folder.bound", reset: true, path: workspace.folder, resumed: true, title: target.title, sessionId: target.sessionId });
           pushSessionList();
           syncCurrentAlias();
           pushAliasList();
@@ -987,7 +1155,7 @@ function attachHandlers(wss: WebSocketServer, deps: ServerDeps, instanceId: stri
             sessions.delete(workspace.folder);
             resetInflight();
             openSession(undefined);
-            broadcast({ type: "folder.bound", path: workspace.folder, resumed: false, title: "", sessionId: null });
+            broadcast({ type: "folder.bound", reset: true, path: workspace.folder, resumed: false, title: "", sessionId: null });
           }
           pushSessionList();
           syncCurrentAlias();
@@ -1025,7 +1193,7 @@ function attachHandlers(wss: WebSocketServer, deps: ServerDeps, instanceId: stri
           workspace.currentAliasId = a.id;
           // 别名 sessionId 为 null = "还没定下会话"（不是"永远新开"）：回退 sessions.json 映射续聊，
           // 避免每次选中都删掉文件夹现有会话映射开新会话（弹窗自动选中路径每次打开都会走这里）
-          bindFolder(a.folder, a.sessionId ?? undefined); // 内含列表广播与续聊脚本保鲜
+          bindFolder(a.folder, a.sessionId ?? undefined, m.reset !== false);
           break;
         }
         case "alias.update": {
@@ -1052,22 +1220,191 @@ function attachHandlers(wss: WebSocketServer, deps: ServerDeps, instanceId: stri
           break;
         }
         case "settings.set": {
-          const changed = m.permissionMode !== workspace.mode || m.model !== workspace.model || m.effort !== workspace.effort;
-          workspace.mode = m.permissionMode;
-          workspace.model = m.model;
-          workspace.effort = m.effort;
-          if (changed && workspace.folder && workspace.claude) {
-            // 模式/模型/effort 变更需要重建会话（resumeId 保证上下文不断）。
-            // 旧轮次若仍在跑：先明确释放全部视图，再 close 取消旧 CLI；否则 busy 留在工作区，
-            // 新会话又是空闲态，后续 chat.abort 会被 turnActive=false 吞掉，旧工具却继续执行。
-            if (workspace.busy) broadcast({ type: "chat.aborted" });
-            resetInflight();
-            const rec = sessions.get(workspace.folder);
-            void workspace.claude.close();
-            openSession(rec?.sessionId);
+          if (m.hello === true && workspace.settingsInitialized) break; // 自动 hello 只播种未初始化桥
+          const seeding = !workspace.settingsInitialized;
+          const fastOnly = m.fastOnly === true && !seeding; // 未初始化时 fastOnly 仍是完整播种
+          const fields = seeding ? undefined : m.fields;
+          const includesField = (field: "permissionMode" | "model" | "effort" | "fastMode"): boolean => fields === undefined || fields.includes(field);
+          const previous = currentFastSnapshot();
+          const modelIntent = !fastOnly && includesField("model");
+          const candidateModel = modelIntent ? m.model : previous.model;
+          const nextFast = (fastOnly || includesField("fastMode")) ? m.fastMode ?? previous.fastMode : previous.fastMode;
+          const fastChanged = nextFast !== previous.fastMode;
+          const promoting = !seeding && !previous.fastMode && nextFast;
+          const demoting = !seeding && previous.fastMode && !nextFast;
+          const restoreBefore = cloneFastRestore(previous.fastRestore);
+          let requestSnapshot: FastExecutionSnapshot;
+
+          // 先由旧状态与字段意图计算完整目标，再一次性提交，避免模型和恢复基线分别漂移。
+          if (seeding) {
+            requestSnapshot = {
+              fastMode: nextFast,
+              model: candidateModel,
+              ...(nextFast ? { fastRestore: restoreBefore ?? { request: candidateModel ?? null } } : {}),
+            };
+          } else if (promoting) {
+            requestSnapshot = {
+              fastMode: true,
+              model: "opus",
+              fastRestore: { request: candidateModel ?? null },
+            };
+          } else if (nextFast) {
+            requestSnapshot = {
+              fastMode: true,
+              model: candidateModel,
+              fastRestore: modelIntent
+                ? { request: candidateModel ?? null }
+                : restoreBefore ?? { request: previous.model ?? null },
+            };
+          } else if (demoting && !modelIntent) {
+            const restore: FastRestoreBaseline = restoreBefore ?? { request: previous.model ?? null };
+            let restoredModel: string | undefined;
+            if (restore.request !== null) restoredModel = restore.request;
+            else if (previous.model !== undefined && workspace.claude) restoredModel = restore.actualModel;
+            requestSnapshot = { fastMode: false, model: restoredModel };
+          } else {
+            requestSnapshot = { fastMode: nextFast, model: candidateModel };
+          }
+
+          // 普通模型变化按用户候选值判断；仅由 fast 带来的 Opus 提升/恢复不得触发重建。
+          const ordinaryModelChanged = modelIntent && candidateModel !== previous.model;
+          const rebuildChanged = !fastOnly && (
+            (includesField("permissionMode") && m.permissionMode !== workspace.mode)
+            || ordinaryModelChanged
+            || (includesField("effort") && m.effort !== workspace.effort)
+          );
+          const previousRuntime = workspace.runtime;
+          const previousFastPending = workspace.fastPending;
+          if (!fastOnly) {
+            if (includesField("permissionMode")) workspace.mode = m.permissionMode;
+            if (includesField("effort")) workspace.effort = m.effort;
+          }
+          applyFastSnapshot(requestSnapshot);
+          workspace.settingsInitialized = true;
+          persistExecutionSettings();
+
+          let nativeModel: string | null | undefined;
+          let readAutoAfterOn = false;
+          let readAutoAfterOff = false;
+          let offFallbackModel: string | undefined;
+          if (promoting) {
+            nativeModel = "opus";
+            readAutoAfterOn = requestSnapshot.fastRestore?.request === null;
+          } else if (demoting && !modelIntent) {
+            const restore: FastRestoreBaseline = restoreBefore ?? { request: previous.model ?? null };
+            if (restore.request !== null) {
+              nativeModel = restore.request === previous.model ? undefined : restore.request;
+            } else if (previous.model !== undefined) {
+              if (restore.actualModel) nativeModel = restore.actualModel;
+              else {
+                nativeModel = null; // 会话内部等待同一串行链的自动快照，原生层绝不会收到 null
+                readAutoAfterOff = true;
+                offFallbackModel = previous.model;
+              }
+            }
+          }
+
+          if (rebuildChanged) {
+            workspace.fastRequestSeq += 1; // 普通重建使旧 fast 完成结果全部失效
+            workspace.fastRollback = cloneFastSnapshot(requestSnapshot);
+            workspace.fastRollbackSeq = workspace.fastRequestSeq;
+            if (workspace.folder && workspace.claude) {
+              if (workspace.busy) broadcast({ type: "chat.aborted" });
+              resetInflight();
+              const rec = sessions.get(workspace.folder);
+              void workspace.claude.close();
+              openSession(rec?.sessionId);
+            } else {
+              broadcast(settingsStateMsg(workspace.runtimeAuthoritative));
+            }
+          } else if (fastChanged) {
+            // fast-only 保留 Query 和 busy/inflight；后续请求才由 CC 应用并回报真值。
+            const session = workspace.claude;
+            const previousRuntimeAuthoritative = workspace.runtimeAuthoritative;
+            workspace.fastPending = true;
+            if (session) workspace.runtime = { ...workspace.runtime };
+            if (session) delete workspace.runtime.fast;
+            const pendingRuntime = workspace.runtime;
+            const requestSeq = ++workspace.fastRequestSeq;
+            broadcast(settingsStateMsg(workspace.runtimeAuthoritative));
+            if (session) {
+              void Promise.resolve()
+                .then(() => nativeModel === undefined
+                  ? session.setFastMode(nextFast)
+                  : session.setFastMode(nextFast, nativeModel))
+                .then(async () => {
+                  if (workspace.claude !== session) return;
+                  const accepted = cloneFastSnapshot(requestSnapshot);
+                  let actualModel: string | undefined;
+                  if (readAutoAfterOn || readAutoAfterOff) {
+                    try {
+                      actualModel = await session.fastAutoModel();
+                    } catch {
+                      actualModel = undefined; // 未公开元数据失败不改变原生控制已接受的事实
+                    }
+                    if (workspace.claude !== session) return;
+                  }
+                  if (nextFast && workspace.fastRequestSeq === requestSeq) {
+                    // 在途期间的同值模型意图只改恢复基线，成功回包不得覆盖这份更新的本地状态。
+                    accepted.fastRestore = cloneFastRestore(workspace.fastRestore);
+                  }
+                  if (readAutoAfterOn && actualModel && accepted.fastRestore?.request === null) {
+                    accepted.fastRestore = { request: null, actualModel };
+                  }
+                  let restoreWarning = false;
+                  if (readAutoAfterOff) {
+                    accepted.model = actualModel ?? offFallbackModel;
+                    restoreWarning = actualModel === undefined;
+                  }
+                  // 控制接受只更新请求回滚基线，不代表 CC 实际 fast 已变化。
+                  if (requestSeq >= workspace.fastRollbackSeq) {
+                    workspace.fastRollback = cloneFastSnapshot(accepted);
+                    workspace.fastRollbackSeq = requestSeq;
+                  }
+                  if (workspace.fastRequestSeq === requestSeq) {
+                    const visibleBefore = currentFastSnapshot();
+                    const snapshotChanged = !sameFastSnapshot(visibleBefore, accepted);
+                    if (snapshotChanged) {
+                      applyFastSnapshot(accepted);
+                      persistExecutionSettings();
+                      if (visibleBefore.model !== accepted.model || visibleBefore.fastMode !== accepted.fastMode) {
+                        broadcast(settingsStateMsg(workspace.runtimeAuthoritative));
+                      }
+                    }
+                    if (restoreWarning) {
+                      broadcast({ type: "settings.error", message: "fast 已关闭，但开启前自动档实际模型未知，未猜测恢复模型；已保留当前模型" });
+                    }
+                  }
+                })
+                .catch((e: unknown) => {
+                  // 只有同 Query 的最新失败可回滚；不得释放当前轮次或伪造 CC 真值。
+                  if (workspace.claude !== session || workspace.fastRequestSeq !== requestSeq) return;
+                  applyFastSnapshot(workspace.fastRollback);
+                  workspace.fastRollbackSeq = requestSeq;
+                  workspace.fastPending = workspace.runtime.fast ? false : previousFastPending;
+                  persistExecutionSettings();
+                  if (workspace.runtime === pendingRuntime) {
+                    workspace.runtime = previousRuntime;
+                    workspace.runtimeAuthoritative = previousRuntimeAuthoritative;
+                  }
+                  broadcast(settingsStateMsg(workspace.runtimeAuthoritative));
+                  broadcast({ type: "settings.error", message: "原生 fast 设置失败: " + (e instanceof Error ? e.message : String(e)) });
+                });
+            } else {
+              workspace.fastRollback = cloneFastSnapshot(requestSnapshot);
+              workspace.fastRollbackSeq = requestSeq;
+            }
+          } else {
+            if (!sameFastSnapshot(previous, requestSnapshot)
+              && workspace.fastRollbackSeq === workspace.fastRequestSeq) {
+              // 无在途控制时，本地基线修改直接成为回滚快照；在途请求仍须保留失败处理资格。
+              workspace.fastRollback = cloneFastSnapshot(requestSnapshot);
+            }
+            broadcast(settingsStateMsg());
           }
           break;
         }
+      }
       }
       } catch (e) {
         // 会话创建/重建等同步异常（如 CLI 路径解析失败）：告知侧栏并保活，进程与连接都不死

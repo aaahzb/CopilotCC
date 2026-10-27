@@ -1,4 +1,4 @@
-import type { PermissionModeSetting, EffortLevelSetting } from "./protocol";
+import type { PermissionModeSetting, EffortLevelSetting, FastModeRuntime } from "./protocol";
 
 /** 扩展设置（chrome.storage.local 键 ccc.settings） */
 export interface ExtSettings {
@@ -13,6 +13,8 @@ export interface ExtSettings {
   model: string;
   /** 推理强度；空串 = 默认 */
   effort: EffortLevelSetting | "";
+  /** 用户请求的 Claude Code 原生 fast 设置；实际状态另存 RuntimeCache.fast */
+  fastMode: boolean;
   lastFolder: string;
 }
 
@@ -25,11 +27,13 @@ export const DEFAULTS: ExtSettings = {
   permissionMode: "auto",
   model: "",
   effort: "",
+  fastMode: false,
   lastFolder: "",
 };
 
 const KEY = "ccc.settings";
 const QUOTE_KEY = "ccc.pendingQuote";
+let settingsWriteChain: Promise<void> = Promise.resolve(); // 无 Web Locks 时使用单视图队列；现代环境使用同源跨上下文锁
 
 /**
  * 读取设置，缺省字段回填默认值。
@@ -41,12 +45,22 @@ export async function loadSettings(): Promise<ExtSettings> {
 }
 
 /**
- * 合并写入设置补丁。
+ * 串行合并写入设置补丁，并返回本次写入的完整快照。
  * @param patch 要更新的字段
+ * @returns 本次补丁合并后的完整设置；后续镜像写入不会改变该返回值
  */
-export async function saveSettings(patch: Partial<ExtSettings>): Promise<void> {
-  const cur = await loadSettings();
-  await chrome.storage.local.set({ [KEY]: { ...cur, ...patch } });
+export function saveSettings(patch: Partial<ExtSettings>): Promise<ExtSettings> {
+  const write = async (): Promise<ExtSettings> => {
+    const cur = await loadSettings();
+    const next = { ...cur, ...patch };
+    await chrome.storage.local.set({ [KEY]: next });
+    return next;
+  };
+  const locks = globalThis.navigator?.locks;
+  if (locks) return locks.request("ccc.settings.write", write); // 调用时即跨侧边栏/弹窗排队
+  const operation = settingsWriteChain.then(write);
+  settingsWriteChain = operation.then(() => undefined, () => undefined);
+  return operation;
 }
 
 /**
@@ -73,19 +87,21 @@ export async function takePendingQuote(): Promise<string | null> {
   return null;
 }
 
-/** 桥接上报的实际生效模型/effort（chrome.storage.local 键 ccc.runtime）：跨重载缓存，换桥时清空 */
+/** 桥接上报的实际生效模型/effort/fast（chrome.storage.local 键 ccc.runtime）：跨重载缓存，换桥时清空 */
 export interface RuntimeCache {
   /** 实际生效的模型 ID（原始值，如 claude-fable-5-1） */
   model?: string;
   /** 实际生效的 effort；null = 该会话不下发 effort 参数 */
   effort?: EffortLevelSetting | null;
+  /** CC 原生 fast 实际状态与禁用原因；undefined = 等待/没有回报 */
+  fast?: FastModeRuntime;
 }
 
 const RUNTIME_KEY = "ccc.runtime";
 
 /**
  * 读取运行时信息缓存。
- * @returns 上次桥接上报的实际生效模型/effort；无缓存为空对象
+ * @returns 上次桥接上报的实际生效模型/effort/fast；无缓存为空对象
  */
 export async function loadRuntimeCache(): Promise<RuntimeCache> {
   const raw = await chrome.storage.local.get(RUNTIME_KEY);

@@ -9,10 +9,33 @@ export type PermissionModeSetting = "auto" | "acceptEdits" | "plan" | "approve-e
 /** 推理强度档位（对应 Agent SDK 的 EffortLevel） */
 export type EffortLevelSetting = "low" | "medium" | "high" | "xhigh" | "max";
 
-/** 历史回放消息 */
+/** Claude Code 原生 fast 实际状态；cooldown 是 CC 因速率限制回报的冷却期 */
+export type FastModeState = "off" | "cooldown" | "on";
+
+/** Claude Code 原生 fast 不可用原因，不在 CopilotCC 自行扩展或推断 */
+export type FastModeDisabledReason =
+  | "free" | "preference" | "extra_usage_disabled" | "network_error" | "unknown"
+  | "not_first_party" | "disabled_by_env" | "model_not_allowed" | "sdk_opt_in_required" | "pending";
+
+/** CC 最近回报的 fast 真值；与用户持久化的请求开关相互独立 */
+export interface FastModeRuntime {
+  state: FastModeState;
+  disabledReason?: FastModeDisabledReason;
+}
+
+/** CC init/result 最近确认的执行真值；缺字段表示没有新证据，不等于 off */
+export interface ExecutionRuntime {
+  model?: string;
+  effort?: EffortLevelSetting | null;
+  fast?: FastModeRuntime;
+}
+
+/** 历史回放消息；tool 复用实时工具活动行，不作为回答正文气泡 */
 export interface HistoryMessage {
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "tool";
   text: string;
+  /** 工具名或本地命令名；仅 role=tool 时有 */
+  toolName?: string;
   /** 完整发送内容（已去防注入前缀）；仅桥接来源的用户消息有，供右键溯源 */
   sentText?: string;
   /** 附带标记：full=页面全文，selection=仅选中文字，upload=上传文件 */
@@ -52,10 +75,14 @@ export const MAX_UPLOAD_B64_CHARS = 41_000_000;
 /** 单次上传 base64 总字符数上限（≈45MB 二进制；ws 默认 100MiB 帧上限内留足余量） */
 export const MAX_UPLOAD_TOTAL_B64 = 60_000_000;
 
+/** settings.set 的显式变更字段；存在时未列出的完整快照字段仅供兼容，不得覆盖服务器 */
+export type ExecutionSettingField = "permissionMode" | "model" | "effort" | "fastMode";
+
 export type ClientMessage =
   | { type: "auth"; token: string }
   | { type: "client.ready" }
-  | { type: "folder.bind"; path: string }
+  // reset=false 仅用于重连后的自动回绑；用户主动绑定缺省按 true 处理
+  | { type: "folder.bind"; path: string; reset?: boolean }
   | { type: "folder.pick" }
   // chat.send：text=组装后的完整发送内容；display=用户原始输入（镜像视图上屏用，可空串=纯文件发送）；note=附带结果说明（随 chat.user 广播成 tool 泡）
   | { type: "chat.send"; text: string; display?: string; note?: string; uploads?: UploadFile[] }
@@ -72,22 +99,38 @@ export type ClientMessage =
   | { type: "alias.create"; name: string; folder: string; sessionId: string | null; pageRichness?: PageRichness }
   | { type: "alias.update"; id: string; name?: string; folder?: string; sessionId?: string | null; pageRichness?: PageRichness }
   | { type: "alias.delete"; id: string }
-  | { type: "alias.select"; id: string }
+  | { type: "alias.select"; id: string; reset?: boolean }
   // folder.open：无参——服务端按"当前别名.folder ?? 工作区.folder"解析目标，客户端不传路径（杜绝任意路径打开）
   | { type: "folder.open" }
-  | { type: "settings.set"; permissionMode: PermissionModeSetting; model?: string; effort?: EffortLevelSetting };
+  // fastOnly=true 时只有 fastMode 是变更意图；其余完整字段仅供旧桥兼容，不得据旧值重建会话
+  // hello=true 仅表示自动播种；已初始化桥必须忽略，手动用户操作不得携带
+  | { type: "settings.set"; permissionMode: PermissionModeSetting; model?: string; effort?: EffortLevelSetting; fastMode?: boolean; fastOnly?: boolean; hello?: boolean; fields?: ExecutionSettingField[] };
 
 export type ServerMessage =
   | { type: "auth.ok"; instance?: string }
   | { type: "auth.fail"; reason: string }
-  | { type: "folder.bound"; path: string; resumed: boolean; title: string; sessionId: string | null }
+  // reset=true 仅用于主动换绑/新建/切换/删除；client.ready 快照省略，避免重连误清界面
+  | { type: "folder.bound"; path: string; resumed: boolean; title: string; sessionId: string | null; reset?: boolean }
   | { type: "folder.error"; message: string }
   // folder.picked：系统文件夹选择框结果；path 为 null = 用户取消或平台不支持
   | { type: "folder.picked"; path: string | null }
   | { type: "chat.delta"; text: string }
   | { type: "chat.tool"; name: string; summary: string }
   // chat.done 可选字段：model/effort = SDK init 上报的实际生效值；compacted = 本轮发生过 compact（扩展据此下一轮强制附带页面）
-  | { type: "chat.done"; sessionId: string; model?: string; effort?: EffortLevelSetting | null; compacted?: boolean }
+  | { type: "chat.done"; sessionId: string; model?: string; effort?: EffortLevelSetting | null; fast?: FastModeRuntime; compacted?: boolean }
+  // settings.state：请求设置的全量镜像 + 可选 CC 运行时真值；广播给全部视图，快照时定向补发
+  | {
+      type: "settings.state";
+      permissionMode: PermissionModeSetting;
+      model?: string;
+      effort?: EffortLevelSetting;
+      fastMode: boolean;
+      /** fast-only 已改请求但尚无新 CC fast 真值；缺省/ false 不得清缓存 */
+      fastPending?: boolean;
+      runtime?: ExecutionRuntime;
+    }
+  // settings.error：原生设置应用失败，不属于聊天轮次终结，不得据它清除 busy
+  | { type: "settings.error"; message: string }
   | { type: "chat.error"; message: string }
   // chat.aborted：本轮被用户手动停止（桥接立即下发，不等 CLI 收尾帧；客户端据它解除 busy 并保留已生成的部分文字）
   | { type: "chat.aborted" }
@@ -145,6 +188,26 @@ export function isPermissionMode(v: unknown): v is PermissionModeSetting {
  */
 export function isEffortLevel(v: unknown): v is EffortLevelSetting {
   return v === "low" || v === "medium" || v === "high" || v === "xhigh" || v === "max";
+}
+
+/**
+ * 校验 CC 回报的 fast 状态。
+ * @param v 任意外部值
+ * @returns 是否为原生 FastModeState
+ */
+export function isFastModeState(v: unknown): v is FastModeState {
+  return v === "off" || v === "cooldown" || v === "on";
+}
+
+/**
+ * 校验 CC 回报的 fast 禁用原因。
+ * @param v 任意外部值
+ * @returns 是否为原生 FastModeDisabledReason
+ */
+export function isFastModeDisabledReason(v: unknown): v is FastModeDisabledReason {
+  return v === "free" || v === "preference" || v === "extra_usage_disabled" || v === "network_error"
+    || v === "unknown" || v === "not_first_party" || v === "disabled_by_env" || v === "model_not_allowed"
+    || v === "sdk_opt_in_required" || v === "pending";
 }
 
 /**
@@ -228,7 +291,16 @@ export function parseClientMessage(raw: string): ClientMessage | null {
         // model/effort 为可选字段：只接受合法值，空串视为"跟随默认"（不下发）
         const model = typeof m.model === "string" && m.model.length > 0 ? m.model : undefined;
         const effort = isEffortLevel(m.effort) ? m.effort : undefined;
-        return { type: "settings.set", permissionMode: m.permissionMode, model, effort };
+        // 缺省与非法值都为 undefined：由 Workspace 保留旧偏好，兼容尚未支持 fast 的客户端
+        const fastMode = typeof m.fastMode === "boolean" ? m.fastMode : undefined;
+        const fastOnly = typeof m.fastOnly === "boolean" ? m.fastOnly : undefined;
+        const hello = m.hello === true ? true : undefined;
+        // fields 只描述用户本次明确修改的字段；非法项剥掉并去重，空数组保留为 no-op
+        const fields = Array.isArray(m.fields)
+          ? [...new Set<ExecutionSettingField>(m.fields.filter((v: unknown): v is ExecutionSettingField =>
+            v === "permissionMode" || v === "model" || v === "effort" || v === "fastMode"))]
+          : undefined;
+        return { type: "settings.set", permissionMode: m.permissionMode, model, effort, fastMode, fastOnly, hello, fields };
       }
       default:
         return null;

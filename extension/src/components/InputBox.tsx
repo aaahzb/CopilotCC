@@ -1,8 +1,9 @@
-import React, { useRef, useState } from "react";
-import type { PermissionModeSetting, EffortLevelSetting } from "../lib/protocol";
+import React, { useEffect, useRef, useState } from "react";
+import type { PermissionModeSetting, EffortLevelSetting, FastModeRuntime } from "../lib/protocol";
+import { fastDisabledReasonText, fastStatusText } from "../lib/format";
 import { formatSize, readFilesAsUploads, validateFiles, type PendingUpload } from "../lib/upload-files";
 
-/** 底部输入区：附带开关、权限模式/模型/effort 选择（同一行）、文件上传（拖入或点 📁）、发送/停止 */
+/** 底部输入区：上方选择权限/模型与 CC 原生 fast，下方选择 effort 并显示 CC 真值；另含上传、发送和真正停止 */
 export function InputBox(props: {
   disabled: boolean;
   /** 一轮生成进行中（含思考/工具调用期，不等首字）：发送键变为停止键，Esc 可中止 */
@@ -15,8 +16,15 @@ export function InputBox(props: {
   effort: EffortLevelSetting | "";
   /** 桥接上报的实际生效模型（已压短）；优先于手动选择显示，未知 = undefined */
   effectiveModel?: string;
-  /** 桥接上报的实际生效 effort；null/undefined = 不显示 */
+  /** CC 实际 effort；null = 明确未下发，undefined = 尚无真值时可显示请求值 */
   effectiveEffort?: EffortLevelSetting | null;
+  /** 用户请求的原生 fast 开关；不代表已经实际生效 */
+  fastMode: boolean;
+  /** CC 最近回报的 fast 真值；undefined = 等待回报或老 CLI 未提供 */
+  fastRuntime?: FastModeRuntime;
+  /** 原生设置应用失败；只显示在设置区 */
+  settingsError?: string;
+  onFastModeChange(v: boolean): void;
   /** 本次强制看页面：下一条消息强制附带页面全文（一次性，compact 后自动续一轮） */
   forceAttach: boolean;
   onToggleForceAttach(): void;
@@ -38,6 +46,25 @@ export function InputBox(props: {
   const [uploadError, setUploadError] = useState(""); // 校验失败提示（数量/单文件/总量上限）
   const [dragOver, setDragOver] = useState(false); // 拖拽悬停高亮
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [effortOpen, setEffortOpen] = useState(false); // 仅控制下方 effort 弹层，不进入设置协议
+  const effortStatusRef = useRef<HTMLDivElement>(null);
+
+  // 弹层打开时支持点击外部和 Escape 关闭；不拦截事件，保留输入区原有停止快捷键。
+  useEffect(() => {
+    if (!effortOpen) return;
+    const onOutside = (event: MouseEvent): void => {
+      if (!effortStatusRef.current?.contains(event.target as Node | null)) setEffortOpen(false);
+    };
+    const onEscape = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") setEffortOpen(false);
+    };
+    document.addEventListener("mousedown", onOutside);
+    document.addEventListener("keydown", onEscape);
+    return () => {
+      document.removeEventListener("mousedown", onOutside);
+      document.removeEventListener("keydown", onEscape);
+    };
+  }, [effortOpen]);
 
   /** 合并新文件并整单校验：任一越界整批不加，报原因（友好拦截，协议层还有防线） */
   function addFiles(list: FileList | File[]): void {
@@ -65,11 +92,21 @@ export function InputBox(props: {
     setFiles([]);
     setUploadError("");
   };
-  // 指示文本：手动选择优先（刚改下拉时上报值还是旧会话的），其次桥接上报的实际生效值；都不知道就不显示（绝不显示"默认"二字）
-  const modelText = props.model || props.effectiveModel || "";
-  const effortText = props.effort || (props.effectiveEffort ?? "");
-  // 压缩为裸值 "模型 · effort"（去掉"模型/effort"前缀省宽度，窄面板下不被按钮挤没；含义在下方悬浮提示 title 里）
-  const hint = [modelText, effortText].filter(Boolean).join(" · ");
+  // 有 CC 真值时实际值优先；普通设置变化会清真值，此时才显示请求值并标明待确认。
+  const modelPending = !props.effectiveModel && Boolean(props.model);
+  const modelText = props.effectiveModel || props.model || "";
+  const modelHint = modelText ? `${modelText}${modelPending ? "（待确认）" : ""}` : "";
+  const effortPending = props.effectiveEffort === undefined && Boolean(props.effort);
+  // null 是 CC 明确回报“不下发 effort”，不能用 ?? 回退成用户请求值。
+  const effortText = props.effectiveEffort !== undefined ? (props.effectiveEffort ?? "") : props.effort;
+  const effortHint = effortText ? `${effortText}${effortPending ? "（待确认）" : ""}` : "";
+  const hint = [modelHint, effortHint].filter(Boolean).join(" · ");
+  const fastReason = props.fastRuntime?.disabledReason;
+  const fastTitle = [
+    `请求 fast ${props.fastMode ? "on" : "off"}；实际状态由 Claude Code 回报，单独切换不会中断当前轮次`,
+    fastReason ? fastDisabledReasonText(fastReason) : "",
+    props.fastRuntime?.state === "cooldown" ? "冷却期与恢复由 CC 原生处理，CopilotCC 不计时、不限速" : "",
+  ].filter(Boolean).join("；");
   return (
     <div
       className={`input-box${dragOver ? " drag-over" : ""}`}
@@ -91,6 +128,10 @@ export function InputBox(props: {
           <input type="checkbox" checked={props.attachEnabled} onChange={(e) => props.onToggleAttach(e.target.checked)} />
           附带网页
         </label>
+        <label className={`fast-toggle${props.fastMode ? " on" : ""}`} title={fastTitle}>
+          <input type="checkbox" aria-label="Claude Code 原生 fast" checked={props.fastMode} onChange={(e) => props.onFastModeChange(e.target.checked)} />
+          fast {props.fastMode ? "on" : "off"}
+        </label>
         <select value={props.permissionMode} title="权限模式" onChange={(e) => props.onModeChange(e.target.value as PermissionModeSetting)}>
           <option value="auto">auto 自动</option>
           <option value="acceptEdits">acceptEdits</option>
@@ -105,15 +146,8 @@ export function InputBox(props: {
           <option value="sonnet">sonnet</option>
           <option value="haiku">haiku</option>
         </select>
-        <select value={props.effort} title="推理强度（自动 = 跟随本机 CLI 配置，· 后为当前实际生效值）" onChange={(e) => props.onEffortChange(e.target.value as EffortLevelSetting | "")}>
-          <option value="">{props.effectiveEffort ? `自动 · ${props.effectiveEffort}` : "自动（跟随 CLI 配置）"}</option>
-          <option value="low">low</option>
-          <option value="medium">medium</option>
-          <option value="high">high</option>
-          <option value="xhigh">xhigh</option>
-          <option value="max">max</option>
-        </select>
       </div>
+      {props.settingsError ? <div className="settings-error" role="alert">{props.settingsError}</div> : null}
       {files.length > 0 ? (
         <div className="upload-chips">
           {files.map((f, i) => (
@@ -146,9 +180,45 @@ export function InputBox(props: {
           }
         }}
       />
-      {/* 发送行：最左是当前生效的模型·effort 指示（改动入口是上方下拉）+ 强制看页面开关，上传/发送/停止按钮靠右 */}
+      {/* 发送行：模型仍在上方选择；点击左侧模型·effort 状态选 effort，CC fast 真值紧跟其右 */}
       <div className="send-row">
-        <span className="model-effort" title="当前生效的模型与推理强度（首轮回复后显示实际值；在上方下拉修改）">{hint}</span>
+        <div className="execution-status" ref={effortStatusRef}>
+          <button
+            type="button"
+            className="model-effort"
+            aria-label={`当前 ${hint || "自动"}，点击修改 effort`}
+            aria-haspopup="listbox"
+            aria-expanded={effortOpen}
+            title={`${modelPending || effortPending ? "当前显示请求值，等待 CC 回报实际模型/effort" : "CC 最近回报的实际模型与推理强度"}；点击修改 effort`}
+            onClick={() => setEffortOpen((open) => !open)}
+          >{hint || "自动"}</button>
+          <span className={`fast-runtime ${props.fastRuntime?.state ?? "pending"}`} title={fastTitle} aria-live="polite">
+            {`(${fastStatusText(props.fastRuntime)})`}
+          </span>
+          {effortOpen ? (
+            <div className="effort-picker" role="listbox" aria-label="选择 effort">
+              {(["", "low", "medium", "high", "xhigh", "max"] as Array<EffortLevelSetting | "">).map((value) => (
+                <button
+                  key={value || "auto"}
+                  type="button"
+                  role="option"
+                  aria-selected={props.effort === value}
+                  data-effort={value}
+                  onClick={() => {
+                    setEffortOpen(false);
+                    props.onEffortChange(value);
+                  }}
+                >
+                  {value || (props.effectiveEffort === null
+                    ? "自动 · 未下发 effort"
+                    : props.effectiveEffort
+                      ? `自动 · ${props.effectiveEffort}`
+                      : "自动（跟随 CLI 配置）")}
+                </button>
+              ))}
+            </div>
+          ) : null}
+        </div>
         <button
           type="button"
           className={`force-attach${props.forceAttach ? " on" : ""}`}

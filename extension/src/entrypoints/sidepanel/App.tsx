@@ -11,7 +11,9 @@ import { AliasBar } from "../../components/AliasBar";
 import { MessageList, type UiMsg } from "../../components/MessageList";
 import { InputBox } from "../../components/InputBox";
 import { shortModelName } from "../../lib/format";
+import { hasExecutionSettingsChange, mergeDoneRuntime, mirrorExecutionSettings, runtimeFromSettingsState, toFastSettingsSet, toSettingsSet, type ExecutionSettingsPatch } from "../../lib/settings-sync";
 import { PermissionCard } from "../../components/PermissionCard";
+import { shouldResetConversation } from "../../lib/conversation-state";
 
 /**
  * 别名徽标/芯片色相：id 简单散列取 360 模（弹窗芯片与页面徽标同色，无需调色板）。
@@ -36,6 +38,7 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
   const popupTabId = props.popupTabId ?? null; // 非 null = 弹窗模式（钉住的页面 tab）
   const popupAliasId = props.popupAliasId ?? null; // 弹窗打开时指定要选中的别名
   const [settings, setSettings] = useState<ExtSettings | null>(null);
+  const [settingsError, setSettingsError] = useState(""); // 原生设置应用失败：只提示设置区，不终结聊天轮次
   const [conn, setConn] = useState<ConnState>("connecting");
   const [authError, setAuthError] = useState("");
   const [bound, setBound] = useState<string | null>(null);
@@ -45,7 +48,7 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
   const [busy, setBusy] = useState(false); // 一轮生成进行中（chat.user 起，done/error/aborted/断线/换会话止）：发送键变为停止键
   const [permReq, setPermReq] = useState<{ requestId: string; tool: string; detail: string } | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null); // 当前会话 ID（folder.bound/session.list.data 携带或 chat.done 推送）
-  const [runtime, setRuntime] = useState<RuntimeCache>({}); // 桥接上报的实际生效模型/effort（chat.done 携带，本地缓存跨重载）
+  const [runtime, setRuntime] = useState<RuntimeCache>({}); // CC 回报的实际模型/effort/fast；与请求设置分离并跨重载缓存
   const [forceAttach, setForceAttach] = useState(false); // 本次强制看页面（下一条消息强制附带全文；compact 后自动续一轮）
   const [sessions, setSessions] = useState<SessionInfo[]>([]); // 当前文件夹下的会话列表（切换会话下拉）
   const [showGate, setShowGate] = useState(false); // 手动打开重新配对界面（中途改端口/换桥接）
@@ -70,6 +73,15 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
   const aliasSelectTriedRef = useRef(false); // 弹窗 URL 指定别名的自动选中只试一次
   const settingsRef = useRef<ExtSettings | null>(null);
   settingsRef.current = settings;
+  const runtimeRef = useRef<RuntimeCache>({}); // 长寿命 WS 回调读取最近真值，避免闭包停在首轮空缓存
+  runtimeRef.current = runtime;
+
+  /** 同步更新 ref、界面和持久缓存；调用方决定是完整替换还是缺字段合并 */
+  function commitRuntime(next: RuntimeCache): void {
+    runtimeRef.current = next;
+    setRuntime(next);
+    void saveRuntimeCache(next);
+  }
 
   /** 处理桥接消息 */
   function onServerMessage(m: ServerMessage): void {
@@ -84,14 +96,12 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
         break;
       case "folder.bound":
         snapshotBoundRef.current = true; // 快照已含绑定（或非快照期的主动绑定，置位无害）
-        if (
-          (prevFolderRef.current !== null && prevFolderRef.current !== m.path) ||
-          (prevBoundSidRef.current !== null && prevBoundSidRef.current !== m.sessionId)
-        ) {
-          // 换文件夹或换会话：清空当前显示（含流式残留），历史回放随后覆盖
+        if (shouldResetConversation(m, prevFolderRef.current, prevBoundSidRef.current)) {
+          // 主动 reset 或换绑：清消息、流式、busy 与运行时缓存
           setMessages([]);
           setStreaming(null);
           setBusy(false); // 旧会话的进行轮随切换作废，其收尾帧不再属于当前界面
+          commitRuntime({}); // 主动换文件夹/会话后旧实际值失效；初次快照不在此清缓存
         }
         prevFolderRef.current = m.path;
         prevBoundSidRef.current = m.sessionId;
@@ -107,7 +117,14 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
         break;
       case "session.history.data":
         // 回放消息带 sentText/attachKind：重载前后显示行为一致（气泡只显示问题，完整发送内容右键可溯源）
-        setMessages(m.messages.map((h) => ({ id: crypto.randomUUID(), role: h.role, text: h.text, sentText: h.sentText, attachKind: h.attachKind })));
+        setMessages(m.messages.map((h) => ({
+          id: crypto.randomUUID(),
+          role: h.role,
+          toolName: h.toolName, // 历史工具与实时 chat.tool 共用同一活动行渲染
+          text: h.text,
+          sentText: h.sentText,
+          attachKind: h.attachKind,
+        })));
         break;
       case "session.list.data":
         setSessions(m.sessions);
@@ -156,7 +173,7 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
         // 快照无绑定 = 桥接侧尚无工作区绑定：回绑上次文件夹（快照已含绑定时绝不误抢）
         if (!snapshotBoundRef.current) {
           const p = settingsRef.current?.lastFolder;
-          if (p) clientRef.current?.send({ type: "folder.bind", path: p });
+          if (p) clientRef.current?.send({ type: "folder.bind", path: p, reset: false });
         }
         break;
       }
@@ -167,18 +184,31 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
         setStreaming((s) => (s ?? "") + m.text);
         break;
       case "chat.tool":
-        setMessages((ms) => [...ms, { id: crypto.randomUUID(), role: "tool", text: `🔧 ${m.name} ${m.summary}` }]);
+        // 工具名与摘要分开传递，由 MessageList 渲染分类图标和非气泡活动行
+        setMessages((ms) => [...ms, { id: crypto.randomUUID(), role: "tool", toolName: m.name, text: m.summary }]);
+        break;
+      case "settings.state": {
+        const current = settingsRef.current;
+        if (current) {
+          const executionChanged = hasExecutionSettingsChange(current, m);
+          const next = mirrorExecutionSettings(current, m);
+          settingsRef.current = next;
+          setSettings(next); // 只更新内存，迟到镜像不再回写共享存储
+          if (executionChanged) setSettingsError("");
+        }
+        const nextRuntime = runtimeFromSettingsState(runtimeRef.current, m);
+        if (nextRuntime !== runtimeRef.current) commitRuntime(nextRuntime);
+        break;
+      }
+      case "settings.error":
+        setSettingsError(m.message); //  busy 与聊天消息完全不动
         break;
       case "chat.done":
         setBusy(false);
         setSessionId(m.sessionId);
         prevBoundSidRef.current = m.sessionId;
-        if (typeof m.model === "string" && m.model.length > 0) {
-          // 桥接上报实际生效的模型/effort：更新指示并落缓存（重载扩展后首轮回复前也有真值可显示）
-          const rt: RuntimeCache = { model: m.model, ...(m.effort !== undefined ? { effort: m.effort } : {}) };
-          setRuntime(rt);
-          void saveRuntimeCache(rt);
-        }
+        // chat.done 可只携带 fast 或 effort：逐字段合并，缺字段保留最近真值，不再以 model 存在为前提
+        commitRuntime(mergeDoneRuntime(runtimeRef.current, m));
         setForceAttach(m.compacted === true); // compact 后下一轮强制带页面（上下文里的页面内容已被压缩掉）
         setStreaming((s) => {
           if (s) setMessages((ms) => [...ms, { id: crypto.randomUUID(), role: "assistant", text: s }]);
@@ -225,7 +255,7 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
         const current = settingsRef.current;
         if (!current) return [{ type: "client.ready" }]; // 连接必由已加载设置发起；仅作防御性兜底
         return [
-          { type: "settings.set", permissionMode: current.permissionMode, model: current.model || undefined, effort: current.effort || undefined },
+          toSettingsSet(current, true), // 自动 hello 只播种未初始化桥
           { type: "client.ready" },
         ];
       },
@@ -242,7 +272,7 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
     void (async () => {
       const s = await loadSettings();
       setSettings(s);
-      setRuntime(await loadRuntimeCache()); // 上次会话的实际生效模型/effort（首轮回复前的占位真值）
+      commitRuntime(await loadRuntimeCache()); // 上次会话的实际生效模型/effort/fast；首轮回报前作为缓存显示
       if (s.token) connect(s);
       // 右键菜单带入的选中文字：预填一条引用消息
       const quote = await takePendingQuote();
@@ -285,7 +315,7 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
     if (aliases.length === 0) return; // 快照未到，等
     aliasSelectTriedRef.current = true;
     if (currentAliasId !== popupAliasId && aliases.some((a) => a.id === popupAliasId)) {
-      clientRef.current?.send({ type: "alias.select", id: popupAliasId });
+      clientRef.current?.send({ type: "alias.select", id: popupAliasId, reset: false });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [aliases, currentAliasId, conn, popupTabId, popupAliasId]);
@@ -369,7 +399,11 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
   async function handleBind(p: string): Promise<void> {
     if (!p.trim()) return;
     await pushFolderHistory(p.trim());
-    setSettings(await loadSettings());
+    const stored = await loadSettings();
+    const current = settingsRef.current;
+    const next = { ...(current ?? stored), lastFolder: stored.lastFolder, folderHistory: stored.folderHistory };
+    settingsRef.current = next;
+    setSettings(next); // 只回填本地文件夹字段，不用存储快照覆盖服务器执行设置
     setBound(null);
     clientRef.current?.send({ type: "folder.bind", path: p.trim() });
   }
@@ -424,18 +458,18 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
     setDraft("");
   }
 
-  /** 更新设置并把权限模式/模型/effort 全量推给桥接（任一变化桥接都会重建会话） */
-  async function applySettings(patch: Partial<ExtSettings>): Promise<void> {
-    await saveSettings(patch);
-    const s = await loadSettings();
-    settingsRef.current = s;
-    setSettings(s);
-    clientRef.current?.send({
-      type: "settings.set",
-      permissionMode: s.permissionMode,
-      model: s.model || undefined,
-      effort: s.effort || undefined,
-    });
+  /** 更新执行设置；以最新服务器内存镜像构造快照，fields 限定本次变更，fast-only 走原生接口。 */
+  async function applySettings(patch: ExecutionSettingsPatch): Promise<void> {
+    const stored = await saveSettings(patch);
+    const current = settingsRef.current ?? stored;
+    const next = { ...current, ...patch }; // 存储可能留有失败回滚前的 fast，不得覆盖服务器内存镜像
+    settingsRef.current = next;
+    setSettings(next);
+    setSettingsError("");
+    const keys = Object.keys(patch);
+    const fastOnly = patch.fastMode !== undefined && keys.every((k) => k === "fastMode");
+    const fields = keys as Array<keyof ExecutionSettingsPatch>;
+    clientRef.current?.send(fastOnly ? toFastSettingsSet(next) : toSettingsSet(next, false, fields));
   }
 
   async function handleModeChange(m: PermissionModeSetting): Promise<void> {
@@ -444,11 +478,13 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
 
   /** 重新配对：保存新连接参数、清掉旧桥的界面状态并重连（新桥的 chat.sync 快照会驱动回绑 lastFolder） */
   async function handlePair(info: PairingInfo): Promise<void> {
-    await saveSettings({ token: info.t, port: info.p, host: info.h });
-    const s = await loadSettings();
+    const s = await saveSettings({ token: info.t, port: info.p, host: info.h });
     setAuthError("");
     setShowGate(false);
-    setSettings(s);
+    const current = settingsRef.current;
+    const next = { ...(current ?? s), token: s.token, port: s.port, host: s.host };
+    settingsRef.current = next;
+    setSettings(next); // 配对只改连接字段，保留当前内存中的执行设置直到新桥快照到达
     // 换桥 = 换世界：清掉旧桥留下的界面状态，由新桥的 folder.bound/history/chat.sync 重建
     prevFolderRef.current = null;
     prevBoundSidRef.current = null;
@@ -463,9 +499,10 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
     setCurrentAliasId(null); // 换桥：旧桥别名作废，等新桥 alias.list.data 重建
     setSessionId(null);
     setDraft("");
-    setRuntime({}); // 新桥的实际生效值未知，连缓存一起清，等首轮 chat.done 重建
+    runtimeRef.current = {};
+    setRuntime({}); // 新桥的实际生效值未知，连缓存一起清，等 settings.state/chat.done 重建
     void clearRuntimeCache();
-    connect(s);
+    connect(next); // connect 会同步设置 settingsRef，必须传入刚合并的内存镜像而非存储快照
   }
 
   if (!settings) return <div className="loading">加载中…</div>;
@@ -537,13 +574,17 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
         model={settings.model}
         effort={settings.effort}
         effectiveModel={runtime.model ? shortModelName(runtime.model) : undefined}
-        effectiveEffort={runtime.effort ?? undefined}
+        effectiveEffort={runtime.effort}
+        fastMode={settings.fastMode}
+        fastRuntime={runtime.fast}
+        settingsError={settingsError}
         forceAttach={forceAttach}
         onToggleForceAttach={() => setForceAttach((v) => !v)}
-        onToggleAttach={async (v) => { await saveSettings({ attachEnabled: v }); setSettings(await loadSettings()); }}
+        onToggleAttach={async (v) => { const saved = await saveSettings({ attachEnabled: v }); const current = settingsRef.current; const next = { ...(current ?? saved), attachEnabled: saved.attachEnabled }; settingsRef.current = next; setSettings(next); }}
         onModeChange={handleModeChange}
         onModelChange={(v) => void applySettings({ model: v })}
         onEffortChange={(v) => void applySettings({ effort: v })}
+        onFastModeChange={(v) => void applySettings({ fastMode: v })}
         draft={draft}
         onDraftChange={handleDraftChange}
         onComposition={(v) => { composingRef.current = v; }}

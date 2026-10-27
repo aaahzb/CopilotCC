@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseClientMessage, encode, isPermissionMode } from "../src/protocol";
+import { parseClientMessage, encode, isPermissionMode, isFastModeState, isFastModeDisabledReason, type ServerMessage } from "../src/protocol";
 
 describe("parseClientMessage", () => {
   it("解析合法消息", () => {
@@ -41,6 +41,17 @@ describe("settings.set 扩展字段", () => {
   it("空串 model 与非法 effort 被剥掉", () => {
     expect(parseClientMessage(JSON.stringify({ type: "settings.set", permissionMode: "auto", model: "", effort: "ultra" })))
       .toEqual({ type: "settings.set", permissionMode: "auto", model: undefined, effort: undefined });
+  });
+});
+
+describe("settings.set 显式字段掩码", () => {
+  it("只透传已知变更字段并去重，完整快照里的其他值不成为变更意图", () => {
+    expect(parseClientMessage(JSON.stringify({ type: "settings.set", permissionMode: "auto", fields: ["model", "fastMode", "model", "bogus"] })))
+      .toMatchObject({ fields: ["model", "fastMode"] });
+    expect(parseClientMessage(JSON.stringify({ type: "settings.set", permissionMode: "auto", fields: [] })))
+      .toMatchObject({ fields: [] });
+    expect(parseClientMessage(JSON.stringify({ type: "settings.set", permissionMode: "auto", fields: "model" })))
+      .toMatchObject({ fields: undefined });
   });
 });
 
@@ -110,5 +121,52 @@ describe("镜像工作区新增消息", () => {
 
   it("folder.open 无参解析", () => {
     expect(parseClientMessage(JSON.stringify({ type: "folder.open" }))).toEqual({ type: "folder.open" });
+  });
+});
+
+
+describe("原生 fast 设置协议", () => {
+  it("true 与显式 false 原样透传，缺省保持 undefined", () => {
+    expect(parseClientMessage(JSON.stringify({ type: "settings.set", permissionMode: "auto", fastMode: true })))
+      .toMatchObject({ fastMode: true });
+    expect(parseClientMessage(JSON.stringify({ type: "settings.set", permissionMode: "auto", fastMode: false })))
+      .toMatchObject({ fastMode: false });
+    expect(parseClientMessage(JSON.stringify({ type: "settings.set", permissionMode: "auto" })))
+      .toMatchObject({ fastMode: undefined });
+  });
+
+  it("非法 fastMode 类型剥掉，不冒充用户关闭", () => {
+    for (const fastMode of ["false", 0, 1, null, {}, []]) {
+      expect(parseClientMessage(JSON.stringify({ type: "settings.set", permissionMode: "auto", fastMode })))
+        .toMatchObject({ fastMode: undefined });
+    }
+  });
+
+  it("fast 状态与禁用原因严格匹配 CC 原生枚举", () => {
+    for (const state of ["off", "cooldown", "on"]) expect(isFastModeState(state)).toBe(true);
+    expect(isFastModeState("pending")).toBe(false);
+    expect(isFastModeDisabledReason("model_not_allowed")).toBe(true);
+    expect(isFastModeDisabledReason("cooldown")).toBe(false);
+  });
+
+  it("自动 hello 标志仅接受布尔 true，普通手动设置不携带", () => {
+    expect(parseClientMessage(JSON.stringify({ type: "settings.set", permissionMode: "auto", fastMode: true, hello: true })))
+      .toMatchObject({ fastMode: true, hello: true });
+    expect(parseClientMessage(JSON.stringify({ type: "settings.set", permissionMode: "auto", hello: false })))
+      .toMatchObject({ hello: undefined });
+    expect(parseClientMessage(JSON.stringify({ type: "settings.set", permissionMode: "auto", hello: "true" })))
+      .toMatchObject({ hello: undefined });
+  });
+
+  it("settings.state 与 settings.error 服务消息可编码", () => {
+    const state: ServerMessage = {
+      type: "settings.state",
+      permissionMode: "auto",
+      fastMode: true,
+      runtime: { model: "claude-opus-5-5", fast: { state: "cooldown", disabledReason: "network_error" } },
+    };
+    const error: ServerMessage = { type: "settings.error", message: "native rejected" };
+    expect(encode(state)).toContain('"cooldown"');
+    expect(encode(error)).toContain('"settings.error"');
   });
 });

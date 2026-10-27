@@ -59,7 +59,7 @@ describe("BridgeClient", () => {
 
   it("auth.ok 后先补发完整模型设置再 client.ready：桥接重启不回落 CLI 默认模型", () => {
     const hello: ClientMessage[] = [
-      { type: "settings.set", permissionMode: "auto", model: "sonnet", effort: "high" },
+      { type: "settings.set", permissionMode: "auto", model: "sonnet", effort: "high", fastMode: true, hello: true },
       { type: "client.ready" },
     ];
     const c = new BridgeClient({

@@ -17,27 +17,63 @@ describe("readTranscript", () => {
   const sid = "sess-1";
 
   beforeEach(() => {
-    process.env.CCC_FAKE_HOME = fakeHome; // 测试用假 home
+    process.env.CCC_FAKE_HOME = fakeHome;
     const dir = path.join(fakeHome, ".claude", "projects", slugifyPath(path.resolve(cwd)));
     fs.mkdirSync(dir, { recursive: true });
     const lines = [
       JSON.stringify({ type: "user", message: { content: "这页讲了什么" } }),
-      JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "讲了 X" }, { type: "tool_use", name: "Write", input: {} }] } }),
+      JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "讲了 X" }, { type: "tool_use", name: "Write", input: { file_path: "a.md" } }] } }),
       JSON.stringify({ type: "result", subtype: "success" }),
       "bad line",
     ];
-    fs.writeFileSync(path.join(dir, `${sid}.jsonl`), lines.join("\n"), "utf-8");
+    fs.writeFileSync(path.join(dir, sid + ".jsonl"), lines.join("\n"), "utf-8");
   });
 
   afterEach(() => {
     delete process.env.CCC_FAKE_HOME;
   });
 
-  it("抽取 user/assistant 纯文本，跳过工具块与坏行", () => {
+  it("保留 user/assistant 文本和工具活动，跳过坏行", () => {
     const msgs = readTranscript(cwd, sid);
     expect(msgs).toEqual([
       { role: "user", text: "这页讲了什么" },
       { role: "assistant", text: "讲了 X" },
+      { role: "tool", toolName: "Write", text: "a.md" },
+    ]);
+  });
+
+  it("同一 assistant 内按 content 顺序恢复工具和正文", () => {
+    const dir = path.join(fakeHome, ".claude", "projects", slugifyPath(path.resolve(cwd)));
+    const lines = [
+      JSON.stringify({ type: "assistant", message: { content: [
+        { type: "tool_use", name: "Write", input: { file_path: "simpleTable.md" } },
+        { type: "text", text: "已写入简介" },
+      ] } }),
+    ];
+    fs.writeFileSync(path.join(dir, sid + ".jsonl"), lines.join("\n"), "utf-8");
+    expect(readTranscript(cwd, sid)).toEqual([
+      { role: "tool", toolName: "Write", text: "simpleTable.md" },
+      { role: "assistant", text: "已写入简介" },
+    ]);
+  });
+
+  it("本地命令按真实父子关系合并，用户主动输入的相似标签保持正文", () => {
+    const dir = path.join(fakeHome, ".claude", "projects", slugifyPath(path.resolve(cwd)));
+    const caveatId = "caveat-1";
+    const commandId = "command-1";
+    const commandText = "<command-name>/model</command-name>\n<command-message>model</command-message>\n<command-args>sonnet</command-args>";
+    const lines = [
+      JSON.stringify({ type: "user", uuid: caveatId, parentUuid: "parent-0", isMeta: true, message: { content: "<local-command-caveat>CLI context only</local-command-caveat>" } }),
+      JSON.stringify({ type: "user", uuid: commandId, parentUuid: caveatId, message: { content: commandText } }),
+      JSON.stringify({ type: "user", uuid: "stdout-1", parentUuid: commandId, message: { content: "<local-command-stdout>Set model to claude-sonnet-5-5</local-command-stdout>" } }),
+      JSON.stringify({ type: "user", uuid: "typed-1", parentUuid: "stdout-1", message: { content: commandText } }),
+      JSON.stringify({ type: "user", uuid: "typed-2", parentUuid: "typed-1", message: { content: "普通问题" } }),
+    ];
+    fs.writeFileSync(path.join(dir, sid + ".jsonl"), lines.join("\n"), "utf-8");
+    expect(readTranscript(cwd, sid)).toEqual([
+      { role: "tool", toolName: "/model", text: "sonnet → Set model to claude-sonnet-5-5" },
+      { role: "user", text: commandText },
+      { role: "user", text: "普通问题" },
     ]);
   });
 
