@@ -127,6 +127,8 @@ interface Workspace {
   currentAliasId: string | null;
   /** 本轮回答进行中（chat.send 受理 → done/error/aborted） */
   busy: boolean;
+  /** 工作区正在压缩上下文（chat.sync 快照供中途接入的视图立即提示） */
+  compacting: boolean;
   /** 本轮已流出的部分文本（快照给中途接入的视图补流式；轮次结束清空） */
   streamText: string;
   /** 在途轮的用户气泡（chat.user 已广播但尚未落盘，历史回放里没有，快照靠它补齐） */
@@ -488,6 +490,7 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
     runtimeAuthoritative: false,
     currentAliasId: null,
     busy: false,
+    compacting: false,
     streamText: "",
     inflightUser: null,
     pendingPerm: null,
@@ -633,6 +636,7 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
     workspace.streamText = "";
     workspace.inflightUser = null;
     workspace.pendingPerm = null;
+    workspace.compacting = false; // 轮次异常终结：压缩提示不悬挂
   }
 
   /** 为当前文件夹创建（或重建）Claude 会话；事件一律广播并记账到工作区（快照数据源） */
@@ -643,6 +647,7 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
     workspace.fastRollback = currentFastSnapshot(); // 新 Query 启动设置成为后续运行时切换的完整回滚基线
     workspace.fastRollbackSeq = workspace.fastRequestSeq;
     workspace.runtime = {}; // 新 Query 尚无真值；是否清扩展缓存由 runtimeAuthoritative 明确区分
+    workspace.compacting = false; // 新 Query 不继承旧会话的压缩提示
     if (replacing) workspace.runtimeAuthoritative = true; // 主动替换旧 Query：空快照也是权威失效通知
     workspace.claude = newSession(f, {
       resumeId,
@@ -656,6 +661,10 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
           broadcast({ type: "chat.delta", text });
         },
         onTool: (name, summary) => broadcast({ type: "chat.tool", name, summary }),
+        onCompact: (ev) => {
+          workspace.compacting = ev.phase === "start";
+          broadcast({ type: "chat.compact", ...ev });
+        },
         onRuntime: (info) => {
           setRuntime(info);
           broadcast(settingsStateMsg(true));
@@ -767,6 +776,7 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
       user: workspace.inflightUser,
       permReq: workspace.pendingPerm,
       draft: workspace.draft,
+      compacting: workspace.compacting,
     });
   }
 

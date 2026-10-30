@@ -37,6 +37,23 @@
   首个组合探针在第四轮有效帧采集完成后，清理代码因对 void 返回值调用 .catch 报 TypeError；启动对照已独立重跑并成功，非密钥结果均保存在获批隔离目录。
 - [x] 自动档恢复探针：`model:null`、`model:"default"` 与 `setModel()` 都只恢复到 CC 内建默认 Opus，不能恢复用户 settings 自动解析的 Fable；首轮前 `getSettings().applied.model` 可取得完整 `claude-fable-5-1`，保存后用 off+该具体 ID 可恢复 Fable/off。显式 Opus Query 的 applied 不能冒充旧自动档基线；未公开元数据只做局部能力检测和降级。
 
+## 压缩进度可见性（2026-10-29，真实全链探针已通过）
+
+用户反馈：CC 自动压缩期间聊天框长时间无动静，用户不知道背后在做什么会焦虑，也无法对压缩后的记忆质量建立预期。设计要求显示"正在压缩…"与完成后真实压缩率；CLI/SDK 全程不输出进度百分比（真 CLI 2.1.301 探针实证），故采用真实跳秒 + 完成后按 1-post/pre 实算压缩率，拒绝伪造百分比动画。
+
+- [x] 真实事件源探针：本机假上游 + 真 CLI 触发 /compact，stream-json 实录帧序为 status(compacting) → status(null, compact_result) → compact_boundary 元数据，且 done 帧比 boundary 帧早到约 4ms（13ms vs 17ms）。
+- [x] 协议：shared/protocol.ts 新增 chat.compact 两相帧（start / done{result,error?,preTokens?,postTokens?,durationMs?}）与 chat.sync.compacting 快照位；scripts/sync-protocol.mjs 同步两端复制件。
+- [x] 桥接归并（关键时序修正）：done 帧比 compact_boundary 元数据帧早到约 4ms，若扩展分别处理则完成行永远拿不到压缩率。claude-session.ts 挂起 done 起 250ms 归并窗口，窗口内 boundary 到则合并元数据一次发 done；超时/失败按无元数据裸发；close() 清挂起定时器。server.ts 以 onCompact 维护 workspace.compacting 并广播，chat.sync 快照携带，新会话/重置路径复位。
+- [x] 扩展显示：顶部状态栏"正在压缩…（Xs）"真实跳秒（1s setInterval 驱动重渲染）；完成时聊天记录插一行系统记录（role:"tool" 无 toolName，复用附带状态行渲染，MessageList 零改动）：成功有元数据 🗜 已压缩上下文 156k → 42k tokens（-73%）；无元数据 🗜 已压缩上下文；失败 ⚠️ 上下文压缩失败：…，继续使用当前上下文。负压缩率（假上游小会话 3→879）正确省略百分比。压缩中重连经 chat.sync.compacting 立即可见提示；断线/换会话/中止/报错全路径清除。
+- [x] TDD：桥接协议 +1、会话 +4（start/done 归并/失败裸发/超时裸发/close 清挂起）、镜像 +1（广播+快照）；扩展 format +4（compactRecordText 成功/无元数据/失败/负率省略）、App +4（start 提示、done 记录行、sync 快照提示、断线清除）。类型级协议变更以 npm run typecheck 的 TS2322 作为有效 RED（vitest 剥离类型不产生运行时 RED）。
+- [x] 回归：桥接 202/202（196+6）、扩展 97/97（89+8）全绿，两端 typecheck 干净，桥接 selftest 通过；bridge exe 与扩展均已重建。
+- [x] 真实全链探针：dist exe（隔离 CCC_BRIDGE_HOME/CLAUDE_CONFIG_DIR）+ 真 CLI 2.1.301 + 本机假上游 + CDP Extensions.loadUnpacked 真 Chrome，COMPACT_PROBE_RESULT ok=true、状态栏提示曾出现（MutationObserver 预装标记防百毫秒级小会话闪现错过）、记录行"🗜 已压缩上下文 3 → 879 tokens"、frames=[start, done{success, preTokens:3, postTokens:879, durationMs:12}]、runtimeErrors 为空。探针脚本在获批目录 D:/ccc-fast-final-verify-20261026/tool-history-20261027。
+- [x] 实测纠偏（2026-10-30 用户反馈）：插件聊天框发 /compact 不会触发压缩，被当普通正文处理；探针手写 stream-json 帧能触发不代表 CopilotCC 完整链路也能。README 已去掉 /compact 触发表述。
+- [x] 历史持久化（2026-10-30 用户要求）：transcript.ts 解析 compact_boundary 条目，按原顺序回放为无 toolName 的 tool 记录行，文案与实时同口径（compactBoundaryText 独立实现），扩展零改动。真实转录复读：当前会话 2000 条消息窗口解析出 28 条压缩行（169k → 33k（-80%）等），每条位置紧跟压缩后续聊消息。新增 3 用例（顺序回放/缺元数据/负率省略百分比）。
+- [x] 输入框拖拽调高（2026-10-30 用户反馈原生右下角手柄反人类）：textarea 原生 resize 手柄停用，改为消息列表与输入区交界处的 5px 拖拽带（hover 上下箭头光标 + 灰带提示），向上拖增大、向下缩小，下限 40px、上限窗口高 60%；拖拽过才受控（默认 rows=3 外观不变），高度不持久化（与原生 resize 行为一致）。新增 3 用例（手柄与 CSS/上下拖与松开停跟/下限）。
+- [x] 回归：桥接 205/205（202+3）、扩展 100/100（97+3），两端 typecheck 干净，bridge exe 与扩展均已重建。
+- [ ] 人工复核：用户真实长会话（auto-compact，压缩持续数秒~数十秒）中状态栏跳秒与完成后压缩率文案的视觉确认；小会话压缩仅百毫秒级，自动探针只能证明链路通。另待复核：历史回看时压缩记录行的位置与文案、消息区底缘拖拽调输入框高度的手感。
+
 ## 历史工具活动与本地命令回放（2026-10-27，真实浏览器链路已验证）
 
 - [x] 首轮根因复现：旧版 readTranscript 不输出 assistant tool_use，并把 /model 的 caveat/command/stdout 当成用户正文。首轮修复后真实转录已能恢复工具，但用户实测历史与实时仍不可见，因此首轮 DOM/WS 通过不能视为产品验收完成。

@@ -84,7 +84,54 @@ beforeEach(() => {
   };
 });
 
+/** 等待某视图 inbox 中出现指定 phase 的 chat.compact（按谓词匹配，不用下标） */
+async function waitCompact(col: { inbox: ServerMessage[] }, phase: "start" | "done"): Promise<ServerMessage> {
+  const t0 = Date.now();
+  for (;;) {
+    const hit = col.inbox.find((m) => m.type === "chat.compact" && m.phase === phase);
+    if (hit) return hit;
+    if (Date.now() - t0 > 3000) throw new Error(`等待 chat.compact ${phase} 超时`);
+    await new Promise((r) => setTimeout(r, 20));
+  }
+}
+
 describe("镜像工作区（多视图广播与快照）", () => {
+  it("chat.compact 广播到全部视图，chat.sync 快照携带 compacting", async () => {
+    const { server, url } = await boot();
+    const a = await connect(url);
+    const ca = collect(a.ws);
+    a.ws.send(JSON.stringify({ type: "folder.bind", path: dir }));
+    await ca.waitFor("folder.bound");
+    const b = await connect(url);
+    const cb = collect(b.ws);
+    const captured = sentClientMessages.find((m) => m.cwd !== "SEND")!;
+    const events = captured.opts.events as { onCompact(ev: unknown): void };
+    events.onCompact({ phase: "start" });
+    const [sa, sb] = await Promise.all([waitCompact(ca, "start"), waitCompact(cb, "start")]);
+    expect(sa).toEqual({ type: "chat.compact", phase: "start" });
+    expect(sb).toEqual({ type: "chat.compact", phase: "start" });
+    // 压缩中途新视图接入：快照必须立即带 compacting=true
+    const c = await connect(url);
+    const cc = collect(c.ws);
+    c.ws.send(JSON.stringify({ type: "client.ready" }));
+    const sync1 = await cc.waitFor("chat.sync");
+    if (sync1.type !== "chat.sync") throw new Error("快照类型错误");
+    expect(sync1.compacting).toBe(true);
+    events.onCompact({ phase: "done", result: "success", preTokens: 156_000, postTokens: 42_000 });
+    const [da, db] = await Promise.all([waitCompact(ca, "done"), waitCompact(cb, "done")]);
+    expect(da).toEqual({ type: "chat.compact", phase: "done", result: "success", preTokens: 156_000, postTokens: 42_000 });
+    expect(db).toEqual(da);
+    // 压缩结束后接入的视图：快照 compacting=false
+    const d = await connect(url);
+    const cd = collect(d.ws);
+    d.ws.send(JSON.stringify({ type: "client.ready" }));
+    const sync2 = await cd.waitFor("chat.sync");
+    if (sync2.type !== "chat.sync") throw new Error("快照类型错误");
+    expect(sync2.compacting).toBe(false);
+    a.ws.close(); b.ws.close(); c.ws.close(); d.ws.close();
+    await server.close();
+  });
+
   it("第二连接收到状态广播；chat.send 的 chat.user 双端一致且转发会话", async () => {
     const { server, url } = await boot();
     const a = await connect(url);

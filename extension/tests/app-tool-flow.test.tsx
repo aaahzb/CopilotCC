@@ -94,6 +94,39 @@ async function emit(ws: FakeWebSocket, message: ServerMessage): Promise<void> {
   await act(async () => ws.emit(message));
 }
 
+describe("App 压缩进度显示", () => {
+  it("start 后状态栏出现“正在压缩”，done 插入记录行并清除提示", async () => {
+    const { host, ws } = await mountApp();
+    await emit(ws, { type: "chat.compact", phase: "start" });
+    expect(host.textContent).toContain("正在压缩…（0s）");
+    await emit(ws, { type: "chat.compact", phase: "done", result: "success", preTokens: 156_000, postTokens: 42_000 });
+    expect(host.textContent).toContain("🗜 已压缩上下文 156k → 42k tokens（-73%）");
+    expect(host.textContent).not.toContain("正在压缩…");
+  });
+
+  it("failed 插入失败记录行", async () => {
+    const { host, ws } = await mountApp();
+    await emit(ws, { type: "chat.compact", phase: "done", result: "failed", error: "boom" });
+    expect(host.textContent).toContain("⚠️ 上下文压缩失败：boom，继续使用当前上下文");
+  });
+
+  it("chat.sync.compacting=true 时状态栏有提示", async () => {
+    const { host, ws } = await mountApp();
+    await emit(ws, { type: "chat.sync", busy: false, streamText: "", user: null, permReq: null, draft: "", compacting: true });
+    expect(host.textContent).toContain("正在压缩…");
+  });
+
+  it("断线清除压缩提示", async () => {
+    const { host, ws } = await mountApp();
+    await emit(ws, { type: "chat.compact", phase: "start" });
+    expect(host.textContent).toContain("正在压缩…");
+    await act(async () => {
+      ws.close();
+    });
+    expect(host.textContent).not.toContain("正在压缩…");
+  });
+});
+
 describe("App 工具活动消息流", () => {
   it("实时 chat.tool 经过 BridgeClient 和 App 后显示工具活动行", async () => {
     const { host, ws } = await mountApp();

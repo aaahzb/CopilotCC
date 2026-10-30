@@ -54,3 +54,29 @@ const FAST_DISABLED_REASONS: Record<FastModeDisabledReason, string> = {
 export function fastDisabledReasonText(reason: FastModeDisabledReason): string {
   return FAST_DISABLED_REASONS[reason];
 }
+
+/** 压缩记录行可用的元数据子集（chat.compact done 帧归并后） */
+export interface CompactRecordMeta {
+  preTokens?: number;
+  postTokens?: number;
+}
+
+/** tokens 紧凑显示：>=1000 用 k（156000 → "156k"） */
+function compactTokens(n: number): string {
+  return n >= 1000 ? `${Math.round(n / 1000)}k` : `${n}`;
+}
+
+/**
+ * 压缩完成后的聊天记录行文案。CLI 全程无进度百分比；压缩率 = 1 - post/pre 在完成后才可实算。
+ * @param result 压缩结果
+ * @param error 失败原因（成功时为 undefined）
+ * @param meta 元数据；null 或缺 token 字段（老 CLI / boundary 丢失）时退化简单文案
+ * @returns 记录行文本（🗜 成功 / ⚠️ 失败前缀）
+ */
+export function compactRecordText(result: "success" | "failed", error: string | undefined, meta: CompactRecordMeta | null): string {
+  if (result === "failed") return `⚠️ 上下文压缩失败${error ? `：${error}` : ""}，继续使用当前上下文`;
+  if (meta?.preTokens === undefined || meta?.postTokens === undefined) return "🗜 已压缩上下文";
+  const pct = meta.preTokens > 0 ? Math.max(0, Math.round((1 - meta.postTokens / meta.preTokens) * 100)) : null;
+  const ratio = pct !== null && pct > 0 ? `（-${pct}%）` : "";
+  return `🗜 已压缩上下文 ${compactTokens(meta.preTokens)} → ${compactTokens(meta.postTokens)} tokens${ratio}`;
+}

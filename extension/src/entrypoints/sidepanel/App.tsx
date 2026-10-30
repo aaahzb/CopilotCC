@@ -10,7 +10,7 @@ import { TokenGate } from "../../components/TokenGate";
 import { AliasBar } from "../../components/AliasBar";
 import { MessageList, type UiMsg } from "../../components/MessageList";
 import { InputBox } from "../../components/InputBox";
-import { shortModelName } from "../../lib/format";
+import { shortModelName, compactRecordText } from "../../lib/format";
 import { hasExecutionSettingsChange, mergeDoneRuntime, mirrorExecutionSettings, runtimeFromSettingsState, toFastSettingsSet, toSettingsSet, type ExecutionSettingsPatch } from "../../lib/settings-sync";
 import { PermissionCard } from "../../components/PermissionCard";
 import { shouldResetConversation } from "../../lib/conversation-state";
@@ -40,6 +40,14 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
   const [settings, setSettings] = useState<ExtSettings | null>(null);
   const [settingsError, setSettingsError] = useState(""); // 原生设置应用失败：只提示设置区，不终结聊天轮次
   const [conn, setConn] = useState<ConnState>("connecting");
+  const [compactSince, setCompactSince] = useState<number | null>(null); // 压缩开始时刻；null=未在压缩
+  const [compactTick, setCompactTick] = useState(0); // 每秒 +1 触发重渲染以刷新秒数
+  useEffect(() => {
+    if (compactSince === null) return;
+    const timer = window.setInterval(() => setCompactTick((v) => v + 1), 1000);
+    return () => window.clearInterval(timer);
+  }, [compactSince]);
+  void compactTick; // 秒数显示依赖它触发重算
   const [authError, setAuthError] = useState("");
   const [bound, setBound] = useState<string | null>(null);
   const [resumed, setResumed] = useState(false);
@@ -101,6 +109,7 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
           setMessages([]);
           setStreaming(null);
           setBusy(false); // 旧会话的进行轮随切换作废，其收尾帧不再属于当前界面
+          setCompactSince(null); // 旧会话的压缩提示一并清除
           commitRuntime({}); // 主动换文件夹/会话后旧实际值失效；初次快照不在此清缓存
         }
         prevFolderRef.current = m.path;
@@ -162,6 +171,7 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
         // 工作区快照收尾帧（顺序：folder.bound → history → lists → 本帧）：补齐在途轮/挂起审批/草稿
         snapshotPhaseRef.current = false;
         setBusy(m.busy);
+        setCompactSince(m.compacting ? Date.now() : null); // 快照权威：接入时刻近似起算秒数
         setStreaming(m.busy ? m.streamText : null); // 续播在途流式（空串 = 等首帧 delta，气泡已在）
         setPermReq(m.permReq);
         if (!composingRef.current) setDraft(m.draft);
@@ -186,6 +196,17 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
       case "chat.tool":
         // 工具名与摘要分开传递，由 MessageList 渲染分类图标和非气泡活动行
         setMessages((ms) => [...ms, { id: crypto.randomUUID(), role: "tool", toolName: m.name, text: m.summary }]);
+        break;
+      case "chat.compact":
+        if (m.phase === "start") {
+          setCompactSince(Date.now());
+        } else {
+          setCompactSince(null);
+          const meta = m.preTokens !== undefined || m.postTokens !== undefined ? { preTokens: m.preTokens, postTokens: m.postTokens } : null;
+          const text = compactRecordText(m.result, m.error, meta);
+          // role:"tool" 无 toolName → 复用既有附带状态行渲染（紧凑灰行、非气泡），MessageList 零改动
+          setMessages((ms) => [...ms, { id: crypto.randomUUID(), role: "tool", text }]);
+        }
         break;
       case "settings.state": {
         const current = settingsRef.current;
@@ -217,6 +238,7 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
         break;
       case "chat.error":
         setBusy(false);
+        setCompactSince(null); // 轮次异常终结：压缩提示不悬挂
         setStreaming(null);
         setForceAttach(false); // 本轮异常结束：强制附带随之失效
         setMessages((ms) => [...ms, { id: crypto.randomUUID(), role: "assistant", text: `⚠️ ${m.message}` }]);
@@ -224,6 +246,7 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
       case "chat.aborted":
         // 手动停止：已生成的部分文字保留为正式气泡，另加停止标记（对齐 CLI 按 ESC 的观感）
         setBusy(false);
+        setCompactSince(null); // 中止时压缩中提示一并取消（压缩帧随旧轮作废）
         setForceAttach(false); // 本轮被中止：强制附带随之失效
         setPermReq(null); // 中止时挂起的审批卡片一并取消（桥接已按拒绝释放）
         setStreaming((s) => {
@@ -261,7 +284,10 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
       },
       onState: (state) => {
         setConn(state);
-        if (state !== "open") setBusy(false); // 断线即丢失在途帧：解除 busy 防界面卡死（重连后快照恢复真实 busy）
+        if (state !== "open") {
+          setBusy(false); // 断线即丢失在途帧：解除 busy 防界面卡死（重连后快照恢复真实 busy）
+          setCompactSince(null); // 压缩提示同属瞬时状态：断线即清，快照恢复
+        }
       },
     });
     clientRef.current = c;
@@ -522,6 +548,9 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
     <div className="app">
       <div className={`conn ${conn}`}>
         <span>{conn === "open" ? "● 已连接" : conn === "connecting" ? "● 连接中…" : "● 已断开（自动重连中）"}</span>
+        {conn === "open" && compactSince !== null ? (
+          <span className="compact-hint">正在压缩…（{Math.floor((Date.now() - compactSince) / 1000)}s）</span>
+        ) : null}
         <span>
           {popupTabId === null ? (
             <button className="pair-btn" title="在独立窗口打开此会话（镜像模式：两边同步；再点扩展图标可隐藏侧边栏，弹窗不受影响）" onClick={() => void openPopup()}>🗖 弹出</button>

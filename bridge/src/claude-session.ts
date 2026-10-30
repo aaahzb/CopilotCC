@@ -21,10 +21,17 @@ export interface SessionRuntimeInfo {
   compacted?: boolean;
 }
 
+/** CC 上下文压缩进度事件（status/compact_boundary 帧归并；CLI 不输出进度百分比） */
+export type CompactEvent =
+  | { phase: "start" }
+  | { phase: "done"; result: "success" | "failed"; error?: string; preTokens?: number; postTokens?: number; durationMs?: number };
+
 /** 会话事件回调集（server.ts 把它们转成 WS 消息） */
 export interface SessionEvents {
   onDelta(text: string): void;
   onTool(name: string, summary: string): void;
+  /** 压缩开始/结束（结束帧合并 compact_boundary 元数据；failed 与无 boundary 时缺元数据字段） */
+  onCompact(ev: CompactEvent): void;
   onDone(sessionId: string, info: SessionRuntimeInfo): void;
   /** init/result 确认新的实际执行值时立即上报，不等整轮结束 */
   onRuntime(info: SessionRuntimeInfo): void;
@@ -239,6 +246,36 @@ export function createClaudeSession(cwd: string, opts: SessionOptions): ClaudeSe
   let rtFast: FastModeRuntime | undefined; // init/result 上报的原生 fast 真值
   let fastChain: Promise<void> = Promise.resolve(); // 快速连切按调用顺序送达 CLI；失败后不阻塞后续调用
   let compactPending = false; // 本轮是否出现过 compact 帧
+  let compactTimer: ReturnType<typeof setTimeout> | null = null; // done→boundary 归并窗口
+  let pendingCompactDone: { result: "success" | "failed"; error?: string } | null = null;
+  const COMPACT_MERGE_MS = 250; // 探针实证 boundary 晚于 done 约 4ms；250ms 兜住慢帧
+
+  function flushCompactDone(meta?: { preTokens?: number; postTokens?: number; durationMs?: number }): void {
+    if (!pendingCompactDone) return;
+    if (compactTimer) { clearTimeout(compactTimer); compactTimer = null; }
+    const p = pendingCompactDone;
+    pendingCompactDone = null;
+    events.onCompact({ phase: "done", result: p.result, ...(p.error ? { error: p.error } : {}), ...(meta ?? {}) });
+  }
+
+  function queueCompactDone(msg: Record<string, unknown>): void {
+    flushCompactDone(); // 防御异常时序：上一轮挂起未清先落盘
+    pendingCompactDone = {
+      result: msg.compact_result === "failed" ? "failed" : "success",
+      ...(typeof msg.compact_error === "string" && msg.compact_error ? { error: msg.compact_error } : {}),
+    };
+    compactTimer = setTimeout(() => flushCompactDone(), COMPACT_MERGE_MS); // 窗口内 boundary 未到 → 无元数据裸发
+  }
+
+  function mergeCompactBoundary(msg: Record<string, unknown>): void {
+    if (!pendingCompactDone) return; // 无挂起 done（纯 boundary 路径）只维持 compactPending，不配发 info
+    const meta = msg.compact_metadata as Record<string, unknown> | undefined;
+    flushCompactDone({
+      ...(typeof meta?.pre_tokens === "number" ? { preTokens: meta.pre_tokens } : {}),
+      ...(typeof meta?.post_tokens === "number" ? { postTokens: meta.post_tokens } : {}),
+      ...(typeof meta?.duration_ms === "number" ? { durationMs: meta.duration_ms } : {}),
+    });
+  }
   let turnActive = false; // 有未完结的生成轮（send 起、result 帧止）；abort 据此区分"中止"与"空闲空操作"
   let abortSwallow = false; // abort 后吞掉该轮的收尾 result 帧：客户端已被 chat.aborted 释放，不再发 done/error
   let guardPending = !opts.resumeId; // 仅全新会话需要注入防护前缀
@@ -319,8 +356,19 @@ export function createClaudeSession(cwd: string, opts: SessionOptions): ClaudeSe
       events.onSessionId(sessionId);
       return;
     }
-    if (msg.type === "system" && (msg.subtype === "compact_boundary" || (msg.subtype === "status" && msg.compact_result !== undefined))) {
+    if (msg.type === "system" && msg.subtype === "status" && msg.status === "compacting") {
+      flushCompactDone(); // 新一轮压缩开始：先冲掉挂起的 done 再报 start
+      events.onCompact({ phase: "start" });
+      return;
+    }
+    if (msg.type === "system" && msg.subtype === "status" && msg.compact_result !== undefined) {
       compactPending = true; // compact 会把页面上下文压缩掉：本轮 done 时上报，扩展下一轮强制重新附带
+      queueCompactDone(msg); // 等 compact_boundary 元数据归并，窗口内未到则裸发
+      return;
+    }
+    if (msg.type === "system" && msg.subtype === "compact_boundary") {
+      compactPending = true;
+      mergeCompactBoundary(msg);
       return;
     }
     if (msg.type === "stream_event") {
@@ -492,6 +540,8 @@ export function createClaudeSession(cwd: string, opts: SessionOptions): ClaudeSe
       const wasActive = turnActive;
       turnActive = false;
       compactPending = false;
+      if (compactTimer) { clearTimeout(compactTimer); compactTimer = null; } // 关会话不再发压缩事件
+      pendingCompactDone = null;
       // 设置/文件夹/会话切换都会关闭旧 Query。必须先取消进行中的轮次，再关 SDK 流；
       // 旧实现只结束输入流，CLI 会把当前工具跑完，导致换模型后旧任务仍继续写文件。
       if (wasActive) {

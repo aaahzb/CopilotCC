@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { shortModelName, isWebHref, fastStatusText, fastDisabledReasonText } from "../src/lib/format";
+import { shortModelName, isWebHref, fastStatusText, fastDisabledReasonText, compactRecordText } from "../src/lib/format";
 
 describe("shortModelName", () => {
   it("标准 claude- 前缀 ID 压短并转版本号", () => {
@@ -51,5 +51,29 @@ describe("原生 fast 状态文案", () => {
     expect(fastDisabledReasonText("model_not_allowed")).toContain("当前模型");
     expect(fastDisabledReasonText("not_first_party")).toContain("第一方");
     expect(fastDisabledReasonText("network_error")).toContain("网络");
+  });
+});
+
+describe("compactRecordText", () => {
+  it("成功且有元数据：真实压缩率（156000→42000 = -73%）", () => {
+    expect(compactRecordText("success", undefined, { preTokens: 156_000, postTokens: 42_000 }))
+      .toBe("🗜 已压缩上下文 156k → 42k tokens（-73%）");
+  });
+
+  it("成功无元数据：退化文案", () => {
+    expect(compactRecordText("success", undefined, null)).toBe("🗜 已压缩上下文");
+    expect(compactRecordText("success", undefined, { preTokens: 156_000 })).toBe("🗜 已压缩上下文");
+  });
+
+  it("失败：带原因并说明继续使用当前上下文", () => {
+    expect(compactRecordText("failed", "boom", null)).toBe("⚠️ 上下文压缩失败：boom，继续使用当前上下文");
+    expect(compactRecordText("failed", undefined, null)).toBe("⚠️ 上下文压缩失败，继续使用当前上下文");
+  });
+
+  it("小 token 数不走 k 缩写；pre 为 0 不出百分比", () => {
+    expect(compactRecordText("success", undefined, { preTokens: 500, postTokens: 400 }))
+      .toBe("🗜 已压缩上下文 500 → 400 tokens（-20%）");
+    expect(compactRecordText("success", undefined, { preTokens: 0, postTokens: 0 }))
+      .toBe("🗜 已压缩上下文 0 → 0 tokens");
   });
 });

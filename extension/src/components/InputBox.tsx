@@ -3,6 +3,10 @@ import type { PermissionModeSetting, EffortLevelSetting, FastModeRuntime } from 
 import { fastDisabledReasonText, fastStatusText } from "../lib/format";
 import { formatSize, readFilesAsUploads, validateFiles, type PendingUpload } from "../lib/upload-files";
 
+/** 输入框拖拽调高的下限与缺省起始高度（jsdom 无布局时 offsetHeight=0 用缺省） */
+const MIN_TA_HEIGHT = 40;
+const DEFAULT_TA_HEIGHT = 66;
+
 /** 底部输入区：上方选择权限/模型与 CC 原生 fast，下方选择 effort 并显示 CC 真值；另含上传、发送和真正停止 */
 export function InputBox(props: {
   disabled: boolean;
@@ -48,6 +52,25 @@ export function InputBox(props: {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [effortOpen, setEffortOpen] = useState(false); // 仅控制下方 effort 弹层，不进入设置协议
   const effortStatusRef = useRef<HTMLDivElement>(null);
+  const [taHeight, setTaHeight] = useState<number | null>(null); // 拖拽过才受控；null = rows=3 默认外观
+  const taRef = useRef<HTMLTextAreaElement>(null);
+
+  /** 消息区底缘拖拽：向上增大输入框、向下缩小；document 级监听，松开即移除。 */
+  function startResize(e: React.MouseEvent): void {
+    e.preventDefault(); // 拖拽不选中文本
+    const startY = e.clientY;
+    const startHeight = taRef.current?.offsetHeight || taHeight || DEFAULT_TA_HEIGHT;
+    const onMove = (ev: MouseEvent): void => {
+      const max = Math.round(window.innerHeight * 0.6); // 上限随侧栏高度，给消息区留空间
+      setTaHeight(Math.min(max, Math.max(MIN_TA_HEIGHT, startHeight + startY - ev.clientY)));
+    };
+    const onUp = (): void => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }
 
   // 弹层打开时支持点击外部和 Escape 关闭；不拦截事件，保留输入区原有停止快捷键。
   useEffect(() => {
@@ -123,6 +146,14 @@ export function InputBox(props: {
         if (e.dataTransfer.files.length > 0) addFiles(e.dataTransfer.files);
       }}
     >
+      <div
+        className="input-resize-handle"
+        role="separator"
+        aria-orientation="horizontal"
+        aria-label="拖拽调整输入框高度"
+        title="按住上下拖动：向上增大输入框，向下缩小"
+        onMouseDown={startResize}
+      />
       <div className="toggles">
         <label>
           <input type="checkbox" checked={props.attachEnabled} onChange={(e) => props.onToggleAttach(e.target.checked)} />
@@ -160,7 +191,9 @@ export function InputBox(props: {
       ) : null}
       {uploadError ? <div className="upload-error">{uploadError}</div> : null}
       <textarea
+        ref={taRef}
         rows={3}
+        style={taHeight === null ? undefined : { height: taHeight }}
         placeholder={props.disabled ? "先绑定文件夹…" : "针对当前网页提问，Enter 发送 / Shift+Enter 换行；可拖入或点 📁 上传文件"}
         value={props.draft}
         disabled={props.disabled}

@@ -1,3 +1,4 @@
+.conn .compact-hint { margin-left: 8px; color: #d9a400; }
 :root { color-scheme: dark; }
 * { box-sizing: border-box; }
 body { margin: 0; font-family: "Segoe UI", system-ui, sans-serif; font-size: 13px; background: #1e1f24; color: #e4e6eb; }
@@ -38,7 +39,10 @@ body { margin: 0; font-family: "Segoe UI", system-ui, sans-serif; font-size: 13p
 .input-box .fast-runtime.pending { color: #9aa0a6; }
 .input-box .settings-error { color: #ff8a80; font-size: 11px; line-height: 1.4; overflow-wrap: anywhere; }
 .input-box select { background: #2a2b31; color: inherit; border: 1px solid #444; border-radius: 4px; }
-.input-box textarea { display: block; width: 100%; background: #2a2b31; color: inherit; border: 1px solid #444; border-radius: 6px; padding: 6px 8px; resize: vertical; }
+.input-box textarea { display: block; width: 100%; background: #2a2b31; color: inherit; border: 1px solid #444; border-radius: 6px; padding: 6px 8px; resize: none; }
+/* 消息区底缘的输入框拖拽带：hover 出上下箭头，向上拖增大输入框、向下缩小（取代原生右下角手柄） */
+.input-box .input-resize-handle { height: 5px; margin: -6px -10px 0; cursor: ns-resize; border-radius: 2px; flex-shrink: 0; }
+.input-box .input-resize-handle:hover { background: #3c4043; }
 /* 强制看页面开关：发送行内（模型·effort 指示右侧）；点亮态 = 亮蓝底 + 文案带 ✓ 双通道反馈（深灰→深蓝的单色差在深色主题下分辨不出，教训见 TODO）；曾经悬浮在输入框右上角，会盖住输入文字 */
 .input-box .force-attach { font-size: 11px; line-height: 1.6; padding: 1px 8px; border-radius: 10px; border: 1px solid #444; background: #2a2b31; color: #9aa0a6; cursor: pointer; white-space: nowrap; flex-shrink: 0; }
 .input-box .force-attach.on { background: #3b82f6; border-color: #60a5fa; color: #fff; }

@@ -59,11 +59,26 @@ interface TranscriptBlock {
 }
 
 interface TranscriptEntry {
-  type: "user" | "assistant";
+  type: "user" | "assistant" | "system";
+  subtype?: string;
+  /** compact_boundary 条目的压缩元数据（字段名与转录一致，非 stream-json 的 snake_case） */
+  compactMetadata?: { preTokens?: number; postTokens?: number };
   uuid?: string;
   parentUuid?: string;
   isMeta?: boolean;
   message?: { content?: string | TranscriptBlock[] };
+}
+
+/**
+ * 历史压缩记录行文案：与扩展 compactRecordText 成功分支同口径（桥接端独立实现，避免跨端引用）。
+ * @param meta compact_boundary 的 compactMetadata；缺元数据时退化为简单文案
+ * @returns 🗜 记录行文本；负压缩率省略百分比
+ */
+function compactBoundaryText(meta: { preTokens?: number; postTokens?: number } | undefined): string {
+  if (meta?.preTokens === undefined || meta.postTokens === undefined) return "🗜 已压缩上下文";
+  const k = (n: number): string => (n >= 1000 ? `${Math.round(n / 1000)}k` : `${n}`);
+  const pct = meta.preTokens > 0 ? Math.max(0, Math.round((1 - meta.postTokens / meta.preTokens) * 100)) : 0;
+  return `🗜 已压缩上下文 ${k(meta.preTokens)} → ${k(meta.postTokens)} tokens${pct > 0 ? `（-${pct}%）` : ""}`;
 }
 
 /**
@@ -140,7 +155,8 @@ function findLocalCommands(entries: TranscriptEntry[]): {
 }
 
 /**
- * 读取某 session 的转录，按原顺序抽取用户正文、回答正文和工具活动，取最后 max 条。
+ * 读取某 session 的转录，按原顺序抽取用户正文、回答正文、工具活动和压缩记录行，取最后 max 条。
+ * compact_boundary 条目回放为无 toolName 的 tool 行（🗜 文案），历史里也能看到压缩发生的位置。
  * 桥接来源的用户消息拆成 text（问题）+ sentText（完整发送内容）+ attachKind（附带标记）。
  * 本地命令只在真实父链完整时合并为活动，普通用户输入的相似标签仍按正文保留。
  * @param cwd 会话工作目录
@@ -157,6 +173,7 @@ export function readTranscript(cwd: string, sessionId: string, max = 100): Histo
     try {
       const e = JSON.parse(line) as TranscriptEntry;
       if (e.type === "user" || e.type === "assistant") entries.push(e);
+      else if (e.type === "system" && e.subtype === "compact_boundary") entries.push(e); // 压缩位置也要持久回放
     } catch {
       // 跳过坏行
     }
@@ -165,6 +182,10 @@ export function readTranscript(cwd: string, sessionId: string, max = 100): Histo
   const { activities, consumed } = findLocalCommands(entries);
   const out: HistoryMessage[] = [];
   for (const e of entries) {
+    if (e.type === "system") {
+      out.push({ role: "tool", text: compactBoundaryText(e.compactMetadata) }); // 无 toolName：与实时压缩记录行同款纯文本卡片
+      continue;
+    }
     if (typeof e.uuid === "string") {
       const activity = activities.get(e.uuid);
       if (activity) {

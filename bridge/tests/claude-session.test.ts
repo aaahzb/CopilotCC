@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { createClaudeSession, parseEnvDump, parseShellProbeOutput, wellKnownClaudePaths, type SessionEvents, type SessionRuntimeInfo } from "../src/claude-session";
 import * as path from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 
 /** 收集事件的 events 桩 */
 function stubEvents(): SessionEvents & { log: Array<[string, ...unknown[]]>; runtime: SessionRuntimeInfo[] } {
@@ -12,6 +13,7 @@ function stubEvents(): SessionEvents & { log: Array<[string, ...unknown[]]>; run
     onRuntime: (info) => runtime.push(info),
     onDelta: (t) => log.push(["delta", t]),
     onTool: (n, s) => log.push(["tool", `${n}:${s}`]),
+    onCompact: (ev) => log.push(["compact", ev]),
     onDone: (s, info) => log.push(["done", s, info]),
     onError: (m) => log.push(["error", m]),
     onPermission: (r) => log.push(["permission", r]),
@@ -482,5 +484,64 @@ describe("parseEnvDump（macOS GUI 环境变量兜底）", () => {
 
   it("空输出 → 空表", () => {
     expect(parseEnvDump("")).toEqual({});
+  });
+});
+
+describe("压缩进度事件", () => {
+  function compactSession(script: unknown[]) {
+    const q = fakeQuery(script);
+    const compact: unknown[] = [];
+    const s = createClaudeSession(".", {
+      permissionMode: "auto",
+      queryFn: q.fn,
+      events: {
+        onDelta() {}, onTool() {}, onDone() {}, onRuntime() {}, onError() {}, onAborted() {},
+        onPermission() {}, onSessionId() {},
+        onCompact: (ev) => compact.push(ev),
+      },
+    });
+    return { s, compact };
+  }
+
+  it("compacting 帧立即上报 start", async () => {
+    const { s, compact } = compactSession([
+      { type: "system", subtype: "status", status: "compacting", session_id: "x" },
+    ]);
+    await sleep(30);
+    s.close();
+    expect(compact).toEqual([{ phase: "start" }]);
+  });
+
+  it("done 后 boundary 在归并窗口内到达：单次 done 携带元数据", async () => {
+    const { s, compact } = compactSession([
+      { type: "system", subtype: "status", status: "compacting", session_id: "x" },
+      { type: "system", subtype: "status", status: null, compact_result: "success", session_id: "x" },
+      { type: "system", subtype: "compact_boundary", session_id: "x",
+        compact_metadata: { trigger: "manual", pre_tokens: 156_000, post_tokens: 42_000, duration_ms: 900 } },
+    ]);
+    await sleep(350); // 250ms 归并窗口 + 余量
+    s.close();
+    expect(compact).toEqual([
+      { phase: "start" },
+      { phase: "done", result: "success", preTokens: 156_000, postTokens: 42_000, durationMs: 900 },
+    ]);
+  });
+
+  it("done 后无 boundary：窗口超时按无元数据下发", async () => {
+    const { s, compact } = compactSession([
+      { type: "system", subtype: "status", status: null, compact_result: "success", session_id: "x" },
+    ]);
+    await sleep(350);
+    s.close();
+    expect(compact).toEqual([{ phase: "done", result: "success" }]);
+  });
+
+  it("failed 不等待 boundary 且带 error，只发一次", async () => {
+    const { s, compact } = compactSession([
+      { type: "system", subtype: "status", status: null, compact_result: "failed", compact_error: "boom", session_id: "x" },
+    ]);
+    await sleep(350);
+    s.close();
+    expect(compact).toEqual([{ phase: "done", result: "failed", error: "boom" }]);
   });
 });

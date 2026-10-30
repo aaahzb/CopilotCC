@@ -142,3 +142,39 @@ describe("InputBox 原生 fast 与实际执行状态", () => {
     expect(host.querySelector("button.model-effort")?.textContent).toBe("自动");
   });
 });
+
+describe("InputBox 输入框拖拽调高度", () => {
+  it("消息区底缘有拖拽手柄，光标上下箭头，原生右下角手柄停用", () => {
+    const host = mount();
+    expect(host.querySelector(".input-resize-handle")).not.toBeNull();
+    const css = readFileSync("src/entrypoints/sidepanel/style.css", "utf8");
+    const handleRule = css.split(".input-box .input-resize-handle")[1]?.split("}")[0] ?? "";
+    expect(handleRule.replaceAll(" ", "")).toContain("cursor:ns-resize");
+    const taRule = css.split(".input-box textarea")[1]?.split("}")[0] ?? "";
+    expect(taRule.replaceAll(" ", "")).toContain("resize:none");
+  });
+
+  it("向上拖增大输入框，向下拖缩小，松开后不再跟随", () => {
+    const host = mount();
+    const handle = host.querySelector(".input-resize-handle")!;
+    const ta = host.querySelector("textarea")!;
+    act(() => handle.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, clientY: 300 })));
+    act(() => document.dispatchEvent(new MouseEvent("mousemove", { clientY: 200 }))); // 上移 100 → 高度 +100
+    const grown = parseInt(ta.style.height, 10);
+    expect(grown).toBeGreaterThan(100);
+    act(() => document.dispatchEvent(new MouseEvent("mousemove", { clientY: 250 }))); // 相对起点上移 50
+    expect(parseInt(ta.style.height, 10)).toBe(grown - 50);
+    act(() => document.dispatchEvent(new MouseEvent("mouseup", {})));
+    act(() => document.dispatchEvent(new MouseEvent("mousemove", { clientY: 100 })));
+    expect(parseInt(ta.style.height, 10)).toBe(grown - 50); // 松开后不再变
+  });
+
+  it("向下拖有高度下限，不会缩没", () => {
+    const host = mount();
+    const handle = host.querySelector(".input-resize-handle")!;
+    const ta = host.querySelector("textarea")!;
+    act(() => handle.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, clientY: 100 })));
+    act(() => document.dispatchEvent(new MouseEvent("mousemove", { clientY: 5000 })));
+    expect(parseInt(ta.style.height, 10)).toBe(40);
+  });
+});

@@ -116,6 +116,9 @@ export type ServerMessage =
   | { type: "folder.picked"; path: string | null }
   | { type: "chat.delta"; text: string }
   | { type: "chat.tool"; name: string; summary: string }
+  // chat.compact：CC 上下文压缩进度（status/compact_boundary 帧归并转发；CLI 不输出进度百分比，完成行的压缩率由 1-post/pre 实算）
+  | { type: "chat.compact"; phase: "start" }
+  | { type: "chat.compact"; phase: "done"; result: "success" | "failed"; error?: string; preTokens?: number; postTokens?: number; durationMs?: number }
   // chat.done 可选字段：model/effort = SDK init 上报的实际生效值；compacted = 本轮发生过 compact（扩展据此下一轮强制附带页面）
   | { type: "chat.done"; sessionId: string; model?: string; effort?: EffortLevelSetting | null; fast?: FastModeRuntime; compacted?: boolean }
   // settings.state：请求设置的全量镜像 + 可选 CC 运行时真值；广播给全部视图，快照时定向补发
@@ -148,6 +151,8 @@ export type ServerMessage =
       permReq: { requestId: string; tool: string; detail: string } | null;
       /** 工作区当前草稿（视图输入框镜像） */
       draft: string;
+      /** 工作区正在压缩上下文（视图接入即提示；秒数从接入时刻近似起算） */
+      compacting: boolean;
     }
   // chat.draft：草稿镜像广播（不回显上报方，避免光标被回包顶跳）
   | { type: "chat.draft"; text: string }

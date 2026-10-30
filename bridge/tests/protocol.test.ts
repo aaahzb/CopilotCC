@@ -31,6 +31,13 @@ describe("encode", () => {
   it("序列化服务消息", () => {
     expect(encode({ type: "auth.ok" })).toBe('{"type":"auth.ok"}');
   });
+
+  it("chat.compact 两相帧字段保留", () => {
+    const done = encode({ type: "chat.compact", phase: "done", result: "success", preTokens: 156_000, postTokens: 42_000 });
+    expect(JSON.parse(done)).toEqual({ type: "chat.compact", phase: "done", result: "success", preTokens: 156_000, postTokens: 42_000 });
+    const start = encode({ type: "chat.compact", phase: "start" });
+    expect(JSON.parse(start)).toEqual({ type: "chat.compact", phase: "start" });
+  });
 });
 
 describe("settings.set 扩展字段", () => {

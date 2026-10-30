@@ -77,6 +77,39 @@ describe("readTranscript", () => {
     ]);
   });
 
+  it("compact_boundary 按原顺序回放为压缩记录行", () => {
+    const dir = path.join(fakeHome, ".claude", "projects", slugifyPath(path.resolve(cwd)));
+    const lines = [
+      JSON.stringify({ type: "user", message: { content: "压缩前的问题" } }),
+      JSON.stringify({ type: "system", subtype: "compact_boundary", compactMetadata: { trigger: "auto", preTokens: 168069, postTokens: 8809, durationMs: 53355 } }),
+      JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "压缩后的回答" }] } }),
+    ];
+    fs.writeFileSync(path.join(dir, sid + ".jsonl"), lines.join("\n"), "utf-8");
+    expect(readTranscript(cwd, sid)).toEqual([
+      { role: "user", text: "压缩前的问题" },
+      { role: "tool", text: "🗜 已压缩上下文 168k → 9k tokens（-95%）" },
+      { role: "assistant", text: "压缩后的回答" },
+    ]);
+  });
+
+  it("compact_boundary 缺元数据时退化为简单文案", () => {
+    const dir = path.join(fakeHome, ".claude", "projects", slugifyPath(path.resolve(cwd)));
+    const lines = [
+      JSON.stringify({ type: "system", subtype: "compact_boundary" }),
+    ];
+    fs.writeFileSync(path.join(dir, sid + ".jsonl"), lines.join("\n"), "utf-8");
+    expect(readTranscript(cwd, sid)).toEqual([{ role: "tool", text: "🗜 已压缩上下文" }]);
+  });
+
+  it("compact_boundary 负压缩率省略百分比（与实时记录行同口径）", () => {
+    const dir = path.join(fakeHome, ".claude", "projects", slugifyPath(path.resolve(cwd)));
+    const lines = [
+      JSON.stringify({ type: "system", subtype: "compact_boundary", compactMetadata: { preTokens: 3, postTokens: 879 } }),
+    ];
+    fs.writeFileSync(path.join(dir, sid + ".jsonl"), lines.join("\n"), "utf-8");
+    expect(readTranscript(cwd, sid)).toEqual([{ role: "tool", text: "🗜 已压缩上下文 3 → 879 tokens" }]);
+  });
+
   it("文件不存在返回空数组", () => {
     expect(readTranscript(cwd, "no-such-session")).toEqual([]);
   });
