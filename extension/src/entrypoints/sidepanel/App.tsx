@@ -4,7 +4,7 @@ import { loadSettings, saveSettings, pushFolderHistory, takePendingQuote, loadRu
 import { decideAttach, composeMessage, deriveAttachKind, PAGE_RICHNESS_CAPS, type PageSnapshot } from "../../lib/attach-policy";
 import type { PendingUpload } from "../../lib/upload-files";
 import { snapshotActiveTab, snapshotTab } from "../../lib/page-extract";
-import type { ServerMessage, PermissionModeSetting, SessionInfo, AliasInfo } from "../../lib/protocol";
+import type { ServerMessage, PermissionModeSetting, SessionInfo, AliasInfo, AskRequest } from "../../lib/protocol";
 import type { PairingInfo } from "../../lib/pairing";
 import { TokenGate } from "../../components/TokenGate";
 import { AliasBar } from "../../components/AliasBar";
@@ -13,6 +13,7 @@ import { InputBox } from "../../components/InputBox";
 import { shortModelName, compactRecordText } from "../../lib/format";
 import { hasExecutionSettingsChange, mergeDoneRuntime, mirrorExecutionSettings, runtimeFromSettingsState, toFastSettingsSet, toSettingsSet, type ExecutionSettingsPatch } from "../../lib/settings-sync";
 import { PermissionCard } from "../../components/PermissionCard";
+import { AskCard } from "../../components/AskCard";
 import { shouldResetConversation } from "../../lib/conversation-state";
 
 /**
@@ -55,6 +56,7 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
   const [streaming, setStreaming] = useState<string | null>(null);
   const [busy, setBusy] = useState(false); // 一轮生成进行中（chat.user 起，done/error/aborted/断线/换会话止）：发送键变为停止键
   const [permReq, setPermReq] = useState<{ requestId: string; tool: string; detail: string } | null>(null);
+  const [askReq, setAskReq] = useState<AskRequest | null>(null); // CC 挂起提问；桥接快照/广播为真源
   const [sessionId, setSessionId] = useState<string | null>(null); // 当前会话 ID（folder.bound/session.list.data 携带或 chat.done 推送）
   const [runtime, setRuntime] = useState<RuntimeCache>({}); // CC 回报的实际模型/effort/fast；与请求设置分离并跨重载缓存
   const [forceAttach, setForceAttach] = useState(false); // 本次强制看页面（下一条消息强制附带全文；compact 后自动续一轮）
@@ -174,6 +176,7 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
         setCompactSince(m.compacting ? Date.now() : null); // 快照权威：接入时刻近似起算秒数
         setStreaming(m.busy ? m.streamText : null); // 续播在途流式（空串 = 等首帧 delta，气泡已在）
         setPermReq(m.permReq);
+        setAskReq(m.askReq);
         if (!composingRef.current) setDraft(m.draft);
         const u = m.user;
         if (u) {
@@ -249,6 +252,7 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
         setCompactSince(null); // 中止时压缩中提示一并取消（压缩帧随旧轮作废）
         setForceAttach(false); // 本轮被中止：强制附带随之失效
         setPermReq(null); // 中止时挂起的审批卡片一并取消（桥接已按拒绝释放）
+        setAskReq(null); // 提问同样由桥接按未作答释放
         setStreaming((s) => {
           setMessages((ms) => [
             ...ms,
@@ -263,6 +267,12 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
         break;
       case "permission.resolved":
         setPermReq(null); // 任一视图已裁决（含本视图，幂等）
+        break;
+      case "chat.ask":
+        setAskReq({ requestId: m.requestId, questions: m.questions });
+        break;
+      case "chat.ask.resolved":
+        setAskReq(null); // 任一视图已作答（含本视图，幂等）
         break;
     }
   }
@@ -593,6 +603,13 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
         onRespond={(id, allow) => {
           clientRef.current?.send({ type: "permission.response", requestId: id, allow });
           setPermReq(null);
+        }}
+      />
+      <AskCard
+        request={askReq}
+        onRespond={(id, answers) => {
+          clientRef.current?.send({ type: "chat.ask.answer", requestId: id, answers });
+          setAskReq(null); // 本视图立即撤下；resolved 广播负责其它镜像视图
         }}
       />
       <InputBox

@@ -112,7 +112,7 @@ describe("App 压缩进度显示", () => {
 
   it("chat.sync.compacting=true 时状态栏有提示", async () => {
     const { host, ws } = await mountApp();
-    await emit(ws, { type: "chat.sync", busy: false, streamText: "", user: null, permReq: null, draft: "", compacting: true });
+    await emit(ws, { type: "chat.sync", busy: false, streamText: "", user: null, permReq: null, askReq: null, draft: "", compacting: true });
     expect(host.textContent).toContain("正在压缩…");
   });
 
@@ -151,5 +151,49 @@ describe("App 工具活动消息流", () => {
     expect(host.querySelector('.tool-activity[data-tool="Write"]')).not.toBeNull();
     expect(host.querySelector(".msg.user")?.textContent).toContain("创建网站简介");
     expect(host.querySelector(".msg.assistant")?.textContent).toContain("已创建网站简介");
+  });
+});
+
+describe("App AskUserQuestion 提问卡片", () => {
+  const questions = [{ question: "选哪个方案？", header: "方案", options: [{ label: "方案 A" }, { label: "方案 B" }], multiSelect: false }];
+
+  it("chat.ask 显示卡片，提交发送 chat.ask.answer 并立即撤下", async () => {
+    const { host, ws } = await mountApp();
+    await emit(ws, { type: "chat.ask", requestId: "ask-1", questions });
+    expect(host.querySelector(".ask-card")?.textContent).toContain("选哪个方案？");
+    await act(async () => {
+      const input = Array.from(host.querySelectorAll<HTMLInputElement>('input[type="radio"]')).find((el) => el.value === "方案 A");
+      input?.click();
+    });
+    await act(async () => host.querySelector<HTMLButtonElement>('.ask-card button[type="submit"]')?.click());
+    const frames = ws.sent.map((raw) => JSON.parse(raw) as { type: string; requestId?: string; answers?: Record<string, string> });
+    expect(frames.find((m) => m.type === "chat.ask.answer")).toEqual({
+      type: "chat.ask.answer", requestId: "ask-1", answers: { "选哪个方案？": "方案 A" },
+    });
+    expect(host.querySelector(".ask-card")).toBeNull();
+  });
+
+  it("其他视图作答后的 chat.ask.resolved 撤下本视图卡片", async () => {
+    const { host, ws } = await mountApp();
+    await emit(ws, { type: "chat.ask", requestId: "ask-1", questions });
+    expect(host.querySelector(".ask-card")).not.toBeNull();
+    await emit(ws, { type: "chat.ask.resolved", requestId: "ask-1" });
+    expect(host.querySelector(".ask-card")).toBeNull();
+  });
+
+  it("chat.sync.askReq 恢复接入前已挂起的提问", async () => {
+    const { host, ws } = await mountApp();
+    await emit(ws, {
+      type: "chat.sync", busy: true, streamText: "", user: null, permReq: null,
+      askReq: { requestId: "ask-1", questions }, draft: "", compacting: false,
+    });
+    expect(host.querySelector(".ask-card")?.textContent).toContain("选哪个方案？");
+  });
+
+  it("手动中止同时撤下挂起提问", async () => {
+    const { host, ws } = await mountApp();
+    await emit(ws, { type: "chat.ask", requestId: "ask-1", questions });
+    await emit(ws, { type: "chat.aborted" });
+    expect(host.querySelector(".ask-card")).toBeNull();
   });
 });

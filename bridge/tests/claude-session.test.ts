@@ -17,6 +17,7 @@ function stubEvents(): SessionEvents & { log: Array<[string, ...unknown[]]>; run
     onDone: (s, info) => log.push(["done", s, info]),
     onError: (m) => log.push(["error", m]),
     onPermission: (r) => log.push(["permission", r]),
+    onAsk: (r) => log.push(["ask", r]),
     onSessionId: (id) => log.push(["sid", id]),
     onAborted: () => log.push(["aborted"]),
   };
@@ -47,6 +48,66 @@ const DELTA = { type: "stream_event", event: { type: "content_block_delta", delt
 const TOOL = { type: "assistant", message: { content: [{ type: "tool_use", name: "Write", input: { file_path: "a.md" } }] } };
 const DONE = { type: "result", subtype: "success" };
 
+describe("AskUserQuestion 提问", () => {
+  const ASK_INPUT = {
+    questions: [{
+      question: "选哪个？", header: "方案",
+      options: [{ label: "A", description: "用 A" }, { label: "B" }],
+      multiSelect: false,
+    }],
+  };
+
+  async function setup(permissionMode: "auto" | "approve-each" = "auto") {
+    const { fn, calls } = fakeQuery([INIT, DONE]);
+    const ev = stubEvents();
+    const s = createClaudeSession("D:\\notes", { permissionMode, events: ev, queryFn: fn });
+    await new Promise((r) => setTimeout(r, 50));
+    const canUseTool = calls[0].options.canUseTool as (n: string, i: Record<string, unknown>) => Promise<{ behavior: string; updatedInput?: Record<string, unknown>; message?: string }>;
+    return { s, ev, canUseTool };
+  }
+
+  it("auto 模式也转发提问，答案回填 updatedInput.answers 且原参数保留", async () => {
+    const { s, ev, canUseTool } = await setup("auto");
+    const p = canUseTool("AskUserQuestion", ASK_INPUT);
+    await new Promise((r) => setTimeout(r, 20));
+    const askLog = ev.log.find(([k]) => k === "ask") as [string, { requestId: string; questions: unknown[] }];
+    expect(askLog).toBeTruthy();
+    expect(askLog[1].questions).toEqual(ASK_INPUT.questions);
+    s.respondAsk(askLog[1].requestId, { "选哪个？": "A" });
+    const res = await p;
+    expect(res.behavior).toBe("allow");
+    expect(res.updatedInput?.answers).toEqual({ "选哪个？": "A" });
+    expect(res.updatedInput?.questions).toEqual(ASK_INPUT.questions);
+    await s.close();
+  });
+
+  it("用户未作答（null）按拒绝释放", async () => {
+    const { s, ev, canUseTool } = await setup();
+    const p = canUseTool("AskUserQuestion", ASK_INPUT);
+    await new Promise((r) => setTimeout(r, 20));
+    const askLog = ev.log.find(([k]) => k === "ask") as [string, { requestId: string }];
+    s.respondAsk(askLog[1].requestId, null);
+    expect((await p).behavior).toBe("deny");
+    await s.close();
+  });
+
+  it("questions 结构非法不特判（auto 走防御性拒绝）", async () => {
+    const { s, ev, canUseTool } = await setup();
+    const res = await canUseTool("AskUserQuestion", { questions: [{ nope: true }] });
+    expect(res.behavior).toBe("deny");
+    expect(ev.log.find(([k]) => k === "ask")).toBeUndefined();
+    await s.close();
+  });
+
+  it("close() 释放挂起提问", async () => {
+    const { s, canUseTool } = await setup();
+    const p = canUseTool("AskUserQuestion", ASK_INPUT);
+    await new Promise((r) => setTimeout(r, 20));
+    await s.close();
+    expect((await p).behavior).toBe("deny");
+  });
+});
+
 describe("createClaudeSession", () => {
   it("init/delta/tool/result 事件正确转发", async () => {
     const { fn } = fakeQuery([INIT, DELTA, TOOL, DONE]);
@@ -59,6 +120,19 @@ describe("createClaudeSession", () => {
       ["tool", "Write:a.md"],
       ["done", "sid-1", { model: undefined, effort: undefined }], // INIT 未带 model/effort 字段（老 CLI 形态）
     ]);
+    await s.close();
+  });
+
+  it("AskUserQuestion 不发送普通工具活动，其他工具保持原样", async () => {
+    const ASK_TOOL = {
+      type: "assistant",
+      message: { content: [{ type: "tool_use", name: "AskUserQuestion", input: { questions: [] } }] },
+    };
+    const { fn } = fakeQuery([INIT, ASK_TOOL, TOOL, DONE]);
+    const ev = stubEvents();
+    const s = createClaudeSession("D:\\notes", { permissionMode: "auto", events: ev, queryFn: fn });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(ev.log.filter(([kind]) => kind === "tool")).toEqual([["tool", "Write:a.md"]]);
     await s.close();
   });
 
@@ -496,7 +570,7 @@ describe("压缩进度事件", () => {
       queryFn: q.fn,
       events: {
         onDelta() {}, onTool() {}, onDone() {}, onRuntime() {}, onError() {}, onAborted() {},
-        onPermission() {}, onSessionId() {},
+        onPermission() {}, onSessionId() {}, onAsk() {},
         onCompact: (ev) => compact.push(ev),
       },
     });

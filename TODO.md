@@ -54,6 +54,17 @@
 - [x] 回归：桥接 205/205（202+3）、扩展 100/100（97+3），两端 typecheck 干净，bridge exe 与扩展均已重建。
 - [ ] 人工复核：用户真实长会话（auto-compact，压缩持续数秒~数十秒）中状态栏跳秒与完成后压缩率文案的视觉确认；小会话压缩仅百毫秒级，自动探针只能证明链路通。另待复核：历史回看时压缩记录行的位置与文案、消息区底缘拖拽调输入框高度的手感。
 
+## AskUserQuestion 选择式提问（2026-10-30，隔离全链与真实 Chrome 自动探针已通过）
+
+- [x] 可行性实证：SDK 0.3.304 + 真 CLI 2.1.301 + 本机假上游，生产透传的 `permissionMode:"auto"` 下 `AskUserQuestion` 仍进入 `canUseTool`；返回 `{behavior:"allow", updatedInput:{...input, answers}}` 后生成正常非错误 tool_result，answers 键为完整问题文本。
+- [x] 协议与桥接：新增 `chat.ask` / `chat.ask.resolved` / `chat.ask.answer` 与 `chat.sync.askReq`；严格解析 questions 和 answers。会话层支持作答回填、未作答拒绝、10 分钟超时、重复作答幂等及 abort/close 释放；server 镜像挂起提问，快照补卡，任一视图作答后广播 resolved。
+- [x] 扩展卡片：新增 AskCard，一次多题、单选、多选、Other 自由文本与完整作答校验；多选按选择顺序以 `", "` 连接，answers 以问题文本为键。App 接入实时广播、快照恢复、提交撤卡和手动中止清理；长表单内部滚动，不挤没输入框。
+- [x] TDD：组件缺失与 App 的实时提问、跨视图 resolved、快照恢复三个核心场景先取得有效 RED，再最小实现转绿；新增 6 个 AskCard DOM 用例和 4 个 App 集成用例。Other 文本测试改用原生 value setter 绕过 React value tracker，确认失败来自测试事件模拟而非组件逻辑。
+- [x] 完整回归：桥接 15 个文件 213/213、扩展 16 个文件 110/110，两端 typecheck、桥接 selftest、扩展 build、Windows/macOS 桥接二进制构建全部通过；协议复制件同步。
+- [x] 隔离全链探针：新 dist exe 在项目树外使用独立 `CCC_BRIDGE_HOME` / `CLAUDE_CONFIG_DIR`，真实 CLI 只连 `127.0.0.1` 假上游。视图 A 收到 `chat.ask` 后接入视图 B，B 从 `chat.sync.askReq` 恢复同一提问并作答，A/B 均收到 resolved；第二轮请求含 `is_error:null` 且答案为“方案 A”的 tool_result，最终收到 `mock final reply`，errors=[]。结果保留于 `D:/ccc-fast-final-verify-20261026/tool-history-20261027/ask-e2e-1793359284948/ask-e2e-result.json`，未调用真实 API，未停止或替换用户正在使用的桥接。
+- [x] 真实 Chrome 显示修复：自动探针先稳定复现“卡片可作答，但上方多出 `🔧 AskUserQuestion + 原始 JSON`”；实时 assistant 与历史 transcript 两条链路分别新增有效 RED，随后只过滤 AskUserQuestion 的普通工具活动，Write 等其他工具和正文顺序不变。重建新 dist exe 后复跑同一探针：askCard=true、answered=true、askToolLines=[]、tool_result 非错误、最终回答为 `mock final reply`、runtimeErrors=[]，ok=true。结果保留于 `D:/ccc-fast-final-verify-20261026/tool-history-20261027/exe-chrome-ask-1793361300413/ask-chrome-result.json`。
+- [ ] Chrome 人工验收：真实侧栏/弹窗中确认多题、多选、Other 输入、长卡片滚动与提交手感；自动 DOM/WS 探针不代替视觉验收。`ExitPlanMode` 等其他选择式交互不在本轮实现范围内，不能宣称通用终端选择界面已经完成。
+
 ## 历史工具活动与本地命令回放（2026-10-27，真实浏览器链路已验证）
 
 - [x] 首轮根因复现：旧版 readTranscript 不输出 assistant tool_use，并把 /model 的 caveat/command/stdout 当成用户正文。首轮修复后真实转录已能恢复工具，但用户实测历史与实时仍不可见，因此首轮 DOM/WS 通过不能视为产品验收完成。

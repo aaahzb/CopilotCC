@@ -15,7 +15,7 @@ import type { ServerMessage } from "../src/protocol";
 let dir: string;
 let sessions: SessionManager;
 let sentClientMessages: Array<{ cwd: string; opts: Record<string, unknown> }>;
-let fakeHandle: { send(t: string): void; abort(): void; respondPermission(id: string, a: boolean): void; setFastMode(enabled: boolean, model?: string | null): Promise<void>; fastAutoModel(): Promise<string | undefined>; close(): Promise<void> };
+let fakeHandle: { send(t: string): void; abort(): void; respondPermission(id: string, a: boolean): void; respondAsk(id: string, a: Record<string, string> | null): void; setFastMode(enabled: boolean, model?: string | null): Promise<void>; fastAutoModel(): Promise<string | undefined>; close(): Promise<void> };
 
 /** 构造测试配置，默认端口 0（系统分配） */
 function makeConfig(over: Partial<BridgeConfig> = {}): BridgeConfig {
@@ -78,6 +78,7 @@ beforeEach(() => {
     },
     abort: () => {},
     respondPermission: () => {},
+    respondAsk: vi.fn(),
     setFastMode: vi.fn(() => Promise.resolve()),
     fastAutoModel: vi.fn(() => Promise.resolve(undefined)),
     close: async () => {},
@@ -129,6 +130,40 @@ describe("镜像工作区（多视图广播与快照）", () => {
     if (sync2.type !== "chat.sync") throw new Error("快照类型错误");
     expect(sync2.compacting).toBe(false);
     a.ws.close(); b.ws.close(); c.ws.close(); d.ws.close();
+    await server.close();
+  });
+
+  it("chat.ask 广播与快照，chat.ask.answer 路由 respondAsk 并广播 resolved", async () => {
+    const { server, url } = await boot();
+    const a = await connect(url);
+    const ca = collect(a.ws);
+    a.ws.send(JSON.stringify({ type: "folder.bind", path: dir }));
+    await ca.waitFor("folder.bound");
+    const captured = sentClientMessages.find((m) => m.cwd !== "SEND")!;
+    const events = captured.opts.events as { onAsk(req: unknown): void };
+    const questions = [{ question: "选哪个？", header: "方案", options: [{ label: "A" }, { label: "B" }], multiSelect: false }];
+    events.onAsk({ requestId: "ask-1", questions });
+    const req = await ca.waitFor("chat.ask");
+    expect(req).toEqual({ type: "chat.ask", requestId: "ask-1", questions });
+    // 提问挂起时新视图接入：快照必须带 askReq 补卡片
+    const b = await connect(url);
+    const cb = collect(b.ws);
+    b.ws.send(JSON.stringify({ type: "client.ready" }));
+    const sync1 = await cb.waitFor("chat.sync");
+    if (sync1.type !== "chat.sync") throw new Error("快照类型错误");
+    expect(sync1.askReq).toEqual({ requestId: "ask-1", questions });
+    // 视图 B 作答：respondAsk 收到答案，全部视图撤卡片，之后接入的快照为空
+    b.ws.send(JSON.stringify({ type: "chat.ask.answer", requestId: "ask-1", answers: { "选哪个？": "A" } }));
+    await ca.waitFor("chat.ask.resolved");
+    await cb.waitFor("chat.ask.resolved");
+    expect(fakeHandle.respondAsk).toHaveBeenCalledWith("ask-1", { "选哪个？": "A" });
+    const c = await connect(url);
+    const cc = collect(c.ws);
+    c.ws.send(JSON.stringify({ type: "client.ready" }));
+    const sync2 = await cc.waitFor("chat.sync");
+    if (sync2.type !== "chat.sync") throw new Error("快照类型错误");
+    expect(sync2.askReq).toBeNull();
+    a.ws.close(); b.ws.close(); c.ws.close();
     await server.close();
   });
 

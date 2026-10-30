@@ -222,8 +222,8 @@ export function readTranscript(cwd: string, sessionId: string, max = 100): Histo
     for (const b of content) {
       if (b?.type === "text") {
         textParts.push(b.text ?? "");
-      } else if (b?.type === "tool_use") {
-        flushText(); // 工具与正文严格按 content 原始顺序回放
+      } else if (b?.type === "tool_use" && b.name !== "AskUserQuestion") {
+        flushText(); // 工具与正文严格按 content 原始顺序回放；提问只由专用卡片展示
         out.push({ role: "tool", toolName: b.name ?? "tool", text: summarizeTool(b) });
       }
     }

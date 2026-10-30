@@ -5,7 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { isEffortLevel, isFastModeDisabledReason, isFastModeState } from "./protocol";
 import { readTranscriptEffort } from "./transcript";
-import type { PermissionModeSetting, EffortLevelSetting, FastModeRuntime } from "./protocol";
+import type { PermissionModeSetting, EffortLevelSetting, FastModeRuntime, AskQuestion } from "./protocol";
 
 /** 会话运行时信息（SDK system/init 每轮开头重发，取最新一帧为准） */
 export interface SessionRuntimeInfo {
@@ -39,6 +39,8 @@ export interface SessionEvents {
   /** 本轮被用户手动中止：abort() 立即触发（不等 CLI 收尾帧），server 据此下发 chat.aborted 释放客户端 */
   onAborted(): void;
   onPermission(req: { requestId: string; tool: string; detail: string }): void;
+  /** CC 发起 AskUserQuestion（与权限模式无关，auto 下 SDK 同样回调，探针实证）；respondAsk 回填答案 */
+  onAsk(req: { requestId: string; questions: AskQuestion[] }): void;
   onSessionId(id: string): void;
 }
 
@@ -47,6 +49,8 @@ export interface ClaudeSessionLike {
   send(text: string): void;
   abort(): void;
   respondPermission(requestId: string, allow: boolean): void;
+  /** 用户作答（answers 键=问题文本）或未作答（null，按拒绝释放）；超时/重复作答幂等忽略 */
+  respondAsk(requestId: string, answers: Record<string, string> | null): void;
   /**
    * 切换原生 fast 并可在同一次控制中请求模型；不取消当前轮次。
    * model=undefined 不改模型，null 表示恢复自动档缓存的具体模型，字符串原样下发。
@@ -79,6 +83,34 @@ export const GUARD_PREFIX =
 
 /** 权限审批超时（毫秒）：侧栏 30 秒无响应默认拒绝 */
 const PERMISSION_TIMEOUT_MS = 30_000;
+/** 提问等待上限：用户需要思考与打字，远长于审批；超时按未作答拒绝，不卡死会话 */
+const ASK_TIMEOUT_MS = 600_000;
+
+/**
+ * 解析 AskUserQuestion 的 input.questions 为协议形状。
+ * @param input 工具入参
+ * @returns 协议问题数组；结构非法返回 null（调用方走原审批/拒绝逻辑，不伪造提问卡片）
+ */
+function parseAskQuestions(input: Record<string, unknown>): AskQuestion[] | null {
+  const qs = input.questions;
+  if (!Array.isArray(qs) || qs.length === 0 || qs.length > 16) return null;
+  const out: AskQuestion[] = [];
+  for (const q of qs) {
+    if (!q || typeof q !== "object") return null;
+    const r = q as Record<string, unknown>;
+    if (typeof r.question !== "string" || typeof r.header !== "string") return null;
+    if (!Array.isArray(r.options) || r.options.length === 0) return null;
+    const options: { label: string; description?: string }[] = [];
+    for (const o of r.options) {
+      if (!o || typeof o !== "object") return null;
+      const ro = o as Record<string, unknown>;
+      if (typeof ro.label !== "string") return null;
+      options.push({ label: ro.label, ...(typeof ro.description === "string" ? { description: ro.description } : {}) });
+    }
+    out.push({ question: r.question, header: r.header, options, multiSelect: r.multiSelect === true });
+  }
+  return out;
+}
 
 /**
  * 解析本机 claude CLI 的真实可执行路径，显式传给 SDK（结果缓存，只解析一次）。
@@ -280,6 +312,7 @@ export function createClaudeSession(cwd: string, opts: SessionOptions): ClaudeSe
   let abortSwallow = false; // abort 后吞掉该轮的收尾 result 帧：客户端已被 chat.aborted 释放，不再发 done/error
   let guardPending = !opts.resumeId; // 仅全新会话需要注入防护前缀
   const pending = new Map<string, PendingPermission>();
+  const pendingAsk = new Map<string, { resolve: (answers: Record<string, string> | null) => void }>();
   const inbox: string[] = [];
   let wake: (() => void) | null = null;
   // 真实 CLI 时序（probe 实证）：收到首条用户输入后才发 system/init，绝不能等 init 再发（会死锁）。
@@ -302,6 +335,23 @@ export function createClaudeSession(cwd: string, opts: SessionOptions): ClaudeSe
 
   /** canUseTool：approve-each 下转发侧栏审批，其余模式不应被调用到（防御性拒绝） */
   async function canUseTool(toolName: string, input: Record<string, unknown>): Promise<unknown> {
+    // AskUserQuestion 与权限模式无关：auto 下 SDK 同样回调（本机假上游探针实证），答案经 updatedInput.answers 回填给 CC
+    if (toolName === "AskUserQuestion") {
+      const questions = parseAskQuestions(input);
+      if (questions) {
+        const requestId = `ask-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        events.onAsk({ requestId, questions });
+        const answers = await new Promise<Record<string, string> | null>((resolve) => {
+          pendingAsk.set(requestId, { resolve });
+          setTimeout(() => {
+            if (pendingAsk.delete(requestId)) resolve(null); // 超时按未作答释放
+          }, ASK_TIMEOUT_MS);
+        });
+        return answers
+          ? { behavior: "allow", updatedInput: { ...input, answers } }
+          : { behavior: "deny", message: "用户在侧边栏未回答提问" };
+      }
+    }
     if (opts.permissionMode !== "approve-each") {
       return { behavior: "deny", message: "当前权限模式未开启逐条审批" };
     }
@@ -382,7 +432,7 @@ export function createClaudeSession(cwd: string, opts: SessionOptions): ClaudeSe
       const content = (msg.message as { content?: Array<{ type?: string; name?: string; input?: Record<string, unknown> }> } | undefined)?.content;
       if (Array.isArray(content)) {
         for (const b of content) {
-          if (b.type === "tool_use") events.onTool(b.name ?? "tool", summarizeTool(b));
+          if (b.type === "tool_use" && b.name !== "AskUserQuestion") events.onTool(b.name ?? "tool", summarizeTool(b));
         }
       }
       return;
@@ -499,6 +549,8 @@ export function createClaudeSession(cwd: string, opts: SessionOptions): ClaudeSe
       compactPending = false; // 本轮作废，compact 标记不带出去
       for (const [, p] of pending) p.resolve(false); // 中止会让挂起的审批请求成孤儿：立即按拒绝释放（含侧栏卡片）
       pending.clear();
+      for (const [, p] of pendingAsk) p.resolve(null); // 挂起提问同样按未作答释放
+      pendingAsk.clear();
       events.onAborted(); // 立即释放客户端：不等 CLI 收尾帧，不问 interrupt 成败
       // 通知 CLI 停止本轮（等价交互模式的 ESC）；无此方法或拒绝（CLI 侧轮次已结束）都不影响已下发的中止
       void (stream as { interrupt?: () => Promise<void> }).interrupt?.()?.catch(() => {});
@@ -531,6 +583,12 @@ export function createClaudeSession(cwd: string, opts: SessionOptions): ClaudeSe
         p.resolve(allow);
       }
     },
+    respondAsk(requestId: string, answers: Record<string, string> | null): void {
+      const p = pendingAsk.get(requestId);
+      if (!p) return; // 已超时/重复作答：幂等忽略
+      pendingAsk.delete(requestId);
+      p.resolve(answers);
+    },
     runtimeInfo(): SessionRuntimeInfo {
       return currentRuntime();
     },
@@ -551,6 +609,8 @@ export function createClaudeSession(cwd: string, opts: SessionOptions): ClaudeSe
       wake?.();
       for (const [, p] of pending) p.resolve(false);
       pending.clear();
+      for (const [, p] of pendingAsk) p.resolve(null);
+      pendingAsk.clear();
       // Query.return() 触发 SDK cleanup/子进程收尾；不等待它，避免异常 CLI 卡住切换或退出。
       void (stream as { return?: () => Promise<unknown> }).return?.()?.catch(() => {});
     },

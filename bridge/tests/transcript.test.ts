@@ -57,6 +57,22 @@ describe("readTranscript", () => {
     ]);
   });
 
+  it("AskUserQuestion 不回放原始参数，正文与其他工具顺序不变", () => {
+    const dir = path.join(fakeHome, ".claude", "projects", slugifyPath(path.resolve(cwd)));
+    const lines = [
+      JSON.stringify({ type: "assistant", message: { content: [
+        { type: "tool_use", name: "AskUserQuestion", input: { questions: [{ question: "选哪个？" }] } },
+        { type: "text", text: "已收到选择" },
+        { type: "tool_use", name: "Write", input: { file_path: "answer.md" } },
+      ] } }),
+    ];
+    fs.writeFileSync(path.join(dir, sid + ".jsonl"), lines.join("\n"), "utf-8");
+    expect(readTranscript(cwd, sid)).toEqual([
+      { role: "assistant", text: "已收到选择" },
+      { role: "tool", toolName: "Write", text: "answer.md" },
+    ]);
+  });
+
   it("本地命令按真实父子关系合并，用户主动输入的相似标签保持正文", () => {
     const dir = path.join(fakeHome, ".claude", "projects", slugifyPath(path.resolve(cwd)));
     const caveatId = "caveat-1";

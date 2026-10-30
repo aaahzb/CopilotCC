@@ -78,6 +78,20 @@ export const MAX_UPLOAD_TOTAL_B64 = 60_000_000;
 /** settings.set 的显式变更字段；存在时未列出的完整快照字段仅供兼容，不得覆盖服务器 */
 export type ExecutionSettingField = "permissionMode" | "model" | "effort" | "fastMode";
 
+/** CC AskUserQuestion 的单个问题（与工具 input.questions 元素同形） */
+export interface AskQuestion {
+  question: string;
+  header: string;
+  options: { label: string; description?: string }[];
+  multiSelect: boolean;
+}
+
+/** 挂起的提问请求（chat.ask 广播与 chat.sync 快照共用） */
+export interface AskRequest {
+  requestId: string;
+  questions: AskQuestion[];
+}
+
 export type ClientMessage =
   | { type: "auth"; token: string }
   | { type: "client.ready" }
@@ -90,6 +104,8 @@ export type ClientMessage =
   // chat.draft：输入框草稿上报（空串=清空；工作区持有并镜像到其它视图，逐键防抖发送，上限见 parse）
   | { type: "chat.draft"; text: string }
   | { type: "permission.response"; requestId: string; allow: boolean }
+  // chat.ask.answer：用户对 AskUserQuestion 卡片的作答（answers 键=问题文本，值=所选标签或 Other 自由文本；多选用 ", " 连接）
+  | { type: "chat.ask.answer"; requestId: string; answers: Record<string, string> }
   | { type: "session.history" }
   | { type: "session.list" }
   | { type: "session.new" }
@@ -149,6 +165,8 @@ export type ServerMessage =
       /** 在途轮的用户气泡（未落盘，历史回放里没有，靠它补齐） */
       user: { display: string; sent: string } | null;
       permReq: { requestId: string; tool: string; detail: string } | null;
+      /** 挂起的提问（快照补卡片；任一视图作答后全视图撤下） */
+      askReq: AskRequest | null;
       /** 工作区当前草稿（视图输入框镜像） */
       draft: string;
       /** 工作区正在压缩上下文（视图接入即提示；秒数从接入时刻近似起算） */
@@ -159,6 +177,9 @@ export type ServerMessage =
   | { type: "permission.request"; requestId: string; tool: string; detail: string }
   // permission.resolved：任一视图已裁决，其它视图撤掉卡片（广播）
   | { type: "permission.resolved"; requestId: string }
+  // chat.ask：CC 发起 AskUserQuestion（auto 等模式同样可达 canUseTool，本机假上游探针实证）；任一视图作答后 chat.ask.resolved 广播撤卡片
+  | { type: "chat.ask"; requestId: string; questions: AskQuestion[] }
+  | { type: "chat.ask.resolved"; requestId: string }
   // folder.opened：folder.open 的定向应答；script=已刷新续聊脚本文件名（无别名时为 null）
   | { type: "folder.opened"; path: string; script: string | null }
   | { type: "session.history.data"; messages: HistoryMessage[] }
@@ -263,6 +284,19 @@ export function parseClientMessage(raw: string): ClientMessage | null {
       }
       case "permission.response":
         return typeof m.requestId === "string" && typeof m.allow === "boolean" ? m : null;
+      case "chat.ask.answer": {
+        if (typeof m.requestId !== "string" || m.requestId.length === 0) return null;
+        const a = m.answers;
+        if (!a || typeof a !== "object" || Array.isArray(a)) return null;
+        const entries = Object.entries(a as Record<string, unknown>);
+        if (entries.length > 16) return null; // CC 一次提问的问题数有限，防御异常大对象
+        const answers: Record<string, string> = {};
+        for (const [k, v] of entries) {
+          if (typeof v !== "string" || v.length > 4000 || k.length > 4000) return null;
+          answers[k] = v;
+        }
+        return { type: "chat.ask.answer", requestId: m.requestId, answers };
+      }
       case "session.switch":
       case "session.delete":
         return typeof m.sessionId === "string" && m.sessionId.length > 0 ? m : null;

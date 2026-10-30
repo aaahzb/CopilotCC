@@ -4,7 +4,7 @@ import { WebSocketServer, WebSocket } from "ws";
 import type { AddressInfo } from "node:net";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { encode, parseClientMessage, type PermissionModeSetting, type EffortLevelSetting, type ServerMessage, type ExecutionRuntime } from "./protocol";
-import type { ClientMessage } from "./protocol";
+import type { ClientMessage, AskRequest } from "./protocol";
 import { isValidFolder, normalizeFolder, SessionManager } from "./session-manager";
 import { createClaudeSession, type ClaudeSessionLike } from "./claude-session";
 import type { SessionRuntimeInfo } from "./claude-session";
@@ -135,6 +135,8 @@ interface Workspace {
   inflightUser: { display: string; sent: string } | null;
   /** 挂起的权限审批（permission.request 已广播未裁决；快照给中途接入的视图补卡片） */
   pendingPerm: { requestId: string; tool: string; detail: string } | null;
+  /** 挂起的提问（chat.ask 已广播未作答；快照补卡片，任一视图作答后全视图撤下） */
+  pendingAsk: AskRequest | null;
   /** 输入框草稿镜像（chat.draft 上报更新；弹窗与侧边栏接力输入） */
   draft: string;
 }
@@ -494,6 +496,7 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
     streamText: "",
     inflightUser: null,
     pendingPerm: null,
+    pendingAsk: null,
     draft: "",
   };
   /** 读取当前完整 fast 请求快照。 */
@@ -636,6 +639,7 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
     workspace.streamText = "";
     workspace.inflightUser = null;
     workspace.pendingPerm = null;
+    workspace.pendingAsk = null;
     workspace.compacting = false; // 轮次异常终结：压缩提示不悬挂
   }
 
@@ -678,6 +682,7 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
           workspace.streamText = "";
           workspace.inflightUser = null;
           workspace.pendingPerm = null;
+          workspace.pendingAsk = null;
           if (workspace.folder === f) {
             pushSessionList(); // 一轮结束后转录已落盘，刷新列表（新会话此刻才有文件）
             refreshAliasScript(); // 续聊脚本跟上最新会话
@@ -694,6 +699,10 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
         onPermission: (r) => {
           workspace.pendingPerm = r;
           broadcast({ type: "permission.request", ...r });
+        },
+        onAsk: (r) => {
+          workspace.pendingAsk = r;
+          broadcast({ type: "chat.ask", ...r });
         },
         onSessionId: (id) => {
           const existing = sessions.get(f);
@@ -775,6 +784,7 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
       streamText: workspace.streamText,
       user: workspace.inflightUser,
       permReq: workspace.pendingPerm,
+      askReq: workspace.pendingAsk,
       draft: workspace.draft,
       compacting: workspace.compacting,
     });
@@ -1112,6 +1122,11 @@ function attachHandlers(wss: WebSocketServer, deps: ServerDeps, instanceId: stri
           workspace.pendingPerm = null;
           broadcast({ type: "permission.resolved", requestId: m.requestId }); // 任一视图裁决，全部视图撤卡片（裁决方幂等）
           workspace.claude?.respondPermission(m.requestId, m.allow);
+          break;
+        case "chat.ask.answer":
+          workspace.pendingAsk = null;
+          broadcast({ type: "chat.ask.resolved", requestId: m.requestId }); // 任一视图作答，全部视图撤卡片（作答方幂等）
+          workspace.claude?.respondAsk(m.requestId, m.answers);
           break;
         case "session.history": {
           if (!workspace.folder) break;

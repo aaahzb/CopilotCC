@@ -38,6 +38,19 @@ describe("encode", () => {
     const start = encode({ type: "chat.compact", phase: "start" });
     expect(JSON.parse(start)).toEqual({ type: "chat.compact", phase: "start" });
   });
+
+  it("chat.ask 帧字段保留，chat.ask.answer 解析校验 answers", () => {
+    const questions = [{ question: "选哪个？", header: "方案", options: [{ label: "A", description: "用 A" }], multiSelect: false }];
+    expect(JSON.parse(encode({ type: "chat.ask", requestId: "ask-1", questions })))
+      .toEqual({ type: "chat.ask", requestId: "ask-1", questions });
+    expect(JSON.parse(encode({ type: "chat.ask.resolved", requestId: "ask-1" })))
+      .toEqual({ type: "chat.ask.resolved", requestId: "ask-1" });
+    expect(parseClientMessage(JSON.stringify({ type: "chat.ask.answer", requestId: "ask-1", answers: { "选哪个？": "A" } })))
+      .toEqual({ type: "chat.ask.answer", requestId: "ask-1", answers: { "选哪个？": "A" } });
+    expect(parseClientMessage(JSON.stringify({ type: "chat.ask.answer", requestId: "ask-1", answers: "A" }))).toBeNull();
+    expect(parseClientMessage(JSON.stringify({ type: "chat.ask.answer", requestId: "ask-1", answers: { q: 1 } }))).toBeNull();
+    expect(parseClientMessage(JSON.stringify({ type: "chat.ask.answer", requestId: "", answers: {} }))).toBeNull();
+  });
 });
 
 describe("settings.set 扩展字段", () => {
