@@ -14,6 +14,14 @@
 - [x] Task 12: page-extract.ts + UI 组件 + App 装配
 - [ ] Task 13: 端到端手动验收 + README.md
 
+## GitHub 首页与 Release 说明（2026-10-31）
+
+- [x] README 改为简洁项目首页：定位、CI/下载/许可证/平台徽章、真实界面主图、三平台下载、核心亮点、快速上手和文档入口；完整说明不因首页精简而删除。
+- [x] 原详细内容拆分为 `docs/guide.md`（安装、功能、交互矩阵、安全与 FAQ）和 `docs/development.md`（架构、开发、测试、发布与验证边界）；Markdown 本地链接检查通过。
+- [x] `docs/img/main.png` 使用隔离 exe、真实 CLI、真实 Chrome 和 `127.0.0.1` 假上游生成，仅展示固定产品摘要与一次 Read 工具调用；runtimeErrors=[]，未调用真实 API。最终截图结果：`D:/ccc-fast-final-verify-20261026/tool-history-20261027/readme-screenshot-1793440454778/result.json`。
+- [x] Release 改为读取完整 Git 历史，自动组合固定下载说明、上一 tag 至当前 tag 的非合并提交列表和 compare 链接，不再只依赖 PR 驱动的 `--generate-notes`。同一段 shell 已 dry-run，实际生成包含提交条目的 Markdown；Bun YAML 解析和 `bash -n` 通过。
+- [ ] 未实际打 tag 或改写已有 Release；新正文逻辑待下一个 `v*` 标签执行真实 GitHub 发布端到端验证。
+
 ## 会话交互与 CMD 可见信息完整性（2026-10-31，已完成）
 
 目标：非技术用户无需 CMD 也能完成 Claude Code 的选择、审批与计划流程；CMD 会话中用户可见的文字、选择结果和状态均进入插件中文时间线。关键结果直接显示，长输出、diff、原始参数等完整折叠，不静默丢弃。

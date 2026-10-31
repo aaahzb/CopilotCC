@@ -123,8 +123,31 @@ jobs:
     needs: [build-win, build-mac, build-ext]
     runs-on: ubuntu-latest
     steps:
-      # gh release create 需要 git 仓库上下文解析远端仓库，漏了 checkout 会报 "not a git repository"
+      # gh release create 需要 git 仓库上下文；完整历史与全部 tag 用于生成两版之间的更新列表。
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: 组装 Release 正文（固定下载说明 + 自动提交列表）
+        run: |
+          CUR="${GITHUB_REF_NAME}"
+          PREV=$(git describe --tags --abbrev=0 "${CUR}^" 2>/dev/null || true)
+          HEADER='CopilotCC 把 Claude Code 放进 Chrome 侧边栏：一边看网页，一边让 Claude 阅读、提问并处理本地文件。
+
+          ## 下载
+
+          - **Chrome / Edge**：`ccc-extension-*-chrome.zip`，解压到固定位置后通过「加载已解压的扩展程序」安装。
+          - **Windows 10+ x64**：`ccc-bridge-win-x64.zip`，解压后运行 `ccc-bridge.exe`。
+          - **macOS Apple Silicon**：`ccc-bridge-darwin-arm64.dmg`，首次使用请右键运行包内的「首次使用-右键打开我.command」。'
+          if [ -n "$PREV" ]; then
+            LOG=$(git log --no-merges --pretty=format:'- %s' "${PREV}..${CUR}")
+            RANGE="${PREV} → ${CUR}"
+            LINK=$(printf '\n\n**Full Changelog**: https://github.com/%s/compare/%s...%s' "${GITHUB_REPOSITORY}" "${PREV}" "${CUR}")
+          else
+            LOG="- 首个版本"
+            RANGE="${CUR}"
+            LINK=""
+          fi
+          printf '%s\n\n## 本次变更（%s）\n\n%s%s\n' "$HEADER" "$RANGE" "$LOG" "$LINK" > release-notes.md
       - uses: actions/download-artifact@v4
         with:
           pattern: "*"
@@ -132,7 +155,7 @@ jobs:
           merge-multiple: true
       - name: 列出待发布资产（日志可见，防止再出现静默缺包）
         run: ls -la assets/
-      - name: 上传资产并生成更新说明
+      - name: 创建 Release 并上传资产
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release create "${GITHUB_REF_NAME}" --title "${GITHUB_REF_NAME}" --generate-notes assets/*
+        run: gh release create "${GITHUB_REF_NAME}" --title "${GITHUB_REF_NAME}" --notes-file release-notes.md assets/*
