@@ -75,6 +75,21 @@ describe("AskCard 提问卡片", () => {
     expect(host.textContent).toContain("其他（自定义）");
   });
 
+  it("CLI 提供的 preview 默认折叠且可完整展开", () => {
+    const { host } = mount({
+      requestId: "ask-preview",
+      questions: [{
+        question: "看预览", header: "预览", multiSelect: false,
+        options: [{ label: "方案 A", description: "说明", preview: "第一行\n第二行" }],
+      }],
+    });
+    const preview = host.querySelector<HTMLDetailsElement>("details.ask-preview");
+    expect(preview?.open).toBe(false);
+    expect(preview?.textContent).toContain("第一行\n第二行");
+    click(preview!.querySelector("summary")!);
+    expect(preview?.open).toBe(true);
+  });
+
   it("单选提交后以问题文本为键回填所选 label", () => {
     const { host, onRespond } = mount(singleRequest);
     click(option(host, "方案 A"));

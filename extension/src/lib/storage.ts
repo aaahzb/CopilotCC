@@ -1,4 +1,4 @@
-import type { PermissionModeSetting, EffortLevelSetting, FastModeRuntime } from "./protocol";
+import type { PermissionModeSetting, EffortLevelSetting, FastModeRuntime, ActualPermissionMode } from "./protocol";
 
 /** 扩展设置（chrome.storage.local 键 ccc.settings） */
 export interface ExtSettings {
@@ -95,6 +95,8 @@ export interface RuntimeCache {
   effort?: EffortLevelSetting | null;
   /** CC 原生 fast 实际状态与禁用原因；undefined = 等待/没有回报 */
   fast?: FastModeRuntime;
+  /** system/init/status 最近回报的原生权限模式；与请求下拉分开 */
+  permissionMode?: ActualPermissionMode;
 }
 
 const RUNTIME_KEY = "ccc.runtime";

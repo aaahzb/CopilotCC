@@ -9,13 +9,14 @@ import { slugifyPath } from "../src/transcript";
 import { SessionManager } from "../src/session-manager";
 import { AliasManager } from "../src/alias-manager";
 import { WorkspaceStore } from "../src/workspace-store";
+import { InteractionStore } from "../src/interaction-store";
 import type { BridgeConfig } from "../src/config";
-import type { ServerMessage } from "../src/protocol";
+import type { ServerMessage, ElicitationResponse, UserDialogResponse } from "../src/protocol";
 
 let dir: string;
 let sessions: SessionManager;
 let sentClientMessages: Array<{ cwd: string; opts: Record<string, unknown> }>;
-let fakeHandle: { send(t: string): void; abort(): void; respondPermission(id: string, a: boolean): void; respondAsk(id: string, a: Record<string, string> | null): void; setFastMode(enabled: boolean, model?: string | null): Promise<void>; fastAutoModel(): Promise<string | undefined>; close(): Promise<void> };
+let fakeHandle: { send(t: string): void; abort(): void; respondPermission(id: string, a: boolean): void; respondAsk(id: string, a: Record<string, string> | null): void; respondElicitation(id: string, response: ElicitationResponse): boolean; respondUserDialog(id: string, response: UserDialogResponse): boolean; setFastMode(enabled: boolean, model?: string | null): Promise<void>; fastAutoModel(): Promise<string | undefined>; close(): Promise<void> };
 
 /** 构造测试配置，默认端口 0（系统分配） */
 function makeConfig(over: Partial<BridgeConfig> = {}): BridgeConfig {
@@ -79,6 +80,8 @@ beforeEach(() => {
     abort: () => {},
     respondPermission: () => {},
     respondAsk: vi.fn(),
+    respondElicitation: vi.fn(() => true),
+    respondUserDialog: vi.fn(() => true),
     setFastMode: vi.fn(() => Promise.resolve()),
     fastAutoModel: vi.fn(() => Promise.resolve(undefined)),
     close: async () => {},
@@ -97,6 +100,51 @@ async function waitCompact(col: { inbox: ServerMessage[] }, phase: "start" | "do
 }
 
 describe("镜像工作区（多视图广播与快照）", () => {
+  it("快照不重复已落盘的在途用户消息，也不误吞下一轮相同提问", async () => {
+    process.env.CCC_FAKE_HOME = dir;
+    const work = path.join(dir, "work");
+    const sessionId = "sid-inflight-user";
+    const transcriptDir = path.join(dir, ".claude", "projects", slugifyPath(path.resolve(work)));
+    const transcript = path.join(transcriptDir, `${sessionId}.jsonl`);
+    fs.mkdirSync(work, { recursive: true });
+    fs.mkdirSync(transcriptDir, { recursive: true });
+    fs.writeFileSync(transcript, "", "utf8");
+    sessions.set(work, { sessionId, title: "重复问题", updatedAt: new Date().toISOString() });
+    const { server, url } = await boot();
+    try {
+      const a = await connect(url);
+      const ca = collect(a.ws);
+      a.ws.send(JSON.stringify({ type: "folder.bind", path: work }));
+      await ca.waitFor("folder.bound");
+      a.ws.send(JSON.stringify({ type: "chat.send", text: "重复问题" }));
+      await ca.waitFor("chat.user");
+      // 真实 CLI 会在 chat.send 后落用户转录，因此这里的时间不早于在途气泡。
+      fs.writeFileSync(transcript, `${JSON.stringify({
+        type: "user", uuid: "persisted-user", timestamp: new Date().toISOString(),
+        message: { content: "重复问题" },
+      })}\n`, "utf8");
+
+      const b = await connect(url);
+      b.ws.send(JSON.stringify({ type: "client.ready" }));
+      const cb = collect(b.ws);
+      const first = await cb.waitFor("chat.sync") as Extract<ServerMessage, { type: "chat.sync" }>;
+      expect(first.timeline?.filter((item) => item.role === "user")).toHaveLength(0);
+
+      const from = ca.inbox.length;
+      a.ws.send(JSON.stringify({ type: "chat.send", text: "重复问题" }));
+      await ca.waitFor("chat.user", from);
+      const c = await connect(url);
+      c.ws.send(JSON.stringify({ type: "client.ready" }));
+      const cc = collect(c.ws);
+      const second = await cc.waitFor("chat.sync") as Extract<ServerMessage, { type: "chat.sync" }>;
+      expect(second.timeline?.filter((item) => item.role === "user")).toHaveLength(1);
+      a.ws.close(); b.ws.close(); c.ws.close();
+    } finally {
+      delete process.env.CCC_FAKE_HOME;
+      await server.close();
+    }
+  });
+
   it("chat.compact 广播到全部视图，chat.sync 快照携带 compacting", async () => {
     const { server, url } = await boot();
     const a = await connect(url);
@@ -120,7 +168,7 @@ describe("镜像工作区（多视图广播与快照）", () => {
     expect(sync1.compacting).toBe(true);
     events.onCompact({ phase: "done", result: "success", preTokens: 156_000, postTokens: 42_000 });
     const [da, db] = await Promise.all([waitCompact(ca, "done"), waitCompact(cb, "done")]);
-    expect(da).toEqual({ type: "chat.compact", phase: "done", result: "success", preTokens: 156_000, postTokens: 42_000 });
+    expect(da).toEqual({ type: "chat.compact", phase: "done", result: "success", preTokens: 156_000, postTokens: 42_000, recorded: true });
     expect(db).toEqual(da);
     // 压缩结束后接入的视图：快照 compacting=false
     const d = await connect(url);
@@ -130,6 +178,365 @@ describe("镜像工作区（多视图广播与快照）", () => {
     if (sync2.type !== "chat.sync") throw new Error("快照类型错误");
     expect(sync2.compacting).toBe(false);
     a.ws.close(); b.ws.close(); c.ws.close(); d.ws.close();
+    await server.close();
+  });
+
+  it("在途压缩经 history 与 chat.sync 合并后仍只有同一条记录", async () => {
+    const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ccc-home-"));
+    process.env.CCC_FAKE_HOME = fakeHome;
+    const projDir = path.join(fakeHome, ".claude", "projects", slugifyPath(path.resolve(dir)));
+    fs.mkdirSync(projDir, { recursive: true });
+    sessions.set(dir, { sessionId: "sid-compact-live", title: "压缩会话", updatedAt: "x" });
+    const { server, url } = await boot({ configDir: dir });
+    const clients: WebSocket[] = [];
+    try {
+      const a = await connect(url);
+      clients.push(a.ws);
+      const ca = collect(a.ws);
+      a.ws.send(JSON.stringify({ type: "folder.bind", path: dir }));
+      await ca.waitFor("folder.bound");
+      const captured = sentClientMessages.find((m) => m.cwd !== "SEND")!;
+      const events = captured.opts.events as { onCompact(ev: unknown): void };
+      const boundaryTime = new Date();
+      fs.writeFileSync(path.join(projDir, "sid-compact-live.jsonl"), JSON.stringify({
+        type: "system", subtype: "compact_boundary", uuid: "compact-live-boundary",
+        timestamp: boundaryTime.toISOString(), compactMetadata: { preTokens: 167008, postTokens: 5893 },
+      }), "utf-8");
+      const from = ca.inbox.length;
+      events.onCompact({ phase: "done", result: "success", preTokens: 167008, postTokens: 5893 });
+      const live = await ca.waitFor("chat.timeline", from) as Extract<ServerMessage, { type: "chat.timeline" }>;
+
+      const b = await connect(url);
+      clients.push(b.ws);
+      const cb = collect(b.ws);
+      b.ws.send(JSON.stringify({ type: "client.ready" }));
+      const history = await cb.waitFor("session.history.data") as Extract<ServerMessage, { type: "session.history.data" }>;
+      const sync = await cb.waitFor("chat.sync") as Extract<ServerMessage, { type: "chat.sync" }>;
+      const historyCompact = history.messages.filter((item) => item.text.startsWith("🗜 已压缩上下文"));
+      expect(historyCompact).toHaveLength(1);
+      expect(historyCompact[0]?.id).toBe(live.item.id);
+      expect(sync.timeline?.filter((item) => item.text.startsWith("🗜 已压缩上下文")).map((item) => item.id)).toEqual([live.item.id]);
+    } finally {
+      for (const ws of clients) ws.close();
+      await server.close();
+      delete process.env.CCC_FAKE_HOME;
+    }
+  });
+
+  it("实时压缩完成记录从同一转录 boundary 恢复折叠摘要", async () => {
+    const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ccc-home-"));
+    process.env.CCC_FAKE_HOME = fakeHome;
+    const sessionId = "sid-compact-live-detail";
+    const projDir = path.join(fakeHome, ".claude", "projects", slugifyPath(path.resolve(dir)));
+    fs.mkdirSync(projDir, { recursive: true });
+    sessions.set(dir, { sessionId, title: "压缩会话", updatedAt: "x" });
+    const { server, url } = await boot({ configDir: dir });
+    const clients: WebSocket[] = [];
+    try {
+      const a = await connect(url);
+      clients.push(a.ws);
+      const ca = collect(a.ws);
+      a.ws.send(JSON.stringify({ type: "folder.bind", path: dir }));
+      await ca.waitFor("folder.bound");
+      const captured = sentClientMessages.find((m) => m.cwd !== "SEND")!;
+      const events = captured.opts.events as { onCompact(ev: unknown): void };
+      const timestamp = new Date().toISOString();
+      const summary = "完整压缩摘要，只能在技术详情中查看";
+      const entries = [
+        { type: "user", subtype: "compact_summary", isCompactSummary: true, isMeta: true,
+          uuid: "summary-live", timestamp, message: { role: "user", content: summary } },
+        { type: "system", subtype: "compact_boundary", uuid: "boundary-live", timestamp,
+          compactMetadata: { preTokens: 167008, postTokens: 5893,
+            preservedSegment: { anchorUuid: "summary-live" } } },
+      ];
+      fs.writeFileSync(path.join(projDir, `${sessionId}.jsonl`), entries.map((entry) => JSON.stringify(entry)).join("\n") + "\n", "utf8");
+      events.onCompact({ phase: "done", result: "success", preTokens: 167008, postTokens: 5893 });
+      const live = await ca.waitFor("chat.timeline") as Extract<ServerMessage, { type: "chat.timeline" }>;
+      expect(live.item.text).toBe("🗜 已压缩上下文 167k → 6k tokens（-96%）");
+      expect(live.item.detail).toBe(summary);
+      expect(live.item.role).toBe("tool");
+    } finally {
+      for (const ws of clients) ws.close();
+      await server.close();
+      delete process.env.CCC_FAKE_HOME;
+    }
+  });
+
+  it("请求中状态广播到双视图、可快照恢复，并在轮次结束时清除", async () => {
+    const { server, url } = await boot();
+    const a = await connect(url);
+    const ca = collect(a.ws);
+    a.ws.send(JSON.stringify({ type: "folder.bind", path: dir }));
+    await ca.waitFor("folder.bound");
+    const b = await connect(url);
+    const cb = collect(b.ws);
+    const captured = sentClientMessages.find((m) => m.cwd !== "SEND")!;
+    const events = captured.opts.events as {
+      onRequesting(requesting: boolean): void;
+      onDone(sessionId: string, info: Record<string, never>): void;
+    };
+    events.onRequesting(true);
+    await ca.waitFor("chat.requesting");
+    await cb.waitFor("chat.requesting");
+    const c = await connect(url);
+    const cc = collect(c.ws);
+    c.ws.send(JSON.stringify({ type: "client.ready" }));
+    const sync1 = await cc.waitFor("chat.sync") as Extract<ServerMessage, { type: "chat.sync" }>;
+    expect(sync1.requesting).toBe(true);
+    expect(sync1.timeline?.some((item) => item.text.includes("正在请求"))).not.toBe(true);
+
+    events.onRequesting(false);
+    await vi.waitFor(() => expect(ca.inbox.filter((m) => m.type === "chat.requesting").at(-1)).toMatchObject({ requesting: false }));
+    events.onRequesting(true);
+    events.onDone("sid-request", {});
+    await vi.waitFor(() => expect(ca.inbox.filter((m) => m.type === "chat.requesting").at(-1)).toMatchObject({ requesting: false }));
+    const d = await connect(url);
+    const cd = collect(d.ws);
+    d.ws.send(JSON.stringify({ type: "client.ready" }));
+    const sync2 = await cd.waitFor("chat.sync") as Extract<ServerMessage, { type: "chat.sync" }>;
+    expect(sync2.requesting).toBe(false);
+    a.ws.close(); b.ws.close(); c.ws.close(); d.ws.close();
+    await server.close();
+  });
+
+  it("MCP 表单双视图作答并恢复快照，记录只保留字段名不保留敏感值", async () => {
+    const { server, url } = await boot();
+    const a = await connect(url);
+    const ca = collect(a.ws);
+    a.ws.send(JSON.stringify({ type: "folder.bind", path: dir }));
+    await ca.waitFor("folder.bound");
+    const b = await connect(url);
+    const cb = collect(b.ws);
+    const captured = sentClientMessages.find((m) => m.cwd !== "SEND")!;
+    const events = captured.opts.events as { onElicitation(request: Record<string, unknown>): void };
+    events.onElicitation({
+      requestId: "el-form", kind: "elicitation",
+      elicitation: {
+        serverName: "docs", message: "请填写资料", mode: "form",
+        fields: [{ name: "name", title: "姓名", type: "string", required: true, default: "默认敏感值" }],
+      },
+    });
+    await ca.waitFor("chat.interaction");
+    await cb.waitFor("chat.interaction");
+    const c = await connect(url);
+    const cc = collect(c.ws);
+    c.ws.send(JSON.stringify({ type: "client.ready" }));
+    const pending = await cc.waitFor("chat.sync") as Extract<ServerMessage, { type: "chat.sync" }>;
+    expect(pending.pendingInteractions?.map((request) => request.requestId)).toContain("el-form");
+
+    b.ws.send(JSON.stringify({
+      type: "chat.interaction.respond", requestId: "el-form",
+      response: { action: "accept", content: { name: "敏感值-不得落盘" } },
+    }));
+    const resolved = await ca.waitFor("chat.interaction.resolved") as Extract<ServerMessage, { type: "chat.interaction.resolved" }>;
+    await cb.waitFor("chat.interaction.resolved");
+    expect(fakeHandle.respondElicitation).toHaveBeenCalledWith("el-form", { action: "accept", content: { name: "敏感值-不得落盘" } });
+    expect(resolved.record).toMatchObject({ outcome: "answered", decider: "user", submittedFields: ["name"] });
+    expect(JSON.stringify(resolved.record)).not.toContain("敏感值-不得落盘");
+    expect(JSON.stringify(resolved.record)).not.toContain("默认敏感值");
+
+    const d = await connect(url);
+    const cd = collect(d.ws);
+    d.ws.send(JSON.stringify({ type: "client.ready" }));
+    const sync = await cd.waitFor("chat.sync") as Extract<ServerMessage, { type: "chat.sync" }>;
+    expect(sync.pendingInteractions?.some((request) => request.requestId === "el-form")).toBe(false);
+    expect(sync.interactions?.find((record) => record.requestId === "el-form")).toMatchObject({ submittedFields: ["name"] });
+    expect(JSON.stringify(sync.interactions)).not.toContain("敏感值-不得落盘");
+    a.ws.close(); b.ws.close(); c.ws.close(); d.ws.close();
+    await server.close();
+  });
+
+  it("MCP URL 记录去敏，elicitation_complete 更新同一记录而不重复上屏", async () => {
+    const { server, url } = await boot();
+    const a = await connect(url);
+    const ca = collect(a.ws);
+    a.ws.send(JSON.stringify({ type: "folder.bind", path: dir }));
+    await ca.waitFor("folder.bound");
+    const captured = sentClientMessages.find((m) => m.cwd !== "SEND")!;
+    const events = captured.opts.events as {
+      onElicitation(request: Record<string, unknown>): void;
+      onElicitationComplete(request: { serverName: string; elicitationId: string }): void;
+    };
+    events.onElicitation({
+      requestId: "el-url", kind: "elicitation",
+      elicitation: {
+        serverName: "docs", message: "请登录", mode: "url", elicitationId: "el-1",
+        url: "https://user:pass@example.com/auth/path?token=secret#fragment",
+      },
+    });
+    await ca.waitFor("chat.interaction");
+    a.ws.send(JSON.stringify({ type: "chat.interaction.respond", requestId: "el-url", response: { action: "accept" } }));
+    const first = await ca.waitFor("chat.interaction.resolved") as Extract<ServerMessage, { type: "chat.interaction.resolved" }>;
+    expect(first.record.outcome).toBe("allowed");
+    expect(first.record.elicitation?.url).toBe("https://example.com/auth/path");
+    expect(JSON.stringify(first.record)).not.toContain("token=secret");
+    expect(JSON.stringify(first.record)).not.toContain("user:pass");
+
+    const before = ca.inbox.length;
+    events.onElicitationComplete({ serverName: "docs", elicitationId: "el-1" });
+    const complete = await ca.waitFor("chat.interaction.resolved", before) as Extract<ServerMessage, { type: "chat.interaction.resolved" }>;
+    expect(complete.record.requestId).toBe("el-url");
+    expect(complete.record.elicitationComplete).toBe(true);
+    expect(complete.record.elicitation?.url).toBe("https://example.com/auth/path");
+    a.ws.close();
+    await server.close();
+  });
+
+  it("CLI UserDialog 双视图显示同一挂起卡，作答后保留实际选择且迟到响应不重复结算", async () => {
+    const { server, url } = await boot();
+    const a = await connect(url);
+    const ca = collect(a.ws);
+    a.ws.send(JSON.stringify({ type: "folder.bind", path: dir }));
+    await ca.waitFor("folder.bound");
+    const b = await connect(url);
+    const cb = collect(b.ws);
+    const captured = sentClientMessages.find((m) => m.cwd !== "SEND")!;
+    const events = captured.opts.events as { onUserDialog(request: Record<string, unknown>): void };
+    events.onUserDialog({
+      requestId: "dialog-refusal", kind: "user_dialog",
+      userDialog: {
+        dialogKind: "refusal_fallback_prompt", originalModel: "opus", fallbackModel: "sonnet",
+        guidanceText: "可以改用回退模型重试",
+      },
+    });
+    await ca.waitFor("chat.interaction");
+    await cb.waitFor("chat.interaction");
+    const c = await connect(url);
+    const cc = collect(c.ws);
+    c.ws.send(JSON.stringify({ type: "client.ready" }));
+    const pending = await cc.waitFor("chat.sync") as Extract<ServerMessage, { type: "chat.sync" }>;
+    expect(pending.pendingInteractions?.find((request) => request.requestId === "dialog-refusal"))
+      .toMatchObject({ kind: "user_dialog", userDialog: { fallbackModel: "sonnet" } });
+
+    b.ws.send(JSON.stringify({
+      type: "chat.interaction.respond", requestId: "dialog-refusal",
+      response: { action: "retry_fallback" },
+    }));
+    const resolved = await ca.waitFor("chat.interaction.resolved") as Extract<ServerMessage, { type: "chat.interaction.resolved" }>;
+    await cb.waitFor("chat.interaction.resolved");
+    expect(fakeHandle.respondUserDialog).toHaveBeenCalledWith("dialog-refusal", { action: "retry_fallback" });
+    expect(resolved.record).toMatchObject({
+      requestId: "dialog-refusal", kind: "user_dialog", outcome: "answered",
+      decider: "user", userDialogAction: "retry_fallback",
+    });
+    expect(ca.inbox.some((message) => message.type === "permission.resolved"
+      && message.requestId === "dialog-refusal")).toBe(false);
+
+    b.ws.send(JSON.stringify({
+      type: "chat.interaction.respond", requestId: "dialog-refusal",
+      response: { action: "edit_prompt" },
+    }));
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(fakeHandle.respondUserDialog).toHaveBeenCalledTimes(1);
+    const d = await connect(url);
+    const cd = collect(d.ws);
+    d.ws.send(JSON.stringify({ type: "client.ready" }));
+    const sync = await cd.waitFor("chat.sync") as Extract<ServerMessage, { type: "chat.sync" }>;
+    expect(sync.pendingInteractions?.some((request) => request.requestId === "dialog-refusal")).toBe(false);
+    expect(sync.interactions?.filter((record) => record.requestId === "dialog-refusal")).toHaveLength(1);
+    expect(sync.interactions?.[0]?.userDialogAction).toBe("retry_fallback");
+    a.ws.close(); b.ws.close(); c.ws.close(); d.ws.close();
+    await server.close();
+  });
+
+  it("UserDialog 拒绝使用另一种对话框的结果，不错误撤卡或伪造用户选择", async () => {
+    const { server, url } = await boot();
+    const a = await connect(url);
+    const ca = collect(a.ws);
+    a.ws.send(JSON.stringify({ type: "folder.bind", path: dir }));
+    await ca.waitFor("folder.bound");
+    const captured = sentClientMessages.find((m) => m.cwd !== "SEND")!;
+    const events = captured.opts.events as { onUserDialog(request: Record<string, unknown>): void };
+    events.onUserDialog({
+      requestId: "dialog-auto", kind: "user_dialog",
+      userDialog: {
+        dialogKind: "auto_mode_server_fallback", title: "自动模式", paragraphs: ["说明"],
+        helpUrl: "https://example.com/help",
+      },
+    });
+    await ca.waitFor("chat.interaction");
+    a.ws.send(JSON.stringify({
+      type: "chat.interaction.respond", requestId: "dialog-auto",
+      response: { action: "retry_fallback" },
+    }));
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(fakeHandle.respondUserDialog).not.toHaveBeenCalled();
+    expect(ca.inbox.some((message) => message.type === "chat.interaction.resolved")).toBe(false);
+
+    a.ws.send(JSON.stringify({
+      type: "chat.interaction.respond", requestId: "dialog-auto",
+      response: { action: "interrupt" },
+    }));
+    const resolved = await ca.waitFor("chat.interaction.resolved") as Extract<ServerMessage, { type: "chat.interaction.resolved" }>;
+    expect(resolved.record).toMatchObject({ outcome: "answered", userDialogAction: "interrupt" });
+    a.ws.close();
+    await server.close();
+  });
+
+  it("工具调用和结果广播为同一 toolUseId 的可更新活动", async () => {
+    const { server, url } = await boot();
+    const a = await connect(url);
+    const ca = collect(a.ws);
+    a.ws.send(JSON.stringify({ type: "folder.bind", path: dir }));
+    await ca.waitFor("folder.bound");
+    const captured = sentClientMessages.find((m) => m.cwd !== "SEND")!;
+    const events = captured.opts.events as {
+      onTool(name: string, summary: string, toolUseId?: string, input?: Record<string, unknown>): void;
+      onToolResult(result: { toolUseId: string; output: string; isError: boolean }): void;
+    };
+    events.onTool("Bash", "printf ok", "toolu-1", { command: "printf ok" });
+    events.onToolResult({ toolUseId: "toolu-1", output: "ok", isError: false });
+    await vi.waitFor(() => expect(ca.inbox.filter((m) => m.type === "chat.tool")).toHaveLength(2));
+    expect(ca.inbox.filter((m) => m.type === "chat.tool")).toEqual([
+      { type: "chat.tool", name: "Bash", summary: "printf ok", toolUseId: "toolu-1", status: "running", input: JSON.stringify({ command: "printf ok" }, null, 2) },
+      { type: "chat.tool", name: "Bash", summary: "printf ok", toolUseId: "toolu-1", status: "success", output: "ok" },
+    ]);
+    a.ws.close();
+    await server.close();
+  });
+
+  it("停止会把全部挂起交互结算为已取消记录，而不是只撤卡", async () => {
+    const { server, url } = await boot();
+    const a = await connect(url);
+    const ca = collect(a.ws);
+    a.ws.send(JSON.stringify({ type: "folder.bind", path: dir }));
+    await ca.waitFor("folder.bound");
+    const captured = sentClientMessages.find((m) => m.cwd !== "SEND")!;
+    const events = captured.opts.events as { onAsk(req: unknown): void; onPermission(req: unknown): void; onAborted(): void };
+    events.onAsk({ requestId: "ask-stop", questions: [{ question: "继续？", header: "确认", options: [{ label: "是" }], multiSelect: false }] });
+    events.onPermission({ requestId: "perm-stop", tool: "Bash", detail: "{}" });
+    events.onAborted();
+    await vi.waitFor(() => {
+      expect(ca.inbox.some((m) => m.type === "chat.ask.resolved" && m.record?.outcome === "cancelled")).toBe(true);
+      expect(ca.inbox.some((m) => m.type === "permission.resolved" && m.record?.outcome === "cancelled")).toBe(true);
+    });
+    const records = ca.inbox.flatMap((m) => m.type === "chat.ask.resolved" || m.type === "permission.resolved" ? [m.record] : []);
+    expect(records).toEqual(expect.arrayContaining([
+      expect.objectContaining({ requestId: "ask-stop", outcome: "cancelled", decider: "abort" }),
+      expect.objectContaining({ requestId: "perm-stop", outcome: "cancelled", decider: "abort" }),
+    ]));
+    a.ws.close();
+    await server.close();
+  });
+
+  it("旧 Query 的迟到事件不会污染新会话或清掉新挂起卡片", async () => {
+    const { server, url } = await boot();
+    const a = await connect(url);
+    const ca = collect(a.ws);
+    a.ws.send(JSON.stringify({ type: "folder.bind", path: dir }));
+    await ca.waitFor("folder.bound");
+    const oldEvents = sentClientMessages.find((m) => m.cwd !== "SEND")!.opts.events as { onAsk(req: unknown): void; onTool(name: string, summary: string): void };
+    a.ws.send(JSON.stringify({ type: "session.new" }));
+    await ca.waitFor("folder.bound", ca.inbox.length);
+    const all = sentClientMessages.filter((m) => m.cwd !== "SEND");
+    const newEvents = all[all.length - 1]!.opts.events as { onAsk(req: unknown): void };
+    oldEvents.onAsk({ requestId: "ask-old", questions: [] });
+    oldEvents.onTool("Bash", "旧工具");
+    newEvents.onAsk({ requestId: "ask-new", questions: [{ question: "新问题", header: "新", options: [{ label: "好" }], multiSelect: false }] });
+    await ca.waitFor("chat.ask");
+    expect(ca.inbox.filter((m) => m.type === "chat.ask").map((m) => m.requestId)).toEqual(["ask-new"]);
+    expect(ca.inbox.some((m) => m.type === "chat.tool" && m.summary === "旧工具")).toBe(false);
+    a.ws.close();
     await server.close();
   });
 
@@ -164,6 +571,84 @@ describe("镜像工作区（多视图广播与快照）", () => {
     if (sync2.type !== "chat.sync") throw new Error("快照类型错误");
     expect(sync2.askReq).toBeNull();
     a.ws.close(); b.ws.close(); c.ws.close();
+    await server.close();
+  });
+
+  it("Ask 作答生成完整只读记录；并发挂起不互盖，迟到响应幂等", async () => {
+    const { server, url } = await boot();
+    const a = await connect(url);
+    const ca = collect(a.ws);
+    a.ws.send(JSON.stringify({ type: "folder.bind", path: dir }));
+    await ca.waitFor("folder.bound");
+    const captured = sentClientMessages.find((m) => m.cwd !== "SEND")!;
+    const events = captured.opts.events as { onAsk(req: unknown): void };
+    const q1 = [{ question: "第一题", header: "一", options: [{ label: "甲" }], multiSelect: false }];
+    const q2 = [{ question: "第二题", header: "二", options: [{ label: "乙" }], multiSelect: false }];
+    events.onAsk({ requestId: "ask-1", questions: q1 });
+    events.onAsk({ requestId: "ask-2", questions: q2 });
+    await ca.waitFor("chat.ask");
+    await vi.waitFor(() => expect(ca.inbox.filter((m) => m.type === "chat.ask")).toHaveLength(2));
+
+    const b = await connect(url);
+    const cb = collect(b.ws);
+    b.ws.send(JSON.stringify({ type: "client.ready" }));
+    const sync1 = (await cb.waitFor("chat.sync")) as Extract<ServerMessage, { type: "chat.sync" }> & {
+      pendingInteractions?: Array<{ requestId: string }>;
+    };
+    expect(sync1.pendingInteractions?.map((r) => r.requestId)).toEqual(["ask-1", "ask-2"]);
+
+    b.ws.send(JSON.stringify({ type: "chat.ask.answer", requestId: "ask-1", answers: { "第一题": "甲" } }));
+    const resolved = (await ca.waitFor("chat.ask.resolved")) as Extract<ServerMessage, { type: "chat.ask.resolved" }> & {
+      record?: { requestId: string; outcome: string; answers?: Record<string, string>; questions?: unknown[] };
+    };
+    expect(resolved.record).toMatchObject({
+      requestId: "ask-1", kind: "ask", outcome: "answered",
+      questions: q1, answers: { "第一题": "甲" },
+    });
+    const before = ca.inbox.filter((m) => m.type === "chat.ask.resolved").length;
+    a.ws.send(JSON.stringify({ type: "chat.ask.answer", requestId: "ask-1", answers: { "第一题": "迟到重复" } }));
+    await new Promise((r) => setTimeout(r, 60));
+    expect(ca.inbox.filter((m) => m.type === "chat.ask.resolved")).toHaveLength(before);
+    expect(fakeHandle.respondAsk).toHaveBeenCalledTimes(1);
+
+    const c = await connect(url);
+    const cc = collect(c.ws);
+    c.ws.send(JSON.stringify({ type: "client.ready" }));
+    const sync2 = (await cc.waitFor("chat.sync")) as Extract<ServerMessage, { type: "chat.sync" }> & {
+      pendingInteractions?: Array<{ requestId: string }>;
+      interactions?: Array<{ requestId: string; outcome: string }>;
+    };
+    expect(sync2.pendingInteractions?.map((r) => r.requestId)).toEqual(["ask-2"]);
+    expect(sync2.interactions).toContainEqual(expect.objectContaining({ requestId: "ask-1", outcome: "answered" }));
+    a.ws.close(); b.ws.close(); c.ws.close();
+    await server.close();
+  });
+
+  it("权限裁决广播允许/拒绝结果，旧 requestId 不会撤掉新请求", async () => {
+    const { server, url } = await boot();
+    const a = await connect(url);
+    const ca = collect(a.ws);
+    a.ws.send(JSON.stringify({ type: "folder.bind", path: dir }));
+    await ca.waitFor("folder.bound");
+    const captured = sentClientMessages.find((m) => m.cwd !== "SEND")!;
+    const events = captured.opts.events as { onPermission(req: unknown): void };
+    events.onPermission({ requestId: "perm-old", tool: "Write", detail: "旧请求" });
+    events.onPermission({ requestId: "perm-new", tool: "Bash", detail: "新请求" });
+    await vi.waitFor(() => expect(ca.inbox.filter((m) => m.type === "permission.request")).toHaveLength(2));
+    a.ws.send(JSON.stringify({ type: "permission.response", requestId: "perm-new", allow: false }));
+    const resolved = (await ca.waitFor("permission.resolved")) as Extract<ServerMessage, { type: "permission.resolved" }> & {
+      record?: { outcome: string; requestId: string };
+    };
+    expect(resolved.record).toMatchObject({ requestId: "perm-new", outcome: "denied", kind: "permission" });
+    a.ws.send(JSON.stringify({ type: "permission.response", requestId: "perm-new", allow: true }));
+    const b = await connect(url);
+    const cb = collect(b.ws);
+    b.ws.send(JSON.stringify({ type: "client.ready" }));
+    const sync = (await cb.waitFor("chat.sync")) as Extract<ServerMessage, { type: "chat.sync" }> & {
+      pendingInteractions?: Array<{ requestId: string }>;
+    };
+    expect(sync.pendingInteractions?.map((r) => r.requestId)).toEqual(["perm-old"]);
+    a.ws.close(); b.ws.close();
     await server.close();
   });
 
@@ -245,6 +730,376 @@ describe("镜像工作区（多视图广播与快照）", () => {
       expect(sync.permReq).toBeNull();
       a.ws.close();
       b.ws.close();
+      await server.close();
+    } finally {
+      delete process.env.CCC_FAKE_HOME;
+    }
+  });
+
+  it("session.history 按游标返回更早页并回显 before", async () => {
+    const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ccc-home-"));
+    process.env.CCC_FAKE_HOME = fakeHome;
+    try {
+      const projDir = path.join(fakeHome, ".claude", "projects", slugifyPath(path.resolve(dir)));
+      fs.mkdirSync(projDir, { recursive: true });
+      const lines = [1, 2, 3].map((n) => JSON.stringify({ type: "user", uuid: `u-${n}`, message: { content: `消息 ${n}` } }));
+      fs.writeFileSync(path.join(projDir, "sid-1.jsonl"), lines.join("\n"), "utf-8");
+      sessions.set(dir, { sessionId: "sid-1", title: "旧会话", updatedAt: "x" });
+      const { server, url } = await boot();
+      const a = await connect(url);
+      const ca = collect(a.ws);
+      a.ws.send(JSON.stringify({ type: "folder.bind", path: dir }));
+      await ca.waitFor("folder.bound");
+      a.ws.send(JSON.stringify({ type: "session.history", limit: 2 }));
+      const latest = await ca.waitFor("session.history.data") as Extract<ServerMessage, { type: "session.history.data" }>;
+      expect(latest.messages.map((m) => m.text)).toEqual(["消息 2", "消息 3"]);
+      expect(latest.hasMore).toBe(true);
+      expect(latest.nextCursor).toBe("history-u-2-user");
+      a.ws.send(JSON.stringify({ type: "session.history", limit: 2, before: latest.nextCursor }));
+      const earlier = await ca.waitFor("session.history.data", ca.inbox.length) as Extract<ServerMessage, { type: "session.history.data" }>;
+      expect(earlier.messages.map((m) => m.text)).toEqual(["消息 1"]);
+      expect(earlier.before).toBe("history-u-2-user");
+      expect(earlier.hasMore).toBe(false);
+      a.ws.close();
+      await server.close();
+    } finally {
+      delete process.env.CCC_FAKE_HOME;
+    }
+  });
+
+  it("状态与用量在轮次结束和桥接重启后仍进入历史快照", async () => {
+    const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ccc-home-"));
+    process.env.CCC_FAKE_HOME = fakeHome;
+    try {
+      const projDir = path.join(fakeHome, ".claude", "projects", slugifyPath(path.resolve(dir)));
+      fs.mkdirSync(projDir, { recursive: true });
+      fs.writeFileSync(path.join(projDir, "sid-1.jsonl"), `${JSON.stringify({ type: "user", uuid: "u-1", message: { content: "旧问题" } })}\n`, "utf-8");
+      sessions.set(dir, { sessionId: "sid-1", title: "旧会话", updatedAt: "x" });
+      const first = await boot({ configDir: dir });
+      const a = await connect(first.url);
+      const ca = collect(a.ws);
+      a.ws.send(JSON.stringify({ type: "folder.bind", path: dir }));
+      await ca.waitFor("folder.bound");
+      const captured = sentClientMessages.find((m) => m.cwd !== "SEND")!;
+      const events = captured.opts.events as {
+        onNotice(notice: { id: string; text: string; detail: string; level: "info" }): void;
+        onDone(sessionId: string, info?: undefined): void;
+      };
+      events.onNotice({ id: "usage-turn-1", text: "用量：输入 12 · 输出 34 tokens", detail: '{"input_tokens":12}', level: "info" });
+      await ca.waitFor("chat.timeline");
+      events.onDone("sid-1", undefined);
+      await ca.waitFor("chat.done");
+      a.ws.close();
+      await first.server.close();
+
+      sessions = new SessionManager(path.join(dir, "sessions.json"));
+      sessions.load();
+      const second = await boot({ configDir: dir });
+      const b = await connect(second.url);
+      const cb = collect(b.ws);
+      b.ws.send(JSON.stringify({ type: "folder.bind", path: dir, reset: false }));
+      await cb.waitFor("folder.bound");
+      b.ws.send(JSON.stringify({ type: "client.ready" }));
+      const history = await cb.waitFor("session.history.data").catch((error: unknown) => {
+        throw new Error(`${String(error)}；实际帧=${JSON.stringify(cb.inbox)}`);
+      }) as Extract<ServerMessage, { type: "session.history.data" }>;
+      expect(history.messages.map((m) => m.text)).toEqual(["旧问题", "用量：输入 12 · 输出 34 tokens"]);
+      expect(history.messages[1]).toMatchObject({ id: "usage-turn-1", detail: '{"input_tokens":12}' });
+      b.ws.close();
+      await second.server.close();
+    } finally {
+      delete process.env.CCC_FAKE_HOME;
+    }
+  });
+
+  it("Ask 答案与实际模式跨重启恢复，并按 toolUseId 与转录去重", async () => {
+    const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ccc-home-"));
+    process.env.CCC_FAKE_HOME = fakeHome;
+    try {
+      const questions = [{ question: "选哪个？", header: "方案", options: [{ label: "A" }, { label: "B" }], multiSelect: false }];
+      const projDir = path.join(fakeHome, ".claude", "projects", slugifyPath(path.resolve(dir)));
+      fs.mkdirSync(projDir, { recursive: true });
+      const lines = [
+        JSON.stringify({ type: "assistant", uuid: "ask-call", timestamp: "2026-10-30T01:00:00.000Z", message: { content: [{ type: "tool_use", id: "toolu-ask-restart", name: "AskUserQuestion", input: { questions } }] } }),
+        JSON.stringify({ type: "user", uuid: "ask-result", timestamp: "2026-10-30T01:00:01.000Z", toolUseResult: { questions, answers: { "选哪个？": "B" } }, message: { content: [{ type: "tool_result", tool_use_id: "toolu-ask-restart", content: "answered" }] } }),
+      ];
+      fs.writeFileSync(path.join(projDir, "sid-1.jsonl"), lines.join("\n"), "utf-8");
+      sessions.set(dir, { sessionId: "sid-1", title: "旧会话", updatedAt: "x" });
+      const first = await boot({ configDir: dir });
+      const a = await connect(first.url);
+      const ca = collect(a.ws);
+      a.ws.send(JSON.stringify({ type: "folder.bind", path: dir }));
+      await ca.waitFor("folder.bound");
+      const captured = sentClientMessages.find((m) => m.cwd !== "SEND")!;
+      const events = captured.opts.events as {
+        onAsk(request: { requestId: string; questions: typeof questions; toolUseId: string }): void;
+        onRuntime(info: { permissionMode: "plan" }): void;
+        onDone(sessionId: string, info?: undefined): void;
+      };
+      events.onAsk({ requestId: "ask-restart", questions, toolUseId: "toolu-ask-restart" });
+      await ca.waitFor("chat.ask");
+      a.ws.send(JSON.stringify({ type: "chat.ask.answer", requestId: "ask-restart", answers: { "选哪个？": "B" } }));
+      await ca.waitFor("chat.ask.resolved");
+      events.onRuntime({ permissionMode: "plan" });
+      await ca.waitFor("chat.timeline");
+      events.onDone("sid-1", undefined);
+      await ca.waitFor("chat.done");
+      a.ws.close();
+      await first.server.close();
+
+      sessions = new SessionManager(path.join(dir, "sessions.json"));
+      sessions.load();
+      const second = await boot({ configDir: dir });
+      const b = await connect(second.url);
+      const cb = collect(b.ws);
+      b.ws.send(JSON.stringify({ type: "folder.bind", path: dir, reset: false }));
+      await cb.waitFor("folder.bound");
+      b.ws.send(JSON.stringify({ type: "client.ready" }));
+      const history = await cb.waitFor("session.history.data") as Extract<ServerMessage, { type: "session.history.data" }>;
+      expect(history.messages).toHaveLength(2);
+      expect(history.messages[0]?.interaction).toMatchObject({
+        requestId: "ask-restart", toolUseId: "toolu-ask-restart", outcome: "answered", decider: "user", answers: { "选哪个？": "B" },
+      });
+      expect(history.messages[1]?.text).toBe("当前模式：计划模式");
+      b.ws.close();
+      await second.server.close();
+    } finally {
+      delete process.env.CCC_FAKE_HOME;
+    }
+  });
+
+  it("Ask 的 tool_result 归并到提问记录，不补一条通用 tool 活动", async () => {
+    const { server, url } = await boot();
+    const a = await connect(url);
+    const ca = collect(a.ws);
+    a.ws.send(JSON.stringify({ type: "folder.bind", path: dir }));
+    await ca.waitFor("folder.bound");
+    const captured = sentClientMessages.find((m) => m.cwd !== "SEND")!;
+    const events = captured.opts.events as {
+      onAsk(request: { requestId: string; questions: Array<{ question: string; header: string; options: Array<{ label: string }>; multiSelect: boolean }>; toolUseId: string }): void;
+      onToolResult(result: { toolUseId: string; output: string; isError: boolean }): void;
+    };
+    const questions = [{ question: "选哪个？", header: "方案", options: [{ label: "A" }, { label: "B" }], multiSelect: false }];
+    events.onAsk({ requestId: "ask-result-merge", questions, toolUseId: "toolu-ask-result-merge" });
+    await ca.waitFor("chat.ask");
+    a.ws.send(JSON.stringify({ type: "chat.ask.answer", requestId: "ask-result-merge", answers: { "选哪个？": "A" } }));
+    await ca.waitFor("chat.ask.resolved");
+    events.onToolResult({ toolUseId: "toolu-ask-result-merge", output: "answered", isError: false });
+    const b = await connect(url);
+    const cb = collect(b.ws);
+    b.ws.send(JSON.stringify({ type: "client.ready" }));
+    const sync = await cb.waitFor("chat.sync") as Extract<ServerMessage, { type: "chat.sync" }>;
+    const matching = sync.timeline?.filter((item) => item.toolUseId === "toolu-ask-result-merge");
+    expect(matching).toHaveLength(1);
+    expect(matching?.[0]?.interaction).toMatchObject({ kind: "ask", answers: { "选哪个？": "A" } });
+    expect(ca.inbox.filter((message) => message.type === "chat.tool"
+      && message.toolUseId === "toolu-ask-result-merge")).toHaveLength(0);
+    a.ws.close(); b.ws.close();
+    await server.close();
+  });
+
+  it("ExitPlanMode 由计划记录呈现，不补原始参数式通用工具活动", async () => {
+    const { server, url } = await boot();
+    const a = await connect(url);
+    const ca = collect(a.ws);
+    a.ws.send(JSON.stringify({ type: "folder.bind", path: dir }));
+    await ca.waitFor("folder.bound");
+    const captured = sentClientMessages.find((m) => m.cwd !== "SEND")!;
+    const events = captured.opts.events as {
+      onTool(name: string, summary: string, toolUseId?: string, input?: Record<string, unknown>): void;
+      onPermission(request: { requestId: string; kind: string; tool: string; toolUseId: string; plan: string }): void;
+      onToolResult(result: { toolUseId: string; output: string; isError: boolean }): void;
+    };
+    const input = { plan: "完整计划", planFilePath: "D:\\plans\\full.md" };
+    events.onTool("ExitPlanMode", JSON.stringify(input), "toolu-plan-display", input);
+    events.onPermission({ requestId: "plan-display", kind: "exit_plan", tool: "ExitPlanMode", toolUseId: "toolu-plan-display", plan: "完整计划" });
+    await ca.waitFor("permission.request");
+    a.ws.send(JSON.stringify({ type: "permission.response", requestId: "plan-display", allow: true }));
+    await ca.waitFor("permission.resolved");
+    events.onToolResult({ toolUseId: "toolu-plan-display", output: "计划已批准", isError: false });
+    const b = await connect(url);
+    const cb = collect(b.ws);
+    b.ws.send(JSON.stringify({ type: "client.ready" }));
+    const sync = await cb.waitFor("chat.sync") as Extract<ServerMessage, { type: "chat.sync" }>;
+    const matching = sync.timeline?.filter((item) => item.toolUseId === "toolu-plan-display");
+    expect(matching).toHaveLength(1);
+    expect(matching?.[0]?.interaction).toMatchObject({ kind: "exit_plan", outcome: "allowed", plan: "完整计划" });
+    expect(ca.inbox.filter((message) => message.type === "chat.tool"
+      && message.toolUseId === "toolu-plan-display")).toHaveLength(0);
+    a.ws.close(); b.ws.close();
+    await server.close();
+  });
+
+  it("错误与手动停止各留下一条可恢复记录，终结帧标记为已上屏", async () => {
+    sessions.set(dir, { sessionId: "sid-1", title: "旧会话", updatedAt: "x" });
+    const { server, url } = await boot({ configDir: dir });
+    const a = await connect(url);
+    const ca = collect(a.ws);
+    a.ws.send(JSON.stringify({ type: "folder.bind", path: dir }));
+    await ca.waitFor("folder.bound");
+    const captured = sentClientMessages.find((m) => m.cwd !== "SEND")!;
+    const events = captured.opts.events as { onError(message: string): void; onAborted(): void };
+    events.onError("上游失败");
+    expect(await ca.waitFor("chat.error")).toMatchObject({ recorded: true });
+    events.onAborted();
+    expect(await ca.waitFor("chat.aborted")).toMatchObject({ recorded: true });
+    a.ws.send(JSON.stringify({ type: "session.history", limit: 100 }));
+    const history = await ca.waitFor("session.history.data") as Extract<ServerMessage, { type: "session.history.data" }>;
+    expect(history.messages.map((m) => m.text)).toEqual(["⚠️ 上游失败", "⏹ 已手动停止本轮生成"]);
+    expect(history.messages.every((m) => Boolean(m.id))).toBe(true);
+    a.ws.close();
+    await server.close();
+  });
+
+  it("在途快照保留正文、工具结果、后续正文的真实顺序", async () => {
+    const { server, url } = await boot();
+    const a = await connect(url);
+    const ca = collect(a.ws);
+    a.ws.send(JSON.stringify({ type: "folder.bind", path: dir }));
+    await ca.waitFor("folder.bound");
+    a.ws.send(JSON.stringify({ type: "chat.send", text: "在途问题", display: "在途问题" }));
+    await ca.waitFor("chat.user");
+    const captured = sentClientMessages.find((m) => m.cwd !== "SEND")!;
+    const events = captured.opts.events as {
+      onDelta(text: string): void;
+      onTool(name: string, summary: string, toolUseId?: string, input?: Record<string, unknown>): void;
+      onToolResult(result: { toolUseId: string; output: string; isError: boolean }): void;
+    };
+    events.onDelta("前文");
+    events.onTool("Bash", "printf ok", "toolu-timeline", { command: "printf ok" });
+    events.onToolResult({ toolUseId: "toolu-timeline", output: "ok", isError: false });
+    events.onDelta("后文");
+    const b = await connect(url);
+    const cb = collect(b.ws);
+    b.ws.send(JSON.stringify({ type: "client.ready" }));
+    const sync = await cb.waitFor("chat.sync") as Extract<ServerMessage, { type: "chat.sync" }> & {
+      timeline?: Array<{ id: string; role: string; text: string; toolStatus?: string; toolOutput?: string }>;
+    };
+    expect(sync.timeline?.map((item) => [item.role, item.text])).toEqual([
+      ["user", "在途问题"], ["assistant", "前文"], ["tool", "printf ok"], ["assistant", "后文"],
+    ]);
+    expect(sync.timeline?.[2]).toMatchObject({ toolStatus: "success", toolOutput: "ok", toolUseId: "toolu-timeline" });
+    expect(sync.timeline?.every((item) => item.id.length > 0)).toBe(true);
+    a.ws.close(); b.ws.close();
+    await server.close();
+  });
+
+  it("压缩结果和实际模式变化进入同一在途时间线，重连按稳定 ID 恢复", async () => {
+    const { server, url } = await boot();
+    const a = await connect(url);
+    const ca = collect(a.ws);
+    a.ws.send(JSON.stringify({ type: "folder.bind", path: dir }));
+    await ca.waitFor("folder.bound");
+    a.ws.send(JSON.stringify({ type: "chat.send", text: "状态问题", display: "状态问题" }));
+    await ca.waitFor("chat.user");
+    const captured = sentClientMessages.find((m) => m.cwd !== "SEND")!;
+    const events = captured.opts.events as {
+      onCompact(ev: { phase: "done"; result: "success"; preTokens: number; postTokens: number }): void;
+      onRuntime(info: { permissionMode: "plan" }): void;
+    };
+    events.onRuntime({ permissionMode: "plan" });
+    events.onRuntime({ permissionMode: "plan" }); // 同一真值重复上报不产生第二条状态记录
+    events.onCompact({ phase: "done", result: "success", preTokens: 156_000, postTokens: 42_000 });
+    await vi.waitFor(() => expect(ca.inbox.filter((m) => m.type === "chat.timeline")).toHaveLength(2));
+    const notices = ca.inbox.filter((m) => m.type === "chat.timeline") as Array<Extract<ServerMessage, { type: "chat.timeline" }>>;
+    expect(notices.map((m) => m.item.text)).toEqual([
+      "当前模式：计划模式", "🗜 已压缩上下文 156k → 42k tokens（-73%）",
+    ]);
+    expect(ca.inbox.filter((m) => m.type === "chat.compact").at(-1)).toMatchObject({ recorded: true });
+    const b = await connect(url);
+    const cb = collect(b.ws);
+    b.ws.send(JSON.stringify({ type: "client.ready" }));
+    const sync = await cb.waitFor("chat.sync") as Extract<ServerMessage, { type: "chat.sync" }>;
+    expect(sync.timeline?.slice(-2)).toEqual(notices.map((m) => m.item));
+    a.ws.close(); b.ws.close();
+    await server.close();
+  });
+
+  it("同一工具的拒权通知按稳定状态 ID 更新，完整原因进入快照", async () => {
+    const { server, url } = await boot();
+    const a = await connect(url);
+    const ca = collect(a.ws);
+    a.ws.send(JSON.stringify({ type: "folder.bind", path: dir }));
+    await ca.waitFor("folder.bound");
+    a.ws.send(JSON.stringify({ type: "chat.send", text: "拒权问题", display: "拒权问题" }));
+    await ca.waitFor("chat.user");
+    const captured = sentClientMessages.find((m) => m.cwd !== "SEND")!;
+    const events = captured.opts.events as {
+      onNotice(notice: { text: string; level: "warning"; toolUseId: string; detail: string }): void;
+    };
+    events.onNotice({ text: "操作被自动拒绝：Bash", level: "warning", toolUseId: "toolu-deny", detail: "即时原因" });
+    events.onNotice({ text: "操作被自动拒绝：Bash", level: "warning", toolUseId: "toolu-deny", detail: "最终完整原因" });
+    await vi.waitFor(() => expect(ca.inbox.filter((m) => m.type === "chat.timeline")).toHaveLength(2));
+    const frames = ca.inbox.filter((m) => m.type === "chat.timeline") as Array<Extract<ServerMessage, { type: "chat.timeline" }>>;
+    expect(frames[0]!.item.id).toBe(frames[1]!.item.id);
+    const b = await connect(url);
+    const cb = collect(b.ws);
+    b.ws.send(JSON.stringify({ type: "client.ready" }));
+    const sync = await cb.waitFor("chat.sync") as Extract<ServerMessage, { type: "chat.sync" }>;
+    expect(sync.timeline?.filter((item) => item.id === frames[0]!.item.id)).toEqual([
+      expect.objectContaining({ text: "操作被自动拒绝：Bash", detail: "最终完整原因" }),
+    ]);
+    a.ws.close(); b.ws.close();
+    await server.close();
+  });
+
+  it("主动新建会话清除旧交互记录和旧工具时间线", async () => {
+    const { server, url } = await boot();
+    const a = await connect(url);
+    const ca = collect(a.ws);
+    a.ws.send(JSON.stringify({ type: "folder.bind", path: dir }));
+    await ca.waitFor("folder.bound");
+    const captured = sentClientMessages.find((m) => m.cwd !== "SEND")!;
+    const events = captured.opts.events as {
+      onPermission(req: unknown): void;
+      onTool(name: string, summary: string, toolUseId?: string): void;
+    };
+    events.onPermission({ requestId: "old-perm", tool: "Read", detail: "{}" });
+    await ca.waitFor("permission.request");
+    a.ws.send(JSON.stringify({ type: "permission.response", requestId: "old-perm", allow: true }));
+    await ca.waitFor("permission.resolved");
+    events.onTool("Read", "old.txt", "toolu-old");
+    a.ws.send(JSON.stringify({ type: "session.new" }));
+    await ca.waitFor("folder.bound", ca.inbox.length - 1);
+    const b = await connect(url);
+    const cb = collect(b.ws);
+    b.ws.send(JSON.stringify({ type: "client.ready" }));
+    const sync = await cb.waitFor("chat.sync") as Extract<ServerMessage, { type: "chat.sync" }> & { timeline?: unknown[] };
+    expect(sync.interactions).toEqual([]);
+    expect(sync.timeline).toEqual([]);
+    expect(sync.pendingInteractions).toEqual([]);
+    a.ws.close(); b.ws.close();
+    await server.close();
+  });
+
+  it("切换会话时旧挂起交互只写入旧会话侧车", async () => {
+    const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ccc-home-"));
+    process.env.CCC_FAKE_HOME = fakeHome;
+    try {
+      const projDir = path.join(fakeHome, ".claude", "projects", slugifyPath(path.resolve(dir)));
+      fs.mkdirSync(projDir, { recursive: true });
+      for (const sessionId of ["sid-old", "sid-new"]) {
+        fs.writeFileSync(path.join(projDir, `${sessionId}.jsonl`), `${JSON.stringify({ type: "user", uuid: `u-${sessionId}`, message: { content: sessionId } })}\n`, "utf-8");
+      }
+      sessions.set(dir, { sessionId: "sid-old", title: "旧会话", updatedAt: "x" });
+      const { server, url } = await boot({ configDir: dir });
+      const a = await connect(url);
+      const ca = collect(a.ws);
+      a.ws.send(JSON.stringify({ type: "folder.bind", path: dir }));
+      await ca.waitFor("folder.bound");
+      const captured = sentClientMessages.find((m) => m.cwd !== "SEND")!;
+      (captured.opts.events as { onAsk(request: unknown): void }).onAsk({
+        requestId: "ask-old", toolUseId: "toolu-old", questions: [{ question: "旧问题", header: "旧", options: [{ label: "A" }], multiSelect: false }],
+      });
+      await ca.waitFor("chat.ask");
+      const from = ca.inbox.length;
+      a.ws.send(JSON.stringify({ type: "session.switch", sessionId: "sid-new" }));
+      await ca.waitFor("folder.bound", from);
+      const store = new InteractionStore(path.join(dir, "interactions"));
+      expect(store.read(dir, "sid-old")).toHaveLength(1);
+      expect(store.read(dir, "sid-old")[0]?.interaction).toMatchObject({ requestId: "ask-old", outcome: "cancelled", decider: "close" });
+      expect(store.read(dir, "sid-new")).toEqual([]);
+      a.ws.close();
       await server.close();
     } finally {
       delete process.env.CCC_FAKE_HOME;
@@ -381,12 +1236,47 @@ describe("镜像工作区（多视图广播与快照）", () => {
     await ca.waitFor("folder.bound");
     const b = await connect(url);
     const cb = collect(b.ws);
+    const captured = sentClientMessages.find((m) => m.cwd !== "SEND")!;
+    const events = captured.opts.events as { onPermission(req: unknown): void };
+    events.onPermission({ requestId: "r1", tool: "Read", detail: "{\"file_path\":\"notes.txt\"}" });
+    await Promise.all([ca.waitFor("permission.request"), cb.waitFor("permission.request")]);
     a.ws.send(JSON.stringify({ type: "permission.response", requestId: "r1", allow: true }));
     const [ra, rb] = await Promise.all([ca.waitFor("permission.resolved"), cb.waitFor("permission.resolved")]);
     expect(ra).toMatchObject({ type: "permission.resolved", requestId: "r1" });
     expect(rb).toMatchObject({ type: "permission.resolved", requestId: "r1" });
     a.ws.close();
     b.ws.close();
+    await server.close();
+  });
+
+  it("计划审批保留完整计划，拒绝反馈进入记录并回传给同一会话", async () => {
+    const { server, url } = await boot();
+    const a = await connect(url);
+    const ca = collect(a.ws);
+    a.ws.send(JSON.stringify({ type: "folder.bind", path: dir }));
+    await ca.waitFor("folder.bound");
+    const captured = sentClientMessages.find((m) => m.cwd !== "SEND")!;
+    const events = captured.opts.events as { onPermission(req: unknown): void };
+    const respondPermission = vi.fn();
+    fakeHandle.respondPermission = respondPermission;
+    events.onPermission({
+      requestId: "plan-1", tool: "ExitPlanMode", kind: "exit_plan", detail: "{}",
+      summary: "申请批准计划并继续执行", plan: "# 完整计划\n\n保留所有步骤", planFilePath: "D:\\plans\\full.md",
+      toolUseId: "toolu-plan-1",
+    });
+    const request = await ca.waitFor("permission.request");
+    expect(request).toMatchObject({
+      requestId: "plan-1", kind: "exit_plan", plan: "# 完整计划\n\n保留所有步骤",
+      planFilePath: "D:\\plans\\full.md", summary: "申请批准计划并继续执行",
+    });
+    a.ws.send(JSON.stringify({ type: "permission.response", requestId: "plan-1", allow: false, feedback: "请补充测试" }));
+    const resolved = await ca.waitFor("permission.resolved");
+    expect(resolved).toMatchObject({
+      type: "permission.resolved", requestId: "plan-1",
+      record: { kind: "exit_plan", outcome: "denied", feedback: "请补充测试", plan: "# 完整计划\n\n保留所有步骤" },
+    });
+    expect(respondPermission).toHaveBeenCalledWith("plan-1", false, "请补充测试");
+    a.ws.close();
     await server.close();
   });
 

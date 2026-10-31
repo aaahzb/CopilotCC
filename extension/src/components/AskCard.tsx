@@ -97,6 +97,12 @@ function AskForm(props: { request: AskRequest; onRespond: Respond }): React.Reac
                     <span>{o.label}{o.description && <small>{o.description}</small>}</span>
                   </label>
                 ))}
+                {q.options.filter((o) => o.preview).map((o) => (
+                  <details className="ask-preview" key={`${o.label}-preview`}>
+                    <summary>查看「{o.label}」预览</summary>
+                    <pre>{o.preview}</pre>
+                  </details>
+                ))}
                 <label className="ask-option">
                   <input
                     type={q.multiSelect ? "checkbox" : "radio"}

@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { EffortLevelSetting, HistoryMessage, SessionInfo } from "./protocol";
+import type { EffortLevelSetting, HistoryMessage, SessionInfo, AskQuestion, InteractionRecord, TimelineItem } from "./protocol";
 import { GUARD_PREFIX, summarizeTool } from "./claude-session";
 
 /**
@@ -53,20 +53,32 @@ function parseUserText(raw: string): { text: string; sentText?: string; attachKi
 
 interface TranscriptBlock {
   type?: string;
+  id?: string;
   text?: string;
   name?: string;
   input?: Record<string, unknown>;
+  tool_use_id?: string;
+  content?: unknown;
+  is_error?: boolean;
 }
 
 interface TranscriptEntry {
   type: "user" | "assistant" | "system";
   subtype?: string;
   /** compact_boundary 条目的压缩元数据（字段名与转录一致，非 stream-json 的 snake_case） */
-  compactMetadata?: { preTokens?: number; postTokens?: number };
+  compactMetadata?: { preTokens?: number; postTokens?: number; preservedSegment?: { anchorUuid?: string } };
   uuid?: string;
   parentUuid?: string;
   isMeta?: boolean;
+  /** CLI 自动压缩生成的内部上下文摘要，不是用户亲手发送的消息 */
+  isCompactSummary?: boolean;
+  /** 异步 Task 通知的 CLI 内部来源标记；不能仅凭用户文本中的相似 XML 判断 */
+  turnOrigin?: string;
+  origin?: { kind?: string };
   message?: { content?: string | TranscriptBlock[] };
+  /** 历史字段名（实时 SDK 为 tool_use_result）；Ask 在这里保存实际 answers */
+  toolUseResult?: unknown;
+  timestamp?: string;
 }
 
 /**
@@ -74,7 +86,7 @@ interface TranscriptEntry {
  * @param meta compact_boundary 的 compactMetadata；缺元数据时退化为简单文案
  * @returns 🗜 记录行文本；负压缩率省略百分比
  */
-function compactBoundaryText(meta: { preTokens?: number; postTokens?: number } | undefined): string {
+export function compactBoundaryText(meta: { preTokens?: number; postTokens?: number } | undefined): string {
   if (meta?.preTokens === undefined || meta.postTokens === undefined) return "🗜 已压缩上下文";
   const k = (n: number): string => (n >= 1000 ? `${Math.round(n / 1000)}k` : `${n}`);
   const pct = meta.preTokens > 0 ? Math.max(0, Math.round((1 - meta.postTokens / meta.preTokens) * 100)) : 0;
@@ -109,6 +121,45 @@ function localTagText(text: string, tag: string): string | null {
   if (start < 0) return null;
   const end = text.indexOf(close, start + open.length);
   return end < 0 ? null : text.slice(start + open.length, end).trim();
+}
+
+/** 识别 CLI 自己写入的异步任务通知，不信任用户可手输的 XML 外观。 */
+function isTaskNotification(entry: TranscriptEntry): boolean {
+  return entry.turnOrigin === "task_notification" || entry.origin?.kind === "task-notification";
+}
+
+/**
+ * 将异步 task-notification 恢复为短状态 + 折叠报告。
+ * @param entry 带 CLI 内部来源标记的转录记录
+ * @returns taskId 供实时/历史按同一 ID 合并；非任务通知返回 null
+ */
+function parseTaskNotification(entry: TranscriptEntry): { taskId?: string; message: HistoryMessage } | null {
+  if (!isTaskNotification(entry)) return null;
+  const text = transcriptText(entry);
+  const taskId = localTagText(text, "task-id");
+  const status = localTagText(text, "status");
+  const summary = localTagText(text, "summary");
+  const outputFile = localTagText(text, "output-file");
+  const usage = localTagText(text, "usage");
+  const report = localTagText(text, "result");
+  const metadata = {
+    ...(status !== null ? { status } : {}),
+    ...(summary !== null ? { summary } : {}),
+    ...(outputFile !== null ? { output_file: outputFile } : {}),
+    ...(usage !== null ? { usage } : {}),
+  };
+  const metadataText = Object.keys(metadata).length > 0 ? JSON.stringify(metadata, null, 2) : "";
+  // 未识别的新结构也把原始通知留在折叠详情，不能静默丢弃。
+  const detail = [report ?? (metadataText ? "" : text), metadataText].filter(Boolean).join("\n\n");
+  const state = status === "completed" ? "已完成" : status === "failed" ? "失败" : status ? "已停止" : "通知";
+  return {
+    ...(taskId ? { taskId } : {}),
+    message: {
+      role: "tool",
+      text: taskId ? `任务${state}：${taskId}` : "任务通知",
+      ...(detail ? { detail } : {}),
+    },
+  };
 }
 
 /**
@@ -154,6 +205,99 @@ function findLocalCommands(entries: TranscriptEntry[]): {
   return { activities, consumed };
 }
 
+/** 将转录中的结构化补丁追加到普通结果文本，历史回放与实时显示同一份完整 diff。 */
+function appendStructuredPatch(output: string, fallback: unknown): string {
+  if (!fallback || typeof fallback !== "object" || Array.isArray(fallback)) return output;
+  const patches = (fallback as { structuredPatch?: unknown }).structuredPatch;
+  if (!Array.isArray(patches)) return output;
+  const lines = patches.flatMap((patch) => {
+    if (!patch || typeof patch !== "object") return [];
+    const p = patch as { oldStart?: unknown; oldLines?: unknown; newStart?: unknown; newLines?: unknown; lines?: unknown };
+    if (![p.oldStart, p.oldLines, p.newStart, p.newLines].every((value) => typeof value === "number") || !Array.isArray(p.lines)) return [];
+    return [
+      `@@ -${p.oldStart},${p.oldLines} +${p.newStart},${p.newLines} @@`,
+      ...p.lines.filter((line): line is string => typeof line === "string"),
+    ];
+  });
+  return lines.length > 0 ? [output, lines.join("\n")].filter(Boolean).join("\n\n") : output;
+}
+
+/**
+ * 将转录 tool_result 内容转为完整文本；结构化内容使用缩进 JSON，不做长度截断。
+ * @param content tool_result.content
+ * @param fallback 同条 user 记录的 toolUseResult；补充 structuredPatch，无内容时作为完整回退
+ * @returns 完整输出文本
+ */
+function transcriptResultText(content: unknown, fallback: unknown): string {
+  if (content === undefined || content === null) {
+    if (typeof fallback === "string") return fallback;
+    return fallback === undefined || fallback === null ? "" : JSON.stringify(fallback, null, 2);
+  }
+  const output = typeof content === "string" ? content
+    : Array.isArray(content) ? content.map((block) => {
+      if (typeof block === "string") return block;
+      if (block && typeof block === "object" && (block as { type?: string }).type === "text") {
+        return String((block as { text?: unknown }).text ?? "");
+      }
+      return JSON.stringify(block, null, 2);
+    }).filter(Boolean).join("\n")
+      : JSON.stringify(content, null, 2);
+  return appendStructuredPatch(output, fallback);
+}
+
+/**
+ * 按 tool_use_id 配对普通工具结果；调用和结果即使跨记录也能合并。
+ * @param entries 按转录顺序排列的记录
+ * @returns 调用 ID 到完整输出与错误标记的映射
+ */
+function findToolResults(entries: TranscriptEntry[]): Map<string, { output: string; isError: boolean; structured: unknown; resolvedAt: number }> {
+  const results = new Map<string, { output: string; isError: boolean; structured: unknown; resolvedAt: number }>();
+  for (const entry of entries) {
+    if (entry.type !== "user" || !Array.isArray(entry.message?.content)) continue;
+    const parsedTime = entry.timestamp ? Date.parse(entry.timestamp) : 0;
+    for (const block of entry.message.content) {
+      if (block.type !== "tool_result" || typeof block.tool_use_id !== "string") continue;
+      results.set(block.tool_use_id, {
+        output: transcriptResultText(block.content, entry.toolUseResult),
+        isError: block.is_error === true,
+        structured: entry.toolUseResult,
+        resolvedAt: Number.isFinite(parsedTime) ? parsedTime : 0,
+      });
+    }
+  }
+  return results;
+}
+
+/**
+ * 按 tool_use_id 收集 AskUserQuestion 的真实作答结果；相同问题文本不会互相串答。
+ * @param entries 按转录顺序排列的记录
+ * @returns 工具调用 ID 到 questions/answers/作答时间的映射
+ */
+function findAskResults(entries: TranscriptEntry[]): Map<string, { questions?: AskQuestion[]; answers: Record<string, string>; resolvedAt: number }> {
+  const results = new Map<string, { questions?: AskQuestion[]; answers: Record<string, string>; resolvedAt: number }>();
+  for (const entry of entries) {
+    if (entry.type !== "user" || !entry.toolUseResult || typeof entry.toolUseResult !== "object" || Array.isArray(entry.toolUseResult)) continue;
+    const result = entry.toolUseResult as { questions?: unknown; answers?: unknown };
+    if (!result.answers || typeof result.answers !== "object" || Array.isArray(result.answers)) continue;
+    const answers: Record<string, string> = {};
+    for (const [question, answer] of Object.entries(result.answers)) {
+      if (typeof answer === "string") answers[question] = answer;
+    }
+    const content = entry.message?.content;
+    if (!Array.isArray(content)) continue;
+    const parsedTime = entry.timestamp ? Date.parse(entry.timestamp) : 0;
+    for (const block of content) {
+      if (block.type !== "tool_result" || typeof block.tool_use_id !== "string") continue;
+      results.set(block.tool_use_id, {
+        ...(Array.isArray(result.questions) ? { questions: result.questions as AskQuestion[] } : {}),
+        answers,
+        resolvedAt: Number.isFinite(parsedTime) ? parsedTime : 0,
+      });
+    }
+  }
+  return results;
+}
+
 /**
  * 读取某 session 的转录，按原顺序抽取用户正文、回答正文、工具活动和压缩记录行，取最后 max 条。
  * compact_boundary 条目回放为无 toolName 的 tool 行（🗜 文案），历史里也能看到压缩发生的位置。
@@ -164,7 +308,7 @@ function findLocalCommands(entries: TranscriptEntry[]): {
  * @param max 最多返回条数，默认 100
  * @returns 历史消息列表；文件不存在返回空数组
  */
-export function readTranscript(cwd: string, sessionId: string, max = 100): HistoryMessage[] {
+function readTranscriptTimeline(cwd: string, sessionId: string): TimelineItem[] {
   const file = path.join(projectsDir(), slugifyPath(path.resolve(cwd)), `${sessionId}.jsonl`);
   if (!fs.existsSync(file)) return [];
   const entries: TranscriptEntry[] = [];
@@ -179,57 +323,239 @@ export function readTranscript(cwd: string, sessionId: string, max = 100): Histo
     }
   }
 
+  const askResults = findAskResults(entries);
+  const toolResults = findToolResults(entries);
   const { activities, consumed } = findLocalCommands(entries);
-  const out: HistoryMessage[] = [];
-  for (const e of entries) {
+  // boundary.preservedSegment.anchorUuid 精确指向本次摘要；只关联 CLI 标记的内部摘要。
+  const compactSummaries = new Map<string, string>();
+  for (const entry of entries) {
+    if (entry.type === "user" && entry.isCompactSummary === true && typeof entry.uuid === "string") {
+      const summary = transcriptText(entry);
+      if (summary) compactSummaries.set(entry.uuid, summary);
+    }
+  }
+  const out: TimelineItem[] = [];
+  const append = (message: HistoryMessage, id: string, createdAt: number): void => {
+    out.push({ ...message, id: `history-${id}`, createdAt });
+  };
+  for (const [entryIndex, e] of entries.entries()) {
+    const entryId = typeof e.uuid === "string" ? e.uuid : `line-${entryIndex + 1}`;
+    const parsedTime = e.timestamp ? Date.parse(e.timestamp) : 0;
+    const createdAt = Number.isFinite(parsedTime) ? parsedTime : 0;
     if (e.type === "system") {
-      out.push({ role: "tool", text: compactBoundaryText(e.compactMetadata) }); // 无 toolName：与实时压缩记录行同款纯文本卡片
+      const anchorUuid = e.compactMetadata?.preservedSegment?.anchorUuid;
+      const summary = anchorUuid ? compactSummaries.get(anchorUuid) : undefined;
+      append({
+        role: "tool", text: compactBoundaryText(e.compactMetadata),
+        ...(summary ? { detail: summary } : {}),
+      }, `${entryId}-compact`, createdAt); // 摘要只作为本记录的折叠详情，不成为用户气泡
       continue;
     }
     if (typeof e.uuid === "string") {
       const activity = activities.get(e.uuid);
       if (activity) {
-        out.push(activity);
+        append(activity, `${entryId}-local`, createdAt);
         continue;
       }
       if (consumed.has(e.uuid)) continue;
     }
     if (e.type === "user") {
+      const task = parseTaskNotification(e);
+      if (task) {
+        // 实时通知使用 task-<id>；历史沿用该 ID，侧车合并和 chat.sync 才不会重复或变成用户气泡。
+        out.push({
+          ...task.message,
+          id: task.taskId ? `task-${task.taskId}` : `history-${entryId}-task`,
+          createdAt,
+        });
+        continue;
+      }
+      // isMeta/isCompactSummary 都是 CLI 注入的内部上下文，不是用户亲手发送的气泡。
+      if (e.isMeta === true || e.isCompactSummary === true) continue;
       const p = parseUserText(transcriptText(e)); // 拆包装：显示与溯源口径同当前会话
       if (p.text) {
-        out.push({
+        append({
           role: "user",
-          text: p.text.slice(0, 2000),
+          text: p.text,
           ...(p.sentText ? { sentText: p.sentText } : {}),
           ...(p.attachKind ? { attachKind: p.attachKind } : {}),
-        });
+        }, `${entryId}-user`, createdAt);
       }
       continue;
     }
 
     const content = e.message?.content;
     if (typeof content === "string") {
-      if (content) out.push({ role: "assistant", text: content.slice(0, 2000) });
+      if (content) append({ role: "assistant", text: content }, `${entryId}-assistant`, createdAt);
       continue;
     }
     if (!Array.isArray(content)) continue;
     let textParts: string[] = [];
+    let textSegment = 0;
     const flushText = (): void => {
       const text = textParts.join("\n");
-      if (text) out.push({ role: "assistant", text: text.slice(0, 2000) });
+      if (text) append({ role: "assistant", text }, `${entryId}-text-${textSegment++}`, createdAt);
       textParts = [];
     };
-    for (const b of content) {
+    for (const [blockIndex, b] of content.entries()) {
       if (b?.type === "text") {
         textParts.push(b.text ?? "");
-      } else if (b?.type === "tool_use" && b.name !== "AskUserQuestion") {
-        flushText(); // 工具与正文严格按 content 原始顺序回放；提问只由专用卡片展示
-        out.push({ role: "tool", toolName: b.name ?? "tool", text: summarizeTool(b) });
+      } else if (b?.type === "tool_use") {
+        flushText(); // 工具与正文严格按 content 原始顺序回放；提问只由专用记录展示
+        if (b.name === "AskUserQuestion") {
+          const result = typeof b.id === "string" ? askResults.get(b.id) : undefined;
+          if (result && typeof b.id === "string") {
+            const inputQuestions = Array.isArray(b.input?.questions) ? b.input.questions as AskQuestion[] : [];
+            const interaction: InteractionRecord = {
+              requestId: `history-${b.id}`,
+              kind: "ask",
+              tool: "AskUserQuestion",
+              toolUseId: b.id,
+              questions: result.questions ?? inputQuestions,
+              answers: result.answers,
+              outcome: "answered",
+              resolvedAt: result.resolvedAt,
+              decider: "user",
+            };
+            append({ role: "tool", toolName: "AskUserQuestion", text: "已回答", toolUseId: b.id, interaction }, `${entryId}-tool-${blockIndex}`, createdAt);
+          }
+        } else if (b.name === "ExitPlanMode") {
+          const result = typeof b.id === "string" ? toolResults.get(b.id) : undefined;
+          if (result && typeof b.id === "string") {
+            const structured = result.structured && typeof result.structured === "object" && !Array.isArray(result.structured)
+              ? result.structured as { plan?: unknown; filePath?: unknown }
+              : {};
+            const plan = typeof b.input?.plan === "string" ? b.input.plan
+              : typeof structured.plan === "string" ? structured.plan : undefined;
+            const planFilePath = typeof b.input?.planFilePath === "string" ? b.input.planFilePath
+              : typeof structured.filePath === "string" ? structured.filePath : undefined;
+            const interaction: InteractionRecord = {
+              requestId: `history-${b.id}`,
+              kind: "exit_plan",
+              tool: "ExitPlanMode",
+              toolUseId: b.id,
+              summary: "申请批准计划并继续执行",
+              detail: JSON.stringify(b.input ?? {}, null, 2),
+              ...(plan !== undefined ? { plan } : {}),
+              ...(planFilePath ? { planFilePath } : {}),
+              ...(result.isError && result.output ? { feedback: result.output } : {}),
+              outcome: result.isError ? "denied" : "allowed",
+              resolvedAt: result.resolvedAt,
+              decider: "user",
+            };
+            append({
+              role: "tool", toolName: "ExitPlanMode", text: result.isError ? "已退回" : "已批准",
+              toolUseId: b.id, interaction,
+            }, `${entryId}-tool-${blockIndex}`, createdAt);
+          }
+        } else {
+          const result = typeof b.id === "string" ? toolResults.get(b.id) : undefined;
+          append({
+            role: "tool",
+            toolName: b.name ?? "tool",
+            text: summarizeTool(b),
+            ...(b.id ? {
+              toolUseId: b.id,
+              toolStatus: result ? (result.isError ? "error" as const : "success" as const) : "unknown" as const,
+              toolInput: JSON.stringify(b.input ?? {}, null, 2),
+              ...(result ? { toolOutput: result.output } : {}),
+            } : {}),
+          }, `${entryId}-tool-${blockIndex}`, createdAt);
+        }
       }
     }
     flushText();
   }
-  return out.slice(-max);
+  return out;
+}
+
+/**
+ * 读取转录末尾消息，保留旧调用的无 ID 返回形状。
+ * @param cwd 会话工作目录
+ * @param sessionId 会话 ID
+ * @param max 最多返回条数
+ * @returns 末尾历史消息
+ */
+export function readTranscript(cwd: string, sessionId: string, max = 100): HistoryMessage[] {
+  return readTranscriptTimeline(cwd, sessionId).slice(-max).map(({ id: _id, createdAt: _createdAt, ...message }) => message);
+}
+
+export interface TranscriptPage {
+  messages: TimelineItem[];
+  hasMore: boolean;
+  /** 仍有更早记录时，取本页首项 ID 作为下一次 before */
+  nextCursor?: string;
+}
+
+/** 同一压缩的转录行与实时侧车使用不同 ID；仅在一秒事件窗口内合并同文案的一对记录。 */
+function isLiveCompactDuplicate(transcript: TimelineItem, live: TimelineItem): boolean {
+  return transcript.id.startsWith("history-") && transcript.id.endsWith("-compact")
+    && live.id.startsWith("status-")
+    && transcript.role === "tool" && live.role === "tool"
+    && live.text.startsWith("🗜 已压缩上下文") && live.text === transcript.text
+    && live.createdAt >= transcript.createdAt
+    && live.createdAt - transcript.createdAt <= 1000;
+}
+
+/** 侧车补充同一事实的新版本；工具执行与交互决定是两类事实，同 toolUseId 也必须各占一行。 */
+function mergeTimelineItems(base: TimelineItem[], additional: TimelineItem[]): TimelineItem[] {
+  const all = [...base];
+  for (const extra of additional) {
+    const index = all.findIndex((item) => item.id === extra.id || isLiveCompactDuplicate(item, extra) || Boolean(
+      extra.toolUseId && item.toolUseId === extra.toolUseId && Boolean(item.interaction) === Boolean(extra.interaction),
+    ));
+    if (index < 0) {
+      all.push(extra);
+      continue;
+    }
+    const previous = all[index]!;
+    all[index] = {
+      ...previous,
+      ...extra,
+      ...(previous.interaction && extra.interaction
+        ? { interaction: { ...previous.interaction, ...extra.interaction } }
+        : {}),
+    };
+  }
+  return all.sort((a, b) => a.createdAt - b.createdAt);
+}
+
+/** 旧版侧车曾把完整 Task 报告写进正文；读取时迁移，不改写用户的原始历史文件。 */
+function normalizeLegacyTask(item: TimelineItem): TimelineItem {
+  if (item.role !== "tool" || !item.id.startsWith("task-")) return item;
+  const match = /^任务(已完成|失败|已停止)：([\s\S]*)$/.exec(item.text);
+  const report = match?.[2] ?? "";
+  if (!match || (report.length <= 160 && !/[\r\n]/.test(report))) return item;
+  const detail = [report, item.detail].filter(Boolean).join("\n\n");
+  return { ...item, text: `任务${match[1]}：${item.id.slice("task-".length)}`, detail };
+}
+
+/**
+ * 以本页首项稳定 ID 为游标读取更早历史；追加新转录不会让已读项重复或串页。
+ * @param cwd 会话工作目录
+ * @param sessionId 会话 ID
+ * @param options.limit 每页条数，限制在 1-200
+ * @param options.before 只返回该稳定 ID 之前的项目；缺省取最新一页
+ * @param options.additional CLI 未落盘的侧车事实，合并后统一分页
+ * @returns 按原顺序排列的一页及更早记录游标
+ */
+export function readTranscriptPage(
+  cwd: string,
+  sessionId: string,
+  options: { limit?: number; before?: string; additional?: TimelineItem[] } = {},
+): TranscriptPage {
+  const all = mergeTimelineItems(readTranscriptTimeline(cwd, sessionId), options.additional ?? []).map(normalizeLegacyTask);
+  const limit = Math.max(1, Math.min(200, Math.floor(options.limit ?? 100)));
+  const cursorIndex = options.before === undefined ? all.length : all.findIndex((item) => item.id === options.before);
+  // 失效游标不冒充最新页：返回空页，调用方可重新从最新快照恢复。
+  if (cursorIndex < 0) return { messages: [], hasMore: false };
+  const start = Math.max(0, cursorIndex - limit);
+  const messages = all.slice(start, cursorIndex);
+  return {
+    messages,
+    hasMore: start > 0,
+    ...(start > 0 && messages[0] ? { nextCursor: messages[0].id } : {}),
+  };
 }
 
 /** 会话 ID 安全字符：防路径穿越，只允许字母数字、连字符、下划线 */
@@ -262,7 +588,7 @@ export function listSessions(cwd: string): SessionInfo[] {
         if (!line.includes('"user"')) continue; // 粗筛，减少 JSON.parse 次数
         try {
           const e = JSON.parse(line);
-          if (e.type !== "user") continue;
+          if (e.type !== "user" || e.isCompactSummary === true || isTaskNotification(e)) continue;
           const content = e.message?.content;
           let text = "";
           if (typeof content === "string") {

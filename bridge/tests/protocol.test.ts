@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseClientMessage, encode, isPermissionMode, isFastModeState, isFastModeDisabledReason, type ServerMessage } from "../src/protocol";
+import { parseClientMessage, encode, isPermissionMode, isFastModeState, isFastModeDisabledReason, sanitizeElicitationUrl, validateElicitationContent, type ServerMessage } from "../src/protocol";
 
 describe("parseClientMessage", () => {
   it("解析合法消息", () => {
@@ -53,6 +53,65 @@ describe("encode", () => {
   });
 });
 
+describe("MCP elicitation 协议", () => {
+  it("严格解析 accept/decline/cancel 与合法 content 类型", () => {
+    expect(parseClientMessage(JSON.stringify({
+      type: "chat.interaction.respond", requestId: "el-1",
+      response: { action: "accept", content: { text: "值", count: 2, ok: true, tags: ["a"] } },
+    }))).toEqual({
+      type: "chat.interaction.respond", requestId: "el-1",
+      response: { action: "accept", content: { text: "值", count: 2, ok: true, tags: ["a"] } },
+    });
+    for (const response of [
+      { action: "open" }, { action: "accept", content: [] },
+      { action: "accept", content: { count: Number.POSITIVE_INFINITY } },
+      { action: "accept", content: { bad: { nested: true } } },
+    ]) {
+      expect(parseClientMessage(JSON.stringify({ type: "chat.interaction.respond", requestId: "el-1", response }))).toBeNull();
+    }
+  });
+
+  it("共享表单校验覆盖必填、枚举、有限数字和整数", () => {
+    const fields = [
+      { name: "name", title: "名称", type: "string" as const, required: true, enum: ["a", "b"] },
+      { name: "count", title: "数量", type: "integer" as const, required: true },
+      { name: "ratio", title: "比例", type: "number" as const, required: false },
+      { name: "ok", title: "确认", type: "boolean" as const, required: false },
+    ];
+    expect(validateElicitationContent(fields, { name: "a", count: 2, ratio: 0.5, ok: false })).toEqual([]);
+    expect(validateElicitationContent(fields, {})).toContain("名称：必填");
+    expect(validateElicitationContent(fields, { name: "c", count: 1.5 })).toEqual(expect.arrayContaining([
+      "名称：不在可选值中", "数量：需要整数",
+    ]));
+    expect(validateElicitationContent(fields, { name: "a", count: 1, extra: "x" })).toContain("extra：不是请求中的字段");
+  });
+
+  it("URL 仅允许 http/https 并移除凭据、查询与片段", () => {
+    expect(sanitizeElicitationUrl("https://user:pass@example.com/a?token=x#frag")).toBe("https://example.com/a");
+    expect(sanitizeElicitationUrl("file:///C:/secret")).toBeNull();
+    expect(sanitizeElicitationUrl("not a url")).toBeNull();
+  });
+});
+
+describe("CLI UserDialog 协议", () => {
+  it("只接受本机 CLI 已验证的对话框结果，禁止夹带表单 content", () => {
+    for (const action of ["retry_fallback", "edit_prompt", "continue", "interrupt", "cancelled"]) {
+      expect(parseClientMessage(JSON.stringify({
+        type: "chat.interaction.respond", requestId: "dialog-1", response: { action },
+      }))).toEqual({ type: "chat.interaction.respond", requestId: "dialog-1", response: { action } });
+    }
+    for (const response of [
+      { action: "approve" },
+      { action: "retry_fallback", content: { unexpected: true } },
+      { action: "continue", content: "yes" },
+    ]) {
+      expect(parseClientMessage(JSON.stringify({
+        type: "chat.interaction.respond", requestId: "dialog-1", response,
+      }))).toBeNull();
+    }
+  });
+});
+
 describe("settings.set 扩展字段", () => {
   it("携带合法 model/effort 时透传", () => {
     expect(parseClientMessage(JSON.stringify({ type: "settings.set", permissionMode: "auto", model: "opus", effort: "high" })))
@@ -81,6 +140,15 @@ describe("会话管理消息", () => {
     expect(parseClientMessage(JSON.stringify({ type: "session.new" }))).toEqual({ type: "session.new" });
     expect(parseClientMessage(JSON.stringify({ type: "session.switch", sessionId: "s1" }))).toEqual({ type: "session.switch", sessionId: "s1" });
     expect(parseClientMessage(JSON.stringify({ type: "session.delete", sessionId: "s1" }))).toEqual({ type: "session.delete", sessionId: "s1" });
+  });
+
+  it("历史分页只接受有界 limit 与字符串游标", () => {
+    expect(parseClientMessage(JSON.stringify({ type: "session.history", before: "history-u1-user", limit: 50 })))
+      .toEqual({ type: "session.history", before: "history-u1-user", limit: 50 });
+    expect(parseClientMessage(JSON.stringify({ type: "session.history", before: 1 }))).toBeNull();
+    expect(parseClientMessage(JSON.stringify({ type: "session.history", limit: 0 }))).toBeNull();
+    expect(parseClientMessage(JSON.stringify({ type: "session.history", limit: 201 }))).toBeNull();
+    expect(parseClientMessage(JSON.stringify({ type: "session.history", limit: 1.5 }))).toBeNull();
   });
 
   it("sessionId 缺失或为空返回 null", () => {

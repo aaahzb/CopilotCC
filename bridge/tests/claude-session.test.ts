@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { createClaudeSession, parseEnvDump, parseShellProbeOutput, wellKnownClaudePaths, type SessionEvents, type SessionRuntimeInfo } from "../src/claude-session";
+import { createClaudeSession, GUARD_PREFIX, parseEnvDump, parseShellProbeOutput, wellKnownClaudePaths, type SessionEvents, type SessionRuntimeInfo } from "../src/claude-session";
 import * as path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 
@@ -12,7 +12,8 @@ function stubEvents(): SessionEvents & { log: Array<[string, ...unknown[]]>; run
     runtime,
     onRuntime: (info) => runtime.push(info),
     onDelta: (t) => log.push(["delta", t]),
-    onTool: (n, s) => log.push(["tool", `${n}:${s}`]),
+    onTool: (n, s, toolUseId, input) => log.push(["tool", `${n}:${s}`, ...(toolUseId ? [{ toolUseId, input }] : [])]),
+    onToolResult: (r) => log.push(["toolResult", r]),
     onCompact: (ev) => log.push(["compact", ev]),
     onDone: (s, info) => log.push(["done", s, info]),
     onError: (m) => log.push(["error", m]),
@@ -20,6 +21,12 @@ function stubEvents(): SessionEvents & { log: Array<[string, ...unknown[]]>; run
     onAsk: (r) => log.push(["ask", r]),
     onSessionId: (id) => log.push(["sid", id]),
     onAborted: () => log.push(["aborted"]),
+    onInteractionSettled: (r) => log.push(["interactionSettled", r]),
+    onNotice: (notice) => log.push(["notice", notice]),
+    onRequesting: (requesting) => log.push(["requesting", requesting]),
+    onElicitation: (request) => log.push(["elicitation", request]),
+    onElicitationComplete: (request) => log.push(["elicitationComplete", request]),
+    onUserDialog: (request) => log.push(["userDialog", request]),
   };
 }
 
@@ -81,6 +88,23 @@ describe("AskUserQuestion 提问", () => {
     await s.close();
   });
 
+  it("保留真实 CLI 提供的选项 preview，不把技术详情误当 annotations", async () => {
+    const { s, ev, canUseTool } = await setup();
+    const richInput = {
+      questions: [{
+        ...ASK_INPUT.questions[0]!,
+        options: [{ label: "A", description: "用 A", preview: "A 的预览\n第二行" }],
+      }],
+    };
+    const pending = canUseTool("AskUserQuestion", richInput);
+    await vi.waitFor(() => expect(ev.log.some(([kind]) => kind === "ask")).toBe(true));
+    const req = (ev.log.find(([kind]) => kind === "ask") as [string, { requestId: string; questions: Array<{ options: Array<{ preview?: string }> }> }])[1];
+    expect(req.questions[0]!.options[0]!.preview).toBe("A 的预览\n第二行");
+    s.respondAsk(req.requestId, { "选哪个？": "A" });
+    await pending;
+    await s.close();
+  });
+
   it("用户未作答（null）按拒绝释放", async () => {
     const { s, ev, canUseTool } = await setup();
     const p = canUseTool("AskUserQuestion", ASK_INPUT);
@@ -99,12 +123,42 @@ describe("AskUserQuestion 提问", () => {
     await s.close();
   });
 
-  it("close() 释放挂起提问", async () => {
-    const { s, canUseTool } = await setup();
+  it("close() 释放挂起提问并上报已取消记录", async () => {
+    const { s, ev, canUseTool } = await setup();
     const p = canUseTool("AskUserQuestion", ASK_INPUT);
     await new Promise((r) => setTimeout(r, 20));
+    const req = (ev.log.find(([kind]) => kind === "ask") as [string, { requestId: string }])[1];
     await s.close();
     expect((await p).behavior).toBe("deny");
+    expect(ev.log).toContainEqual(["interactionSettled", { requestId: req.requestId, outcome: "cancelled", decider: "close" }]);
+  });
+
+  it("abort() 将挂起提问结算为用户取消", async () => {
+    const { s, ev, canUseTool } = await setup();
+    s.send("开始");
+    const p = canUseTool("AskUserQuestion", ASK_INPUT);
+    const req = (ev.log.find(([kind]) => kind === "ask") as [string, { requestId: string }])[1];
+    s.abort();
+    expect((await p).behavior).toBe("deny");
+    expect(ev.log).toContainEqual(["interactionSettled", { requestId: req.requestId, outcome: "cancelled", decider: "abort" }]);
+    await s.close();
+  });
+  it("提问超时释放 SDK 并上报 timeout，不留下无结局卡片", async () => {
+    vi.useFakeTimers();
+    try {
+      const { fn, calls } = fakeQuery([INIT, DONE]);
+      const ev = stubEvents();
+      const s = createClaudeSession("D:\\notes", { permissionMode: "auto", events: ev, queryFn: fn });
+      const canUseTool = calls[0]!.options.canUseTool as (n: string, i: Record<string, unknown>) => Promise<{ behavior: string }>;
+      const pending = canUseTool("AskUserQuestion", ASK_INPUT);
+      const req = (ev.log.find(([kind]) => kind === "ask") as [string, { requestId: string }])[1];
+      await vi.advanceTimersByTimeAsync(600_000);
+      expect((await pending).behavior).toBe("deny");
+      expect(ev.log).toContainEqual(["interactionSettled", { requestId: req.requestId, outcome: "timeout", decider: "timeout" }]);
+      await s.close();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -120,6 +174,49 @@ describe("createClaudeSession", () => {
       ["tool", "Write:a.md"],
       ["done", "sid-1", { model: undefined, effort: undefined }], // INIT 未带 model/effort 字段（老 CLI 形态）
     ]);
+    await s.close();
+  });
+
+  it("工具调用与结果按 toolUseId 关联，保留完整输入、输出和错误状态", async () => {
+    const call = {
+      type: "assistant",
+      message: { content: [{ type: "tool_use", id: "toolu-bash-1", name: "Bash", input: { command: "printf ok" } }] },
+    };
+    const result = {
+      type: "user",
+      message: { content: [{ type: "tool_result", tool_use_id: "toolu-bash-1", content: [{ type: "text", text: "第一行\n第二行" }] }] },
+      tool_use_result: "第一行\n第二行",
+    };
+    const { fn } = fakeQuery([INIT, call, result, DONE]);
+    const ev = stubEvents();
+    const s = createClaudeSession("D:\\notes", { permissionMode: "auto", events: ev, queryFn: fn });
+    await vi.waitFor(() => expect(ev.log.some(([kind]) => kind === "toolResult")).toBe(true));
+    expect(ev.log).toContainEqual(["tool", "Bash:printf ok", { toolUseId: "toolu-bash-1", input: { command: "printf ok" } }]);
+    expect(ev.log).toContainEqual(["toolResult", { toolUseId: "toolu-bash-1", output: "第一行\n第二行", isError: false }]);
+    await s.close();
+  });
+
+  it("Edit 普通结果文本之外保留 structuredPatch 完整 diff", async () => {
+    const call = {
+      type: "assistant",
+      message: { content: [{ type: "tool_use", id: "toolu-edit-patch", name: "Edit", input: { file_path: "a.txt", old_string: "旧行", new_string: "新行" } }] },
+    };
+    const result = {
+      type: "user",
+      message: { content: [{ type: "tool_result", tool_use_id: "toolu-edit-patch", content: "文件已更新" }] },
+      tool_use_result: {
+        filePath: "a.txt", oldString: "旧行", newString: "新行",
+        structuredPatch: [{ oldStart: 1, oldLines: 2, newStart: 1, newLines: 2, lines: ["-旧行", "+新行", " 保留行"] }],
+      },
+    };
+    const { fn } = fakeQuery([INIT, call, result, DONE]);
+    const ev = stubEvents();
+    const s = createClaudeSession("D:\\notes", { permissionMode: "auto", events: ev, queryFn: fn });
+    await vi.waitFor(() => expect(ev.log.some(([kind]) => kind === "toolResult")).toBe(true));
+    expect(ev.log).toContainEqual(["toolResult", {
+      toolUseId: "toolu-edit-patch", isError: false,
+      output: "文件已更新\n\n@@ -1,2 +1,2 @@\n-旧行\n+新行\n 保留行",
+    }]);
     await s.close();
   });
 
@@ -167,9 +264,47 @@ describe("createClaudeSession", () => {
     await new Promise((r) => setTimeout(r, 20));
     const permLog = ev.log.find(([k]) => k === "permission");
     expect(permLog).toBeTruthy();
-    const req = (permLog as [string, { requestId: string }])[1];
+    const req = (permLog as [string, { requestId: string; summary?: string }])[1];
+    expect(req.summary).toBe("执行命令：ls");
     s.respondPermission(req.requestId, true);
     expect((await p).behavior).toBe("allow");
+    await s.close();
+  });
+
+  it("requiresUserInteraction 的未适配工具安全拒绝，绝不进入通用允许卡", async () => {
+    const { fn, calls } = fakeQuery([INIT, DONE]);
+    const ev = stubEvents();
+    const s = createClaudeSession("D:\\notes", { permissionMode: "approve-each", events: ev, queryFn: fn });
+    const canUseTool = calls[0]!.options.canUseTool as (
+      n: string, i: Record<string, unknown>, metadata?: Record<string, unknown>,
+    ) => Promise<{ behavior: string; message?: string }>;
+    const result = await canUseTool("mcp__remote__custom_ui", { value: "x" }, {
+      toolUseID: "toolu-custom-ui", requiresUserInteraction: true,
+    });
+    expect(result.behavior).toBe("deny");
+    expect(result.message).toContain("专用用户交互");
+    expect(ev.log.some(([kind]) => kind === "permission")).toBe(false);
+    expect(ev.log).toContainEqual(["notice", expect.objectContaining({
+      level: "warning", toolUseId: "toolu-custom-ui",
+      text: expect.stringContaining("需要专用交互"),
+    })]);
+    await s.close();
+  });
+
+  it("已有专用卡片的 ExitPlanMode 不被 requiresUserInteraction 误拒", async () => {
+    const { fn, calls } = fakeQuery([INIT, DONE]);
+    const ev = stubEvents();
+    const s = createClaudeSession("D:\\notes", { permissionMode: "plan", events: ev, queryFn: fn });
+    const canUseTool = calls[0]!.options.canUseTool as (
+      n: string, i: Record<string, unknown>, metadata?: Record<string, unknown>,
+    ) => Promise<{ behavior: string }>;
+    const pending = canUseTool("ExitPlanMode", { plan: "计划" }, {
+      toolUseID: "toolu-plan-ui", requiresUserInteraction: true,
+    });
+    await vi.waitFor(() => expect(ev.log.some(([kind]) => kind === "permission")).toBe(true));
+    const req = (ev.log.find(([kind]) => kind === "permission") as [string, { requestId: string }])[1];
+    s.respondPermission(req.requestId, true);
+    expect((await pending).behavior).toBe("allow");
     await s.close();
   });
 
@@ -183,6 +318,20 @@ describe("createClaudeSession", () => {
     const first = await stream[Symbol.asyncIterator]().next();
     expect(first.value.message.content).toContain("防注入");
     expect(first.value.message.content).toContain("你好");
+    await s.close();
+  });
+
+  it("新会话首条斜杠命令保持原文，防注入前缀留给下一条普通消息", async () => {
+    const { fn, calls } = fakeQuery([INIT, DONE]);
+    const ev = stubEvents();
+    const s = createClaudeSession("D:\\notes", { permissionMode: "auto", events: ev, queryFn: fn });
+    s.send("/compact");
+    await new Promise((r) => setTimeout(r, 50));
+    const stream = calls[0].prompt as AsyncIterable<{ message: { content: string } }>;
+    const input = stream[Symbol.asyncIterator]();
+    expect((await input.next()).value.message.content).toBe("/compact");
+    s.send("你好");
+    expect((await input.next()).value.message.content).toBe(GUARD_PREFIX + "你好");
     await s.close();
   });
 
@@ -203,6 +352,85 @@ describe("createClaudeSession", () => {
     await vi.waitFor(() => expect(ev.log.map(([k]) => k)).toContain("done"), { timeout: 2000 });
     expect(firstSessionId).toBe(""); // 新会话首条用空 session_id，init 到达后由 CLI 分配
     expect(ev.log).toContainEqual(["sid", "sid-real"]);
+    await s.close();
+  });
+
+  it("init/status 的 permissionMode 作为 CC 实际模式上报，不用请求值猜测", async () => {
+    const init = { ...INIT, permissionMode: "auto" };
+    const status = { type: "system", subtype: "status", status: null, permissionMode: "plan" };
+    const { fn } = fakeQuery([init, status, DONE]);
+    const ev = stubEvents();
+    const s = createClaudeSession("D:\\notes", { permissionMode: "auto", events: ev, queryFn: fn });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(ev.runtime.map((r) => r.permissionMode)).toEqual(["auto", "plan", "plan"]);
+    expect(s.runtimeInfo().permissionMode).toBe("plan");
+    await s.close();
+  });
+
+  it("plan 模式下 ExitPlanMode 仍进入审批，批准后由 SDK 继续处理", async () => {
+    const { fn, calls } = fakeQuery([INIT, DONE]);
+    const ev = stubEvents();
+    const s = createClaudeSession("D:\\notes", { permissionMode: "plan", events: ev, queryFn: fn });
+    await new Promise((r) => setTimeout(r, 30));
+    const canUseTool = calls[0]!.options.canUseTool as (
+      n: string,
+      i: Record<string, unknown>,
+      metadata?: Record<string, unknown>,
+    ) => Promise<{ behavior: string }>;
+    const pending = canUseTool("ExitPlanMode", {}, { toolUseID: "toolu-exit-1" });
+    await vi.waitFor(() => expect(ev.log.some(([kind]) => kind === "permission")).toBe(true));
+    const req = (ev.log.find(([kind]) => kind === "permission") as [string, { requestId: string; toolUseId?: string }])[1];
+    expect(req.toolUseId).toBe("toolu-exit-1");
+    s.respondPermission(req.requestId, true);
+    expect((await pending).behavior).toBe("allow");
+    await s.close();
+  });
+
+  it("ExitPlanMode 提供完整计划与路径，退回意见经 deny message 返回 CC", async () => {
+    const { fn, calls } = fakeQuery([INIT, DONE]);
+    const ev = stubEvents();
+    const s = createClaudeSession("D:\\notes", { permissionMode: "plan", events: ev, queryFn: fn });
+    await new Promise((r) => setTimeout(r, 30));
+    const canUseTool = calls[0]!.options.canUseTool as (
+      n: string,
+      i: Record<string, unknown>,
+      metadata?: Record<string, unknown>,
+    ) => Promise<{ behavior: string; message?: string }>;
+    const plan = "# 完整计划\n\n不得截断";
+    const pending = canUseTool("ExitPlanMode", { plan, planFilePath: "D:\\plans\\full.md" }, { toolUseID: "toolu-exit-full" });
+    await vi.waitFor(() => expect(ev.log.some(([kind]) => kind === "permission")).toBe(true));
+    const req = (ev.log.find(([kind]) => kind === "permission") as [string, {
+      requestId: string; kind?: string; plan?: string; planFilePath?: string; summary?: string;
+    }])[1];
+    expect(req).toMatchObject({
+      kind: "exit_plan", plan, planFilePath: "D:\\plans\\full.md", summary: "申请批准计划并继续执行",
+    });
+    (s.respondPermission as (id: string, allow: boolean, feedback?: string) => void)(req.requestId, false, "请补充测试");
+    expect(await pending).toEqual({ behavior: "deny", message: "请补充测试" });
+    await s.close();
+  });
+
+  it("审批回调只有空参数时按 toolUseId 找回完整计划并用于批准", async () => {
+    const plan = "# 完整计划\n\n真实回调关联";
+    const input = { plan, planFilePath: "D:\\plans\\linked.md" };
+    const { fn, calls } = fakeQuery([INIT, {
+      type: "assistant",
+      message: { content: [{ type: "tool_use", id: "toolu-exit-linked", name: "ExitPlanMode", input }] },
+    }, DONE]);
+    const ev = stubEvents();
+    const s = createClaudeSession("D:\\notes", { permissionMode: "plan", events: ev, queryFn: fn });
+    await new Promise((r) => setTimeout(r, 30));
+    const canUseTool = calls[0]!.options.canUseTool as (
+      n: string, i: Record<string, unknown>, metadata?: Record<string, unknown>,
+    ) => Promise<{ behavior: string; updatedInput?: Record<string, unknown> }>;
+    const pending = canUseTool("ExitPlanMode", {}, { toolUseID: "toolu-exit-linked" });
+    await vi.waitFor(() => expect(ev.log.some(([kind]) => kind === "permission")).toBe(true));
+    const req = (ev.log.find(([kind]) => kind === "permission") as [string, {
+      requestId: string; plan?: string; planFilePath?: string; detail: string;
+    }])[1];
+    expect(req).toMatchObject({ plan, planFilePath: input.planFilePath, detail: JSON.stringify(input, null, 2) });
+    s.respondPermission(req.requestId, true);
+    expect(await pending).toEqual({ behavior: "allow", updatedInput: input });
     await s.close();
   });
 
@@ -617,5 +845,330 @@ describe("压缩进度事件", () => {
     await sleep(350);
     s.close();
     expect(compact).toEqual([{ phase: "done", result: "failed", error: "boom" }]);
+  });
+});
+
+describe("CLI 用户可见通知、拒绝与用量", () => {
+  async function noticeSession(script: unknown[]) {
+    const q = fakeQuery(script);
+    const ev = stubEvents();
+    const s = createClaudeSession(".", { permissionMode: "auto", queryFn: q.fn, events: ev });
+    await sleep(40);
+    await s.close();
+    return ev.log.filter(([kind]) => kind === "notice" || kind === "error" || kind === "done");
+  }
+
+  it("转发 API 重试、通知、informational 和本地命令输出", async () => {
+    const log = await noticeSession([
+      { type: "system", subtype: "api_retry", attempt: 2, max_retries: 5, retry_delay_ms: 1500, error_status: 429, error: "rate_limit" },
+      { type: "system", subtype: "notification", key: "task", text: "后台任务完成", priority: "high" },
+      { type: "system", subtype: "informational", content: "Hook 阻止继续", level: "warning", tool_use_id: "toolu-hook" },
+      { type: "system", subtype: "local_command_output", content: "/usage 的完整输出" },
+    ]);
+    expect(log).toEqual([
+      ["notice", { text: "API 请求失败，正在重试（第 2/5 次，等待 1.5 秒）", level: "warning", detail: "HTTP 429\nrate_limit" }],
+      ["notice", { text: "后台任务完成", level: "info" }],
+      ["notice", { text: "Hook 阻止继续", level: "warning", toolUseId: "toolu-hook" }],
+      ["notice", { text: "/usage 的完整输出", level: "info", role: "assistant" }],
+    ]);
+  });
+
+  it("自动拒权和限流保留中文摘要及完整原因", async () => {
+    const log = await noticeSession([
+      { type: "system", subtype: "permission_denied", tool_name: "Bash", tool_use_id: "toolu-deny", decision_reason: "命中 deny 规则", message: "Denied by rule" },
+      { type: "rate_limit_event", rate_limit_info: { status: "rejected", rateLimitType: "five_hour", utilization: 100 } },
+    ]);
+    expect(log).toEqual([
+      ["notice", { text: "操作被自动拒绝：Bash", level: "warning", toolUseId: "toolu-deny", detail: "命中 deny 规则\nDenied by rule" }],
+      ["notice", { text: "API 使用限额已拒绝请求", level: "warning", detail: JSON.stringify({ status: "rejected", rateLimitType: "five_hour", utilization: 100 }, null, 2) }],
+    ]);
+  });
+
+  it("Task、Hook 与长工具进度以可更新的稳定记录上报", async () => {
+    const log = await noticeSession([
+      { type: "system", subtype: "task_started", task_id: "task-1", description: "运行测试" },
+      { type: "system", subtype: "task_progress", task_id: "task-1", description: "运行测试", summary: "正在跑 Vitest", last_tool_name: "Bash", usage: { total_tokens: 20, tool_uses: 1, duration_ms: 800 } },
+      { type: "system", subtype: "task_notification", task_id: "task-1", status: "completed", summary: "全部通过", output_file: "D:\\task.log", usage: { total_tokens: 30, tool_uses: 2, duration_ms: 1200 } },
+      { type: "system", subtype: "hook_started", hook_id: "hook-1", hook_name: "lint", hook_event: "PreToolUse" },
+      { type: "system", subtype: "hook_response", hook_id: "hook-1", hook_name: "lint", hook_event: "PreToolUse", outcome: "error", stdout: "out", stderr: "bad", exit_code: 1 },
+      { type: "tool_progress", tool_name: "Bash", tool_use_id: "toolu-long", elapsed_time_seconds: 12 },
+    ]);
+    expect(log).toEqual([
+      ["notice", { id: "task-task-1", text: "任务开始：运行测试", level: "info" }],
+      ["notice", {
+        id: "task-task-1", text: "任务进度：正在跑 Vitest", level: "info",
+        detail: JSON.stringify({ description: "运行测试", last_tool_name: "Bash", usage: { total_tokens: 20, tool_uses: 1, duration_ms: 800 } }, null, 2),
+      }],
+      ["notice", {
+        id: "task-task-1", text: "任务已完成：全部通过", level: "info",
+        detail: JSON.stringify({ status: "completed", output_file: "D:\\task.log", usage: { total_tokens: 30, tool_uses: 2, duration_ms: 1200 } }, null, 2),
+      }],
+      ["notice", { id: "hook-hook-1", text: "Hook 执行中：lint（PreToolUse）", level: "info" }],
+      ["notice", {
+        id: "hook-hook-1", text: "Hook 失败：lint", level: "warning",
+        detail: JSON.stringify({ event: "PreToolUse", stdout: "out", stderr: "bad", exit_code: 1 }, null, 2),
+      }],
+      ["notice", { id: "tool-progress-toolu-long", text: "Bash 已执行 12 秒", level: "info", toolUseId: "toolu-long" }],
+    ]);
+  });
+
+  it("Task 长报告只留完成状态在正文，完整报告与元数据进入折叠 detail", async () => {
+    const report = "## 调查结果\n\n### 顶层清单\n\n完整子代理报告，不是用户发言。";
+    const log = await noticeSession([
+      { type: "system", subtype: "task_notification", task_id: "task-long", status: "completed", summary: report, output_file: "D:\\task.log" },
+    ]);
+    expect(log).toEqual([
+      ["notice", {
+        id: "task-task-long", text: "任务已完成：task-long", level: "info",
+        detail: `${report}\n\n${JSON.stringify({ status: "completed", output_file: "D:\\task.log" }, null, 2)}`,
+      }],
+    ]);
+  });
+
+  it("requesting 状态实时上报并在空状态或本轮结束时清除", async () => {
+    const q = fakeQuery([
+      { type: "system", subtype: "status", status: "requesting" },
+      { type: "system", subtype: "status", status: null },
+      { type: "system", subtype: "status", status: "requesting" },
+      DONE,
+    ]);
+    const ev = stubEvents();
+    const s = createClaudeSession(".", { permissionMode: "auto", queryFn: q.fn, events: ev });
+    await sleep(40);
+    expect(ev.log.filter(([kind]) => kind === "requesting")).toEqual([
+      ["requesting", true], ["requesting", false], ["requesting", true], ["requesting", false],
+    ]);
+    await s.close();
+  });
+
+  it("认证进度、输出和错误保留为同一条可更新记录", async () => {
+    const log = await noticeSession([
+      { type: "auth_status", isAuthenticating: true, output: ["正在检查登录"], uuid: "u-1", session_id: "sid-auth" },
+      { type: "auth_status", isAuthenticating: false, output: ["检查完成"], error: "登录已过期", uuid: "u-2", session_id: "sid-auth" },
+    ]);
+    expect(log).toEqual([
+      ["notice", { id: "auth-status", text: "正在验证登录状态", level: "info", detail: "正在检查登录" }],
+      ["notice", { id: "auth-status", text: "登录验证失败：登录已过期", level: "warning", detail: "检查完成\n登录已过期" }],
+    ]);
+  });
+
+  it("init 的插件错误和未连接 MCP 服务不再静默丢弃", async () => {
+    const log = await noticeSession([
+      {
+        ...INIT,
+        plugin_errors: [{ plugin: "demo", type: "load", message: "入口不存在", path: "D:\\plugin" }],
+        mcp_servers: [{ name: "ok", status: "connected" }, { name: "docs", status: "needs-auth", source: "project" }],
+      },
+    ]);
+    expect(log).toEqual([
+      ["notice", {
+        id: "plugin-error-demo-load", text: "插件加载失败：demo", level: "warning",
+        detail: JSON.stringify({ plugin: "demo", type: "load", message: "入口不存在", path: "D:\\plugin" }, null, 2),
+      }],
+      ["notice", {
+        id: "mcp-server-docs", text: "MCP 服务未连接：docs（needs-auth）", level: "warning",
+        detail: JSON.stringify({ name: "docs", status: "needs-auth", source: "project" }, null, 2),
+      }],
+    ]);
+  });
+
+  it("task_updated 使用任务稳定 ID 更新中文状态和完整 patch", async () => {
+    const log = await noticeSession([
+      { type: "system", subtype: "task_updated", task_id: "task-9", patch: { status: "running", description: "整理资料" } },
+      { type: "system", subtype: "task_updated", task_id: "task-9", patch: { status: "failed", description: "整理资料", error: "磁盘不可写", total_paused_ms: 12 } },
+    ]);
+    expect(log).toEqual([
+      ["notice", {
+        id: "task-task-9", text: "任务执行中：整理资料", level: "info",
+        detail: JSON.stringify({ status: "running", description: "整理资料" }, null, 2),
+      }],
+      ["notice", {
+        id: "task-task-9", text: "任务失败：整理资料", level: "warning",
+        detail: JSON.stringify({ status: "failed", description: "整理资料", error: "磁盘不可写", total_paused_ms: 12 }, null, 2),
+      }],
+    ]);
+  });
+
+  it("stderr 每行进入用户可见记录，同时仍写桥接诊断日志", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const q = fakeQuery([]);
+      const ev = stubEvents();
+      const s = createClaudeSession(".", { permissionMode: "auto", queryFn: q.fn, events: ev });
+      const stderr = q.calls[0]!.options.stderr as (line: string) => void;
+      stderr("MCP server disconnected");
+      expect(ev.log).toContainEqual(["notice", {
+        id: "cli-stderr-1", text: "CLI 错误输出：MCP server disconnected", level: "warning", detail: "MCP server disconnected",
+      }]);
+      expect(error).toHaveBeenCalledWith("[claude-stderr]", "MCP server disconnected");
+      await s.close();
+    } finally {
+      error.mockRestore();
+    }
+  });
+
+  it("UserDialog 只声明已适配 kind，并返回 CLI 真实 completed/cancelled 结果", async () => {
+    const q = fakeQuery([]);
+    const ev = stubEvents();
+    const s = createClaudeSession(".", { permissionMode: "auto", queryFn: q.fn, events: ev });
+    expect(q.calls[0]!.options.supportedDialogKinds).toEqual([
+      "refusal_fallback_prompt", "auto_mode_server_fallback",
+    ]);
+    const onUserDialog = q.calls[0]!.options.onUserDialog as (
+      request: Record<string, unknown>, options: { signal: AbortSignal; requestId: string },
+    ) => Promise<unknown>;
+
+    const refusal = onUserDialog({
+      dialogKind: "refusal_fallback_prompt",
+      payload: {
+        originalModel: "claude-opus-5-5", fallbackModel: "claude-opus-4-8",
+        apiRefusalCategory: "cyber", guidanceText: "可改用回退模型", retractedMessageUuids: [],
+      },
+    }, { signal: new AbortController().signal, requestId: "control-refusal" });
+    expect(ev.log).toContainEqual(["userDialog", expect.objectContaining({
+      requestId: "dialog-control-refusal", kind: "user_dialog",
+      userDialog: expect.objectContaining({
+        dialogKind: "refusal_fallback_prompt", originalModel: "claude-opus-5-5", fallbackModel: "claude-opus-4-8",
+      }),
+    })]);
+    expect(s.respondUserDialog("dialog-control-refusal", { action: "retry_fallback" })).toBe(true);
+    await expect(refusal).resolves.toEqual({ behavior: "completed", result: "retry_fallback" });
+
+    const auto = onUserDialog({
+      dialogKind: "auto_mode_server_fallback",
+      payload: {
+        gatewayHost: "127.0.0.1", title: "自动模式说明",
+        paragraphs: ["分类器请求仍按原方式计费"], helpUrl: "https://example.com/auto-mode",
+      },
+    }, { signal: new AbortController().signal, requestId: "control-auto" });
+    expect(s.respondUserDialog("dialog-control-auto", { action: "interrupt" })).toBe(true);
+    await expect(auto).resolves.toEqual({ behavior: "completed", result: "interrupt" });
+    expect(s.respondUserDialog("dialog-control-auto", { action: "continue" })).toBe(false);
+    await s.close();
+  });
+
+  it("UserDialog 的取消、非法 payload 与关闭都有确定结局和中文记录", async () => {
+    const q = fakeQuery([]);
+    const ev = stubEvents();
+    const s = createClaudeSession(".", { permissionMode: "auto", queryFn: q.fn, events: ev });
+    const onUserDialog = q.calls[0]!.options.onUserDialog as (
+      request: Record<string, unknown>, options: { signal: AbortSignal; requestId: string },
+    ) => Promise<unknown>;
+    await expect(onUserDialog({
+      dialogKind: "auto_mode_server_fallback", payload: { title: "缺字段" },
+    }, { signal: new AbortController().signal, requestId: "bad-dialog" })).resolves.toEqual({ behavior: "cancelled" });
+    expect(ev.log).toContainEqual(["notice", expect.objectContaining({
+      level: "warning", text: expect.stringContaining("对话框结构"),
+    })]);
+
+    const pending = onUserDialog({
+      dialogKind: "refusal_fallback_prompt",
+      payload: { originalModel: "opus", fallbackModel: "sonnet" },
+    }, { signal: new AbortController().signal, requestId: "close-dialog" });
+    await s.close();
+    await expect(pending).resolves.toEqual({ behavior: "cancelled" });
+    expect(ev.log).toContainEqual(["interactionSettled", {
+      requestId: "dialog-close-dialog", outcome: "cancelled", decider: "close",
+    }]);
+  });
+
+  it("MCP form/url elicitation 转发结构化请求并返回真实用户裁决", async () => {
+    const q = fakeQuery([]);
+    const ev = stubEvents();
+    const s = createClaudeSession(".", { permissionMode: "auto", queryFn: q.fn, events: ev });
+    const onElicitation = q.calls[0]!.options.onElicitation as (
+      request: Record<string, unknown>, options: { signal: AbortSignal; requestId: string },
+    ) => Promise<unknown>;
+    const form = onElicitation({
+      serverName: "docs", message: "请填写资料", mode: "form",
+      requestedSchema: {
+        type: "object",
+        properties: {
+          name: { type: "string", title: "姓名", default: "Ada" },
+          role: { type: "string", enum: ["admin", "user"] },
+          enabled: { type: "boolean", default: true },
+          age: { type: "integer" },
+        },
+        required: ["name", "role"],
+      },
+    }, { signal: new AbortController().signal, requestId: "control-form" });
+    expect(ev.log).toContainEqual(["elicitation", expect.objectContaining({
+      requestId: "elicitation-control-form", kind: "elicitation",
+      elicitation: expect.objectContaining({
+        mode: "form", serverName: "docs", message: "请填写资料",
+        fields: [
+          { name: "name", title: "姓名", type: "string", required: true, default: "Ada" },
+          { name: "role", title: "role", type: "string", required: true, enum: ["admin", "user"] },
+          { name: "enabled", title: "enabled", type: "boolean", required: false, default: true },
+          { name: "age", title: "age", type: "integer", required: false },
+        ],
+      }),
+    })]);
+    s.respondElicitation("elicitation-control-form", { action: "accept", content: { name: "Grace", role: "admin", enabled: false, age: 36 } });
+    await expect(form).resolves.toEqual({ action: "accept", content: { name: "Grace", role: "admin", enabled: false, age: 36 } });
+
+    const url = onElicitation({
+      serverName: "docs", message: "请登录", mode: "url", url: "https://example.com/auth?token=secret", elicitationId: "el-1",
+    }, { signal: new AbortController().signal, requestId: "control-url" });
+    expect(ev.log).toContainEqual(["elicitation", expect.objectContaining({
+      requestId: "elicitation-control-url", elicitation: expect.objectContaining({ mode: "url", url: "https://example.com/auth?token=secret" }),
+    })]);
+    s.respondElicitation("elicitation-control-url", { action: "accept" });
+    await expect(url).resolves.toEqual({ action: "accept" });
+    await s.close();
+  });
+
+  it("非法 elicitation URL 和不支持的 schema 安全取消并留下中文原因", async () => {
+    const q = fakeQuery([]);
+    const ev = stubEvents();
+    const s = createClaudeSession(".", { permissionMode: "auto", queryFn: q.fn, events: ev });
+    const onElicitation = q.calls[0]!.options.onElicitation as (
+      request: Record<string, unknown>, options: { signal: AbortSignal; requestId: string },
+    ) => Promise<unknown>;
+    await expect(onElicitation({
+      serverName: "docs", message: "请登录", mode: "url", url: "file:///C:/secret",
+    }, { signal: new AbortController().signal, requestId: "bad-url" })).resolves.toEqual({ action: "cancel" });
+    await expect(onElicitation({
+      serverName: "docs", message: "请填写", mode: "form", requestedSchema: { type: "object", properties: { tags: { type: "array" } } },
+    }, { signal: new AbortController().signal, requestId: "bad-schema" })).resolves.toEqual({ action: "cancel" });
+    expect(ev.log.filter(([kind]) => kind === "notice").map(([, notice]) => (notice as { text: string }).text)).toEqual([
+      "MCP URL 交互已取消：仅支持 http/https 地址",
+      "MCP 表单交互已取消：请求结构包含暂不支持或非法的字段",
+    ]);
+    await s.close();
+  });
+
+  it("elicitation_complete 按服务和 elicitationId 转发完成事实", async () => {
+    const q = fakeQuery([{ type: "system", subtype: "elicitation_complete", mcp_server_name: "docs", elicitation_id: "el-1" }]);
+    const ev = stubEvents();
+    const s = createClaudeSession(".", { permissionMode: "auto", queryFn: q.fn, events: ev });
+    await sleep(30);
+    expect(ev.log).toContainEqual(["elicitationComplete", { serverName: "docs", elicitationId: "el-1" }]);
+    await s.close();
+  });
+
+  it("result 的错误正文、permission_denials 与累计用量不再丢失", async () => {
+    const log = await noticeSession([
+      {
+        type: "result", subtype: "success", is_error: true, result: "API overloaded", session_id: "sid-result",
+        num_turns: 2, duration_ms: 500, duration_api_ms: 400, total_cost_usd: 0.01,
+        usage: { input_tokens: 12, output_tokens: 34 }, modelUsage: { opus: { inputTokens: 12, outputTokens: 34 } },
+        permission_denials: [{ tool_name: "Write", tool_use_id: "toolu-result-deny", tool_input: { file_path: "a.txt" } }],
+      },
+    ]);
+    expect(log).toEqual([
+      ["notice", {
+        text: "操作未获批准：Write", level: "warning", toolUseId: "toolu-result-deny",
+        detail: JSON.stringify({ file_path: "a.txt" }, null, 2),
+      }],
+      ["notice", {
+        text: "用量：输入 12 · 输出 34 tokens；模型往返 2 次；累计费用估算 $0.0100", level: "info",
+        detail: JSON.stringify({
+          usage: { input_tokens: 12, output_tokens: 34 }, modelUsage: { opus: { inputTokens: 12, outputTokens: 34 } },
+          total_cost_usd: 0.01, num_turns: 2, duration_ms: 500, duration_api_ms: 400,
+        }, null, 2),
+      }],
+      ["error", "API overloaded"],
+    ]);
   });
 });

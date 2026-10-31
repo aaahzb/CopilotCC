@@ -14,6 +14,39 @@
 - [x] Task 12: page-extract.ts + UI 组件 + App 装配
 - [ ] Task 13: 端到端手动验收 + README.md
 
+## 会话交互与 CMD 可见信息完整性（2026-10-31，已完成）
+
+目标：非技术用户无需 CMD 也能完成 Claude Code 的选择、审批与计划流程；CMD 会话中用户可见的文字、选择结果和状态均进入插件中文时间线。关键结果直接显示，长输出、diff、原始参数等完整折叠，不静默丢弃。
+
+- [x] Task 0：真实 CLI 探针与 CMD 可见信息基线；覆盖计划模式、Ask 扩展字段、工具结果、UserDialog、MCP elicitation 和实际能力清单。
+- [x] Task 1：共享 TimelineItem / InteractionRequest / InteractionRecord；Map 并发挂起、统一 settle、迟到响应与快照一致性。
+- [x] Task 2：Ask 作答结果和权限裁决持久显示；双视图、重载、历史恢复与完整详情。
+- [x] Task 3：CC 实际 permissionMode、ExitPlanMode 专用审批、完整计划与退回反馈；空审批回调按 toolUseId 恢复完整输入。
+- [x] Task 4：工具结果、错误、运行状态、正文与工具真实顺序；长内容折叠不截断，Edit structuredPatch 实时/历史均恢复完整 diff。
+- [x] Task 5：历史分页、完整正文、在途快照与转录/侧车去重合并；工具执行和交互决定不再互相覆盖。
+- [x] Task 6：UserDialog、MCP form/url elicitation 专用流程；未适配的 requiresUserInteraction 工具安全拒绝，未实测能力明确标边界。
+- [x] Task 7：README/TODO、全量测试/typecheck/selftest/build、隔离 exe + 本机假上游 + 双 WS + 真实 Chrome 验收。
+- [x] 全程不调用真实 API，不停止或替换 Desktop 当前桥接，不自动 commit/push/tag。
+
+最终自动验证（2026-10-31）：
+
+- [x] 桥接 16 个测试文件、290/290 项通过；扩展 19 个测试文件、146/146 项通过；两端 TypeScript typecheck 通过。
+- [x] 桥接离线 selftest 通过，未调用真实 claude/API；扩展 production build 通过，仅有既有的大 chunk 警告。
+- [x] Windows x64 与 macOS arm64 exe 构建通过：`bridge/dist/ccc-bridge-win-x64/ccc-bridge.exe`、`bridge/dist/ccc-bridge-darwin-arm64/ccc-bridge`。
+- [x] Ask 真实 Chrome 最终验收：多题、单选、多选、Other 和自定义答案在 A/B 双视图及重载后完整保留，无多余通用工具活动，runtimeErrors=[]；`D:/ccc-fast-final-verify-20261026/tool-history-20261027/exe-chrome-ask-1793386528176/ask-chrome-result.json`。
+- [x] refusal UserDialog 真实 Chrome 验收：实际选择持续显示，A/B、重载及同端口桥接重启恢复通过，内部安全分类器说明未冒充用户气泡，360px 无横向溢出；`D:/ccc-fast-final-verify-20261026/tool-history-20261027/exe-chrome-user-dialog-1793385765156/user-dialog-chrome-result.json`。
+- [x] 工具详情/错误/分页真实 Chrome 验收：120 行长输出完整、Edit diff 实时/A/B/重载后完整、Read 失败状态和错误详情可见、加载更早记录不重复不丢最新，runtimeErrors=[]；`D:/ccc-fast-final-verify-20261026/tool-history-20261027/exe-chrome-tool-details-1793390063402`。
+- [x] 计划/权限真实 Chrome 验收：两份计划分别退回和批准，完整计划、planFilePath、反馈和实际模式正确；Write 拒绝无副作用、允许真实写入，正文→工具→决定→正文顺序及重载恢复通过，手动拒绝显示「操作未获批准」，runtimeErrors=[]；`D:/ccc-fast-final-verify-20261026/tool-history-20261027/exe-chrome-plan-permission-1793390189374`。
+- [x] MCP 真实 CLI 原始控制通道探针：form/url elicitation 均出现，url 后续收到 elicitation_complete，errors=[]、exitCode=0；`D:/ccc-fast-final-verify-20261026/tool-history-20261027/task0-raw-elicitation-1793370963300/summary.json`。
+- [x] compact summary 与 Task 报告修复：内部压缩摘要不再冒充用户消息或污染会话标题；同一压缩的实时/转录记录按同文案和 1 秒事件窗口合并，相隔 60 秒的同文案压缩不误去重。实时及历史 Task 长报告均只显示任务状态，完整报告与元数据默认折叠；历史只认 `turnOrigin` / `origin.kind` 内部标记，用户手输相似 XML 仍保留用户气泡。新增测试均先取得有效 RED 再转 GREEN。
+- [x] compact/Task 首轮真实 Chrome 验收：新 dist exe + 真实 CLI + 本机假上游，A/B 双视图在实时及原生重载后均只有一条压缩记录，摘要不冒充用户或普通助手气泡，Task 报告默认折叠且可展开，压缩后普通问答正常，runtimeErrors=[]；截图与 `result.json`（ok=true）位于 `D:/ccc-fast-final-verify-20261026/tool-history-20261027/exe-chrome-compact-task-1793420519941`。
+- [x] 摘要完整保留、旧 Task 读取迁移与斜杠命令修复（2026-10-31）：compact summary 通过 `summary.uuid` 与 boundary 的 `compactMetadata.preservedSegment.anchorUuid` 精确关联，完整摘要进入对应记录的默认折叠详情；实时完成帧复用同一转录关联，不再只有重载历史才能看摘要。旧版侧车长 Task 报告在读取合并后规范化，原文与旧元数据均保留且不改写用户历史文件。扩展在网页附带开启时仍把 `/compact` 原文交给 CLI，跳过页面、选中文字、上传说明、`[用户问题]` 与防注入包装；首条斜杠命令不消费 `guardPending`，下一条普通消息仍加防护前缀。
+- [x] 本轮有效 RED：新增实时压缩服务器测试先因 `detail` 为 `undefined` 失败，再修改 `server.ts` 转 GREEN；真实 Chrome 首轮也复现实时记录无摘要详情，修复后实时与重载均通过。普通消息、首条斜杠命令与后续防注入、旧 Task 读取迁移均有对应回归测试。
+- [x] 最终真实 Chrome 验收：真实扩展 UI 在 `attachEnabled:true`、页面正文与选中文字同时存在时发送普通消息、`/compact` 和压缩后普通消息；`/compact` 的实际发送原文只有 `/compact`，普通消息仍完整附带网页。A/B 双视图实时及重载后各只有一条压缩记录，详情默认折叠且含完整摘要，摘要不在用户或普通助手气泡；旧侧车长 Task 重载后显示短状态与完整折叠报告，压缩后问答正常，runtimeErrors=[]。截图与 `result.json`（ok=true）位于 `D:/ccc-fast-final-verify-20261026/tool-history-20261027/exe-chrome-compact-attach-1793437701125`。
+- [x] 真实旧会话只读复查：生产解析器读取 `D--CopilotCC-Dir/c2cd9cfd-4dab-4e5c-822f-eff3692438b6` 共 273 项，4 次压缩均有关联摘要详情（长度 11572、11845、14497、9207），compact summary 作为用户消息的数量为 0；旧 `task-ab15aabdc55bfc5d5` 已迁移为短状态，3071 字完整报告进入详情。未改写真实转录或侧车。
+- [ ] 未验证边界：auto_mode_server_fallback 仅完成契约/单元链路，未触发真实 CLI 回调 E2E；MCP form/url 尚未完成真实 Chrome 人工填写/提交完整 E2E；当前 init.tools 未启用的 OfferChromeSetup、ShowOnboardingRolePicker、PublishPlugin、ProposeGoal、ProposeSkills 没有专用实现或真实 E2E。没有独立 EnterPlanMode 卡片，实际模式由 CC init/status 真值显示；最终 Chrome 验收未单独触发 EnterPlanMode 工具回调。
+- [x] 测试环境记录：桥接首次全量运行曾在 server.test.ts 的在线改端口用例出现一次 `TypeError: fetch failed` / `bad port`（278/279）；该用例定向复跑及桥接全量复跑均通过，未修改产品代码。此为未再现的瞬时失败，不能宣称根因已定位或已修复。
+
 ## 原生 fast 模式（2026-10-26，进行中）
 
 - [x] 协议：原生 fast 类型、settings.set/state/error、fields 显式变更掩码与同步测试（20 个协议测试通过）。
@@ -48,7 +81,7 @@
 - [x] TDD：桥接协议 +1、会话 +4（start/done 归并/失败裸发/超时裸发/close 清挂起）、镜像 +1（广播+快照）；扩展 format +4（compactRecordText 成功/无元数据/失败/负率省略）、App +4（start 提示、done 记录行、sync 快照提示、断线清除）。类型级协议变更以 npm run typecheck 的 TS2322 作为有效 RED（vitest 剥离类型不产生运行时 RED）。
 - [x] 回归：桥接 202/202（196+6）、扩展 97/97（89+8）全绿，两端 typecheck 干净，桥接 selftest 通过；bridge exe 与扩展均已重建。
 - [x] 真实全链探针：dist exe（隔离 CCC_BRIDGE_HOME/CLAUDE_CONFIG_DIR）+ 真 CLI 2.1.301 + 本机假上游 + CDP Extensions.loadUnpacked 真 Chrome，COMPACT_PROBE_RESULT ok=true、状态栏提示曾出现（MutationObserver 预装标记防百毫秒级小会话闪现错过）、记录行"🗜 已压缩上下文 3 → 879 tokens"、frames=[start, done{success, preTokens:3, postTokens:879, durationMs:12}]、runtimeErrors 为空。探针脚本在获批目录 D:/ccc-fast-final-verify-20261026/tool-history-20261027。
-- [x] 实测纠偏（2026-10-30 用户反馈）：插件聊天框发 /compact 不会触发压缩，被当普通正文处理；探针手写 stream-json 帧能触发不代表 CopilotCC 完整链路也能。README 已去掉 /compact 触发表述。
+- [x] 实测纠偏（2026-10-30 用户反馈，2026-10-31 已修复）：当时插件聊天框发 `/compact` 会被附加网页内容而不能按命令执行，证明探针手写 stream-json 帧不代表 CopilotCC 完整链路可用。现已在真实扩展 UI、网页附带开启且有选中文字的路径验证命令原文直达 CLI，并保留后续普通消息的防注入前缀；最终验收记录见上方。
 - [x] 历史持久化（2026-10-30 用户要求）：transcript.ts 解析 compact_boundary 条目，按原顺序回放为无 toolName 的 tool 记录行，文案与实时同口径（compactBoundaryText 独立实现），扩展零改动。真实转录复读：当前会话 2000 条消息窗口解析出 28 条压缩行（169k → 33k（-80%）等），每条位置紧跟压缩后续聊消息。新增 3 用例（顺序回放/缺元数据/负率省略百分比）。
 - [x] 输入框拖拽调高（2026-10-30 用户反馈原生右下角手柄反人类）：textarea 原生 resize 手柄停用，改为消息列表与输入区交界处的 5px 拖拽带（hover 上下箭头光标 + 灰带提示），向上拖增大、向下缩小，下限 40px、上限窗口高 60%；拖拽过才受控（默认 rows=3 外观不变），高度不持久化（与原生 resize 行为一致）。新增 3 用例（手柄与 CSS/上下拖与松开停跟/下限）。
 - [x] 回归：桥接 205/205（202+3）、扩展 100/100（97+3），两端 typecheck 干净，bridge exe 与扩展均已重建。

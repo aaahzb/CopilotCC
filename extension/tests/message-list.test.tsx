@@ -68,9 +68,47 @@ describe("MessageList 工具活动行", () => {
     expect(summaryRule.replaceAll(" ", "")).toContain("text-overflow:ellipsis");
   });
 
-  it("没有 toolName 的附带状态行保留原 clickable 行为", () => {
-    const host = mount([{ id: "attach", role: "tool", text: "📄 已附带页面全文", sentText: "完整内容" }]);
-    expect(host.querySelector(".tool-activity")).toBeNull();
-    expect(host.querySelector(".tool-card.clickable")?.textContent).toContain("📄 已附带页面全文");
+  it("前插更早历史后保持原滚动位置，不因用户消息数增加而贴底", () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    roots.push(root);
+    const latest: UiMsg[] = [
+      { id: "m-3", role: "user", text: "问题 3" },
+      { id: "m-4", role: "assistant", text: "回答 4" },
+    ];
+    act(() => root.render(<MessageList messages={latest} streaming={null} hasOlderHistory loadingOlder={false} onLoadOlder={() => {}} />));
+    const list = host.querySelector<HTMLDivElement>(".message-list")!;
+    let scrollHeight = 1000;
+    Object.defineProperty(list, "scrollHeight", { configurable: true, get: () => scrollHeight });
+    Object.defineProperty(list, "clientHeight", { configurable: true, get: () => 200 });
+    list.scrollTop = 400;
+    act(() => list.dispatchEvent(new Event("scroll")));
+    act(() => host.querySelector<HTMLButtonElement>(".history-more")!.click());
+    scrollHeight = 1400;
+    const withOlder: UiMsg[] = [
+      { id: "m-1", role: "user", text: "问题 1" },
+      { id: "m-2", role: "assistant", text: "回答 2" },
+      ...latest,
+    ];
+    act(() => root.render(<MessageList messages={withOlder} streaming={null} hasOlderHistory={false} loadingOlder={false} onLoadOlder={() => {}} />));
+    expect(list.scrollTop).toBe(800);
+    act(() => root.render(<MessageList messages={withOlder} streaming="继续生成" hasOlderHistory={false} loadingOlder={false} onLoadOlder={() => {}} />));
+    expect(list.scrollTop).toBe(800);
+  });
+
+  it("Task 状态直接显示，完整子代理报告默认折叠且可展开", () => {
+    const report = "## 调查结果\n\n完整子代理报告，不是用户发言。";
+    const host = mount([{
+      id: "task-long", role: "tool", text: "任务已完成：task-long", detail: report,
+    }]);
+    const card = host.querySelector(".tool-card")!;
+    const details = card.querySelector<HTMLDetailsElement>("details.status-detail")!;
+    expect(card.textContent).toContain("任务已完成：task-long");
+    expect(host.querySelector(".msg.user")).toBeNull();
+    expect(details.open).toBe(false);
+    expect(details.querySelector("pre")?.textContent).toBe(report);
+    act(() => { details.open = true; });
+    expect(details.open).toBe(true);
   });
 });

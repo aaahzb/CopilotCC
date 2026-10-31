@@ -85,6 +85,12 @@ describe("InputBox 原生 fast 与实际执行状态", () => {
     expect(html).toContain("■ 停止");
   });
 
+  it("实际权限模式独立于请求下拉显示，plan 不会篡改请求值", () => {
+    const host = mount({ permissionMode: "auto", actualPermissionMode: "plan" });
+    expect(host.querySelector(".permission-runtime")?.textContent).toBe("当前：计划模式");
+    expect(host.querySelector<HTMLSelectElement>('select[title="权限模式"]')?.value).toBe("auto");
+  });
+
   it("执行选项保持单行，effort 入口与 fast 真值位于下方状态组", () => {
     const host = mount();
     const toggles = host.querySelector(".toggles")!;

@@ -1,10 +1,10 @@
 import React, { useEffect, useRef, useState } from "react";
 import { BridgeClient, type ConnState } from "../../lib/ws-client";
 import { loadSettings, saveSettings, pushFolderHistory, takePendingQuote, loadRuntimeCache, saveRuntimeCache, clearRuntimeCache, type ExtSettings, type RuntimeCache } from "../../lib/storage";
-import { decideAttach, composeMessage, deriveAttachKind, PAGE_RICHNESS_CAPS, type PageSnapshot } from "../../lib/attach-policy";
+import { decideAttach, composeMessage, deriveAttachKind, isCliSlashCommand, PAGE_RICHNESS_CAPS, type PageSnapshot } from "../../lib/attach-policy";
 import type { PendingUpload } from "../../lib/upload-files";
 import { snapshotActiveTab, snapshotTab } from "../../lib/page-extract";
-import type { ServerMessage, PermissionModeSetting, SessionInfo, AliasInfo, AskRequest } from "../../lib/protocol";
+import type { ServerMessage, PermissionModeSetting, SessionInfo, AliasInfo, AskRequest, InteractionRequest, InteractionRecord, TimelineItem } from "../../lib/protocol";
 import type { PairingInfo } from "../../lib/pairing";
 import { TokenGate } from "../../components/TokenGate";
 import { AliasBar } from "../../components/AliasBar";
@@ -14,6 +14,8 @@ import { shortModelName, compactRecordText } from "../../lib/format";
 import { hasExecutionSettingsChange, mergeDoneRuntime, mirrorExecutionSettings, runtimeFromSettingsState, toFastSettingsSet, toSettingsSet, type ExecutionSettingsPatch } from "../../lib/settings-sync";
 import { PermissionCard } from "../../components/PermissionCard";
 import { AskCard } from "../../components/AskCard";
+import { ElicitationCard } from "../../components/ElicitationCard";
+import { UserDialogCard } from "../../components/UserDialogCard";
 import { shouldResetConversation } from "../../lib/conversation-state";
 
 /**
@@ -26,6 +28,39 @@ function aliasHue(aliasId: string | null): number {
   let h = 0;
   for (let i = 0; i < aliasId.length; i++) h = (h * 31 + aliasId.charCodeAt(i)) | 0;
   return Math.abs(h) % 360;
+}
+
+/** 历史/实时/快照共用 upsert：工具执行与交互决定各占一行；同类记录再按请求或 toolUseId 合并。 */
+function upsertUiMessage(current: UiMsg[], item: UiMsg): UiMsg[] {
+  const index = current.findIndex((old) => {
+    if (item.interaction) {
+      return old.interaction?.requestId === item.interaction.requestId ||
+        Boolean(item.interaction.toolUseId && old.interaction?.toolUseId === item.interaction.toolUseId);
+    }
+    return Boolean(item.toolUseId && !old.interaction && old.toolUseId === item.toolUseId) || old.id === item.id;
+  });
+  if (index < 0) return [...current, item];
+  const old = current[index]!;
+  const oldFinal = old.toolStatus === "success" || old.toolStatus === "error";
+  const next = [...current];
+  next[index] = {
+    ...old, ...item, id: old.id,
+    interaction: item.interaction ?? old.interaction,
+    toolInput: item.toolInput ?? old.toolInput,
+    toolOutput: item.toolOutput ?? old.toolOutput,
+    toolStatus: oldFinal && (item.toolStatus === "running" || item.toolStatus === "unknown")
+      ? old.toolStatus : item.toolStatus ?? old.toolStatus,
+  };
+  return next;
+}
+
+/** 在途协议项转界面消息；用户附带标记缺失时从实际发送内容推导。 */
+function timelineUiMessage(item: TimelineItem): UiMsg {
+  return {
+    ...item,
+    ...(item.role === "user" && !item.attachKind && item.sentText
+      ? { attachKind: deriveAttachKind(item.sentText) } : {}),
+  };
 }
 
 /**
@@ -42,6 +77,7 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
   const [settingsError, setSettingsError] = useState(""); // 原生设置应用失败：只提示设置区，不终结聊天轮次
   const [conn, setConn] = useState<ConnState>("connecting");
   const [compactSince, setCompactSince] = useState<number | null>(null); // 压缩开始时刻；null=未在压缩
+  const [requesting, setRequesting] = useState(false); // CC 等待 API 响应；快照可恢复，不写永久历史
   const [compactTick, setCompactTick] = useState(0); // 每秒 +1 触发重渲染以刷新秒数
   useEffect(() => {
     if (compactSince === null) return;
@@ -53,10 +89,16 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
   const [bound, setBound] = useState<string | null>(null);
   const [resumed, setResumed] = useState(false);
   const [messages, setMessages] = useState<UiMsg[]>([]);
+  const [historyCursor, setHistoryCursor] = useState<string | null>(null);
+  const [hasOlderHistory, setHasOlderHistory] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const historyRequestRef = useRef<string | null>(null); // 仅允许一个分页请求；换会话后作废旧应答
   const [streaming, setStreaming] = useState<string | null>(null);
+  const streamingRef = useRef<string | null>(null); // WS 回调同步读取当前分段，工具/错误落地时不丢字
   const [busy, setBusy] = useState(false); // 一轮生成进行中（chat.user 起，done/error/aborted/断线/换会话止）：发送键变为停止键
-  const [permReq, setPermReq] = useState<{ requestId: string; tool: string; detail: string } | null>(null);
-  const [askReq, setAskReq] = useState<AskRequest | null>(null); // CC 挂起提问；桥接快照/广播为真源
+  const [permReqs, setPermReqs] = useState<Array<InteractionRequest & { tool: string; detail: string }>>([]);
+  const [askReqs, setAskReqs] = useState<AskRequest[]>([]); // 并发挂起提问；桥接 Map/快照为真源
+  const [interactionReqs, setInteractionReqs] = useState<InteractionRequest[]>([]); // MCP/CLI 独立交互；不使用普通权限卡
   const [sessionId, setSessionId] = useState<string | null>(null); // 当前会话 ID（folder.bound/session.list.data 携带或 chat.done 推送）
   const [runtime, setRuntime] = useState<RuntimeCache>({}); // CC 回报的实际模型/effort/fast；与请求设置分离并跨重载缓存
   const [forceAttach, setForceAttach] = useState(false); // 本次强制看页面（下一条消息强制附带全文；compact 后自动续一轮）
@@ -93,6 +135,25 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
     void saveRuntimeCache(next);
   }
 
+  /** 同步替换流式分段的 ref 与渲染值。 */
+  function replaceStreaming(value: string | null): void {
+    streamingRef.current = value;
+    setStreaming(value);
+  }
+
+  /** 取出并清除当前流式分段；调用方把它按真实事件顺序落到消息列表。 */
+  function takeStreaming(): string | null {
+    const value = streamingRef.current;
+    replaceStreaming(null);
+    return value;
+  }
+
+  /** 按请求或底层 toolUseId upsert，合并历史与实时记录时保留原消息位置。 */
+  function appendInteractionRecord(record: InteractionRecord): void {
+    const item: UiMsg = { id: `interaction-${record.requestId}`, role: "tool", text: "", interaction: record };
+    setMessages((current) => upsertUiMessage(current, item));
+  }
+
   /** 处理桥接消息 */
   function onServerMessage(m: ServerMessage): void {
     switch (m.type) {
@@ -109,9 +170,17 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
         if (shouldResetConversation(m, prevFolderRef.current, prevBoundSidRef.current)) {
           // 主动 reset 或换绑：清消息、流式、busy 与运行时缓存
           setMessages([]);
-          setStreaming(null);
+          setHistoryCursor(null);
+          setHasOlderHistory(false);
+          setLoadingOlder(false);
+          historyRequestRef.current = null;
+          replaceStreaming(null);
           setBusy(false); // 旧会话的进行轮随切换作废，其收尾帧不再属于当前界面
+          setPermReqs([]);
+          setAskReqs([]);
+          setInteractionReqs([]);
           setCompactSince(null); // 旧会话的压缩提示一并清除
+          setRequesting(false); // 旧会话的请求中提示一并清除
           commitRuntime({}); // 主动换文件夹/会话后旧实际值失效；初次快照不在此清缓存
         }
         prevFolderRef.current = m.path;
@@ -126,17 +195,38 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
       case "folder.error":
         setMessages((ms) => [...ms, { id: crypto.randomUUID(), role: "assistant", text: `⚠️ ${m.message}` }]);
         break;
-      case "session.history.data":
-        // 回放消息带 sentText/attachKind：重载前后显示行为一致（气泡只显示问题，完整发送内容右键可溯源）
-        setMessages(m.messages.map((h) => ({
-          id: crypto.randomUUID(),
+      case "session.history.data": {
+        // 旧分页应答不属于换会话后的界面；最新快照（无 before）仍按原协议整页替换。
+        if (m.before !== undefined && historyRequestRef.current !== m.before) break;
+        // 回放消息带 sentText/attachKind：重载前后显示行为一致；稳定 ID 供分页与实时记录去重。
+        const items: UiMsg[] = m.messages.map((h) => ({
+          id: h.id ?? crypto.randomUUID(),
           role: h.role,
-          toolName: h.toolName, // 历史工具与实时 chat.tool 共用同一活动行渲染
+          toolName: h.toolName,
           text: h.text,
           sentText: h.sentText,
           attachKind: h.attachKind,
-        })));
+          interaction: h.interaction,
+          toolUseId: h.toolUseId,
+          toolStatus: h.toolStatus,
+          toolInput: h.toolInput,
+          toolOutput: h.toolOutput,
+          detail: h.detail,
+        }));
+        if (m.before !== undefined) {
+          setMessages((current) => {
+            const existing = new Set(current.map((item) => item.id));
+            return [...items.filter((item) => !existing.has(item.id)), ...current];
+          });
+          historyRequestRef.current = null;
+          setLoadingOlder(false);
+        } else {
+          setMessages(items);
+        }
+        setHistoryCursor(m.nextCursor ?? null);
+        setHasOlderHistory(m.hasMore === true && typeof m.nextCursor === "string");
         break;
+      }
       case "session.list.data":
         setSessions(m.sessions);
         setSessionId(m.currentId);
@@ -174,11 +264,39 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
         snapshotPhaseRef.current = false;
         setBusy(m.busy);
         setCompactSince(m.compacting ? Date.now() : null); // 快照权威：接入时刻近似起算秒数
-        setStreaming(m.busy ? m.streamText : null); // 续播在途流式（空串 = 等首帧 delta，气泡已在）
-        setPermReq(m.permReq);
-        setAskReq(m.askReq);
+        setRequesting(m.requesting === true); // 旧桥没有此字段时按 false 处理
+        if (m.timeline !== undefined) {
+          const items = [...m.timeline];
+          let stream: string | null = null;
+          const last = items[items.length - 1];
+          if (m.busy && last?.role === "assistant") {
+            stream = last.text;
+            items.pop(); // 活跃分段交给 streaming，后续 delta 从快照文本继续而不是重复上屏
+          }
+          replaceStreaming(stream);
+          setMessages((current) => items.reduce(
+            (next, item) => upsertUiMessage(next, timelineUiMessage(item)),
+            current,
+          ));
+        } else {
+          replaceStreaming(m.busy ? m.streamText : null); // 旧桥兼容：只有单段流式快照
+        }
+        if (m.pendingInteractions !== undefined) {
+          setPermReqs(m.pendingInteractions
+            .filter((r) => r.kind === "permission" || r.kind === "exit_plan")
+            .map((r) => ({ ...r, tool: r.tool ?? "ExitPlanMode", detail: r.detail ?? "" })));
+          setAskReqs(m.pendingInteractions
+            .filter((r): r is InteractionRequest & { questions: NonNullable<InteractionRequest["questions"]> } => r.kind === "ask" && Array.isArray(r.questions))
+            .map((r) => ({ requestId: r.requestId, questions: r.questions })));
+          setInteractionReqs(m.pendingInteractions.filter((r) => r.kind === "elicitation" || r.kind === "user_dialog"));
+        } else {
+          setPermReqs(m.permReq ? [{ ...m.permReq, kind: "permission" }] : []);
+          setAskReqs(m.askReq ? [m.askReq] : []);
+          setInteractionReqs([]);
+        }
+        for (const record of m.interactions ?? []) appendInteractionRecord(record);
         if (!composingRef.current) setDraft(m.draft);
-        const u = m.user;
+        const u = m.timeline === undefined ? m.user : null; // 新协议的用户气泡已包含在 timeline 中
         if (u) {
           // 在途轮的用户气泡未落盘（历史回放没有），靠快照补齐
           setMessages((ms) => [...ms, { id: crypto.randomUUID(), role: "user", text: u.display, sentText: u.sent, attachKind: deriveAttachKind(u.sent) }]);
@@ -193,12 +311,46 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
       case "chat.draft":
         if (!composingRef.current) setDraft(m.text); // 输入法组合中不顶字
         break;
-      case "chat.delta":
-        setStreaming((s) => (s ?? "") + m.text);
+      case "chat.delta": {
+        const next = (streamingRef.current ?? "") + m.text;
+        replaceStreaming(next);
         break;
-      case "chat.tool":
-        // 工具名与摘要分开传递，由 MessageList 渲染分类图标和非气泡活动行
-        setMessages((ms) => [...ms, { id: crypto.randomUUID(), role: "tool", toolName: m.name, text: m.summary }]);
+      }
+      case "chat.tool": {
+        // 工具到来先落定前一段正文；后续 delta 形成新分段，保持“正文→工具→正文”顺序
+        const text = takeStreaming();
+        setMessages((ms) => {
+          const next: UiMsg[] = [...ms, ...(text ? [{ id: crypto.randomUUID(), role: "assistant" as const, text }] : [])];
+          const item: UiMsg = {
+            id: m.toolUseId ? `tool-${m.toolUseId}` : crypto.randomUUID(),
+            role: "tool", toolName: m.name, text: m.summary, toolUseId: m.toolUseId,
+            toolStatus: m.status, toolInput: m.input, toolOutput: m.output,
+          };
+          const index = m.toolUseId ? next.findIndex((old) => !old.interaction && old.toolUseId === m.toolUseId) : -1;
+          if (index < 0) return [...next, item];
+          const old = next[index]!;
+          next[index] = {
+            ...old, ...item, id: old.id,
+            toolInput: m.input ?? old.toolInput,
+            toolOutput: m.output ?? old.toolOutput,
+          };
+          return next;
+        });
+        break;
+      }
+      case "chat.timeline": {
+        // 状态发生在当前正文之后时先落定该分段；快照中的同 ID 项只合并、不重复追加
+        const text = takeStreaming();
+        setMessages((current) => {
+          const next = text
+            ? [...current, { id: crypto.randomUUID(), role: "assistant" as const, text }]
+            : current;
+          return upsertUiMessage(next, timelineUiMessage(m.item));
+        });
+        break;
+      }
+      case "chat.requesting":
+        setRequesting(m.requesting);
         break;
       case "chat.compact":
         if (m.phase === "start") {
@@ -208,7 +360,10 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
           const meta = m.preTokens !== undefined || m.postTokens !== undefined ? { preTokens: m.preTokens, postTokens: m.postTokens } : null;
           const text = compactRecordText(m.result, m.error, meta);
           // role:"tool" 无 toolName → 复用既有附带状态行渲染（紧凑灰行、非气泡），MessageList 零改动
-          setMessages((ms) => [...ms, { id: crypto.randomUUID(), role: "tool", text }]);
+          // 新桥已由 chat.timeline 上屏；旧桥没有 recorded 标记时才在本帧补记录
+          if (!m.recorded) {
+            setMessages((ms) => upsertUiMessage(ms, { id: crypto.randomUUID(), role: "tool", text }));
+          }
         }
         break;
       case "settings.state": {
@@ -227,52 +382,74 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
       case "settings.error":
         setSettingsError(m.message); //  busy 与聊天消息完全不动
         break;
-      case "chat.done":
+      case "chat.done": {
         setBusy(false);
+        setRequesting(false);
         setSessionId(m.sessionId);
         prevBoundSidRef.current = m.sessionId;
         // chat.done 可只携带 fast 或 effort：逐字段合并，缺字段保留最近真值，不再以 model 存在为前提
         commitRuntime(mergeDoneRuntime(runtimeRef.current, m));
         setForceAttach(m.compacted === true); // compact 后下一轮强制带页面（上下文里的页面内容已被压缩掉）
-        setStreaming((s) => {
-          if (s) setMessages((ms) => [...ms, { id: crypto.randomUUID(), role: "assistant", text: s }]);
-          return null;
-        });
+        const text = takeStreaming();
+        if (text) setMessages((ms) => [...ms, { id: crypto.randomUUID(), role: "assistant", text }]);
         break;
-      case "chat.error":
+      }
+      case "chat.error": {
         setBusy(false);
+        setRequesting(false);
         setCompactSince(null); // 轮次异常终结：压缩提示不悬挂
-        setStreaming(null);
+        const text = takeStreaming();
         setForceAttach(false); // 本轮异常结束：强制附带随之失效
-        setMessages((ms) => [...ms, { id: crypto.randomUUID(), role: "assistant", text: `⚠️ ${m.message}` }]);
+        setMessages((ms) => [
+          ...ms,
+          ...(text ? [{ id: crypto.randomUUID(), role: "assistant" as const, text }] : []),
+          ...(m.recorded ? [] : [{ id: crypto.randomUUID(), role: "assistant" as const, text: `⚠️ ${m.message}` }]),
+        ]);
         break;
+      }
       case "chat.aborted":
         // 手动停止：已生成的部分文字保留为正式气泡，另加停止标记（对齐 CLI 按 ESC 的观感）
         setBusy(false);
+        setRequesting(false);
         setCompactSince(null); // 中止时压缩中提示一并取消（压缩帧随旧轮作废）
         setForceAttach(false); // 本轮被中止：强制附带随之失效
-        setPermReq(null); // 中止时挂起的审批卡片一并取消（桥接已按拒绝释放）
-        setAskReq(null); // 提问同样由桥接按未作答释放
-        setStreaming((s) => {
-          setMessages((ms) => [
+        setPermReqs([]); // 中止时挂起的审批卡片一并取消（桥接已按拒绝释放）
+        setAskReqs([]); // 提问同样由桥接按未作答释放
+        setInteractionReqs([]); // MCP 请求由桥接安全取消并广播只读结局
+        const text = takeStreaming();
+        setMessages((ms) => [
             ...ms,
-            ...(s ? [{ id: crypto.randomUUID(), role: "assistant" as const, text: s }] : []),
-            { id: crypto.randomUUID(), role: "assistant" as const, text: "⏹ 已手动停止本轮生成" },
+            ...(text ? [{ id: crypto.randomUUID(), role: "assistant" as const, text }] : []),
+            ...(m.recorded ? [] : [{ id: crypto.randomUUID(), role: "assistant" as const, text: "⏹ 已手动停止本轮生成" }]),
           ]);
-          return null;
-        });
         break;
       case "permission.request":
-        setPermReq({ requestId: m.requestId, tool: m.tool, detail: m.detail });
+        setPermReqs((current) => [
+          ...current.filter((r) => r.requestId !== m.requestId),
+          { ...m, kind: m.kind ?? "permission" },
+        ]);
         break;
       case "permission.resolved":
-        setPermReq(null); // 任一视图已裁决（含本视图，幂等）
+        setPermReqs((current) => current.filter((r) => r.requestId !== m.requestId));
+        if (m.record) appendInteractionRecord(m.record);
         break;
       case "chat.ask":
-        setAskReq({ requestId: m.requestId, questions: m.questions });
+        setAskReqs((current) => [...current.filter((r) => r.requestId !== m.requestId), { requestId: m.requestId, questions: m.questions }]);
         break;
       case "chat.ask.resolved":
-        setAskReq(null); // 任一视图已作答（含本视图，幂等）
+        setAskReqs((current) => current.filter((r) => r.requestId !== m.requestId));
+        if (m.record) appendInteractionRecord(m.record);
+        break;
+      case "chat.interaction":
+        if (m.request.kind === "elicitation" || m.request.kind === "user_dialog") {
+          setInteractionReqs((current) => [
+            ...current.filter((r) => r.requestId !== m.request.requestId), m.request,
+          ]);
+        }
+        break;
+      case "chat.interaction.resolved":
+        setInteractionReqs((current) => current.filter((r) => r.requestId !== m.requestId));
+        appendInteractionRecord(m.record);
         break;
     }
   }
@@ -296,7 +473,10 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
         setConn(state);
         if (state !== "open") {
           setBusy(false); // 断线即丢失在途帧：解除 busy 防界面卡死（重连后快照恢复真实 busy）
+          setRequesting(false); // 请求中提示随断线清除，重连后由快照恢复
           setCompactSince(null); // 压缩提示同属瞬时状态：断线即清，快照恢复
+          historyRequestRef.current = null;
+          setLoadingOlder(false); // 分页请求随旧连接作废；重连后可按最新游标重试
         }
       },
     });
@@ -461,8 +641,9 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
     // 页面信息丰富度：取当前别名配置（无别名或未设置 = 标准档）；决定附带全文的截断上限
     const richness = aliases.find((a) => a.id === currentAliasId)?.pageRichness ?? "standard";
     const pageCap = PAGE_RICHNESS_CAPS[richness];
-    const force = forceAttach; // 本次强制看页面：无视附带开关与同页去重
-    if (s.attachEnabled || force) {
+    const cliCommand = isCliSlashCommand(text);
+    const force = !cliCommand && forceAttach; // 斜杠命令不附页面；其余消息维持本次强制看页面语义
+    if (!cliCommand && (s.attachEnabled || force)) {
       // 弹窗模式钉住原 tab（弹窗聚焦时活动 tab 是弹窗自己）；侧边栏取当前活动 tab
       const snap = popupTabId !== null && pinTabId !== null ? await snapshotTab(pinTabId) : await snapshotActiveTab();
       if (snap.page && (snap.page.markdown || snap.page.selection)) page = snap.page; // 无内容则不带
@@ -483,12 +664,14 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
               : "ℹ️ 同页追问：未重复附带全文（此前已进会话上下文）";
     }
     const full = composeMessage(text, page, attachFull, richness);
-    const hasUp = uploads.length > 0;
+    const skippedCommandUploads = cliCommand && uploads.length > 0;
+    const hasUp = !cliCommand && uploads.length > 0;
     const c = clientRef.current;
     if (!c) return; // 未连接：不发（界面本来就禁用输入，此处只是兜底）
     // 气泡不做乐观上屏：桥接组装后统一广播 chat.user（display=原始输入，note=附带说明）上屏，各视图天然一致；
     // 上传结果由桥接落盘后广播 chat.tool（真实路径，重名后缀以桥接为准）
-    c.send({ type: "chat.send", text: full, display: text, ...(attachNote ? { note: attachNote } : {}), ...(hasUp ? { uploads } : {}) });
+    const note = skippedCommandUploads ? "ℹ️ 斜杠命令按原样执行，本次未上传文件" : attachNote;
+    c.send({ type: "chat.send", text: full, display: text, ...(note ? { note } : {}), ...(hasUp ? { uploads } : {}) });
     setBusy(true); // 发送即进入"生成中"：停止键立刻出现，不等首字（思考/工具调用期也可中止）
     if (draftTimerRef.current) clearTimeout(draftTimerRef.current); // 草稿本地即清；桥接随后广播 chat.draft "" 兜底全部视图
     setDraft("");
@@ -512,6 +695,15 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
     await applySettings({ permissionMode: m });
   }
 
+  /** 请求当前页之前的记录；同一时刻只保留一个分页请求。 */
+  function loadOlderHistory(): void {
+    const cursor = historyCursor;
+    if (!cursor || loadingOlder || conn !== "open") return;
+    historyRequestRef.current = cursor;
+    setLoadingOlder(true);
+    clientRef.current?.send({ type: "session.history", before: cursor, limit: 100 });
+  }
+
   /** 重新配对：保存新连接参数、清掉旧桥的界面状态并重连（新桥的 chat.sync 快照会驱动回绑 lastFolder） */
   async function handlePair(info: PairingInfo): Promise<void> {
     const s = await saveSettings({ token: info.t, port: info.p, host: info.h });
@@ -529,7 +721,11 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
     aliasSelectTriedRef.current = false;
     setBound(null);
     setMessages([]);
-    setStreaming(null);
+    setHistoryCursor(null);
+    setHasOlderHistory(false);
+    setLoadingOlder(false);
+    historyRequestRef.current = null;
+    replaceStreaming(null);
     setSessions([]);
     setAliases([]);
     setCurrentAliasId(null); // 换桥：旧桥别名作废，等新桥 alias.list.data 重建
@@ -561,6 +757,7 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
         {conn === "open" && compactSince !== null ? (
           <span className="compact-hint">正在压缩…（{Math.floor((Date.now() - compactSince) / 1000)}s）</span>
         ) : null}
+        {conn === "open" && requesting ? <span className="compact-hint requesting-hint">正在请求 API…</span> : null}
         <span>
           {popupTabId === null ? (
             <button className="pair-btn" title="在独立窗口打开此会话（镜像模式：两边同步；再点扩展图标可隐藏侧边栏，弹窗不受影响）" onClick={() => void openPopup()}>🗖 弹出</button>
@@ -597,26 +794,59 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
         onOpenFolder={handleOpenFolder}
         openFolderFlash={openFolderFlash}
       />
-      <MessageList messages={messages} streaming={streaming} />
-      <PermissionCard
-        request={permReq}
-        onRespond={(id, allow) => {
-          clientRef.current?.send({ type: "permission.response", requestId: id, allow });
-          setPermReq(null);
-        }}
+      <MessageList
+        messages={messages}
+        streaming={streaming}
+        hasOlderHistory={hasOlderHistory}
+        loadingOlder={loadingOlder}
+        onLoadOlder={loadOlderHistory}
       />
-      <AskCard
-        request={askReq}
-        onRespond={(id, answers) => {
-          clientRef.current?.send({ type: "chat.ask.answer", requestId: id, answers });
-          setAskReq(null); // 本视图立即撤下；resolved 广播负责其它镜像视图
-        }}
-      />
+      {permReqs.map((request) => (
+        <PermissionCard
+          key={request.requestId}
+          request={request}
+          onRespond={(id, allow, feedback) => {
+            clientRef.current?.send({
+              type: "permission.response", requestId: id, allow,
+              ...(feedback ? { feedback } : {}),
+            });
+            setPermReqs((current) => current.filter((r) => r.requestId !== id));
+          }}
+        />
+      ))}
+      {askReqs.map((request) => (
+        <AskCard
+          key={request.requestId}
+          request={request}
+          onRespond={(id, answers) => {
+            clientRef.current?.send({ type: "chat.ask.answer", requestId: id, answers });
+            setAskReqs((current) => current.filter((r) => r.requestId !== id)); // 本视图只撤自己的卡；resolved 广播补齐只读结果
+          }}
+        />
+      ))}
+      {interactionReqs.map((request) => request.kind === "user_dialog" ? (
+        <UserDialogCard
+          key={request.requestId}
+          request={request}
+          onRespond={(requestId, response) => clientRef.current?.send({
+            type: "chat.interaction.respond", requestId, response,
+          })}
+        />
+      ) : (
+        <ElicitationCard
+          key={request.requestId}
+          request={request}
+          onRespond={(requestId, response) => clientRef.current?.send({
+            type: "chat.interaction.respond", requestId, response,
+          })}
+        />
+      ))}
       <InputBox
         disabled={!bound || conn !== "open"}
         busy={busy}
         attachEnabled={settings.attachEnabled}
         permissionMode={settings.permissionMode}
+        actualPermissionMode={runtime.permissionMode}
         model={settings.model}
         effort={settings.effort}
         effectiveModel={runtime.model ? shortModelName(runtime.model) : undefined}

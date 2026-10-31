@@ -1,14 +1,15 @@
 /** ccc-bridge 服务端：WS 桥（握手鉴权 + 镜像工作区广播）+ 内置 /config 端口设置页（在线改端口）。 */
 import * as http from "node:http";
+import * as path from "node:path";
 import { WebSocketServer, WebSocket } from "ws";
 import type { AddressInfo } from "node:net";
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { encode, parseClientMessage, type PermissionModeSetting, type EffortLevelSetting, type ServerMessage, type ExecutionRuntime } from "./protocol";
-import type { ClientMessage, AskRequest } from "./protocol";
+import { encode, parseClientMessage, sanitizeElicitationUrl, validateElicitationContent, type PermissionModeSetting, type EffortLevelSetting, type ServerMessage, type ExecutionRuntime } from "./protocol";
+import type { ClientMessage, AskRequest, InteractionRequest, InteractionRecord, InteractionOutcome, TimelineItem } from "./protocol";
 import { isValidFolder, normalizeFolder, SessionManager } from "./session-manager";
 import { createClaudeSession, type ClaudeSessionLike } from "./claude-session";
 import type { SessionRuntimeInfo } from "./claude-session";
-import { readTranscript, listSessions, deleteTranscript } from "./transcript";
+import { readTranscriptPage, listSessions, deleteTranscript, compactBoundaryText } from "./transcript";
 import { saveConfig, type BridgeConfig } from "./config";
 import { encodePairing } from "./pairing";
 import { AliasManager } from "./alias-manager";
@@ -17,6 +18,7 @@ import { saveUploads } from "./uploads";
 import { composeUploadNote, UPLOAD_DIR } from "./upload-note";
 import { writeResumeScript, removeResumeScript } from "./resume-script";
 import { WorkspaceStore, type FastRestoreBaseline, type WorkspaceExecutionSettings } from "./workspace-store";
+import { InteractionStore } from "./interaction-store";
 
 /** 服务依赖。createSession 仅供测试注入假会话工厂。 */
 export interface ServerDeps {
@@ -102,6 +104,8 @@ interface Workspace {
   folder: string | null;
   /** 当前 Claude 会话（绑定文件夹即创建；换绑/换会话时重建） */
   claude: ClaudeSessionLike | null;
+  /** Query 代次；旧 Query 的迟到事件一律忽略 */
+  sessionEpoch: number;
   mode: PermissionModeSetting;
   model: string | undefined;
   effort: EffortLevelSetting | undefined;
@@ -129,6 +133,8 @@ interface Workspace {
   busy: boolean;
   /** 工作区正在压缩上下文（chat.sync 快照供中途接入的视图立即提示） */
   compacting: boolean;
+  /** CC 正在等待 API 响应；仅瞬时镜像，不写入永久时间线 */
+  requesting: boolean;
   /** 本轮已流出的部分文本（快照给中途接入的视图补流式；轮次结束清空） */
   streamText: string;
   /** 在途轮的用户气泡（chat.user 已广播但尚未落盘，历史回放里没有，快照靠它补齐） */
@@ -137,6 +143,16 @@ interface Workspace {
   pendingPerm: { requestId: string; tool: string; detail: string } | null;
   /** 挂起的提问（chat.ask 已广播未作答；快照补卡片，任一视图作答后全视图撤下） */
   pendingAsk: AskRequest | null;
+  /** 全部并发挂起交互；requestId 唯一，不能再由同类单槽互相覆盖 */
+  pendingInteractions: Map<string, InteractionRequest>;
+  /** 已解决但可能尚未写入 CLI 转录的只读结果，供新视图补齐 */
+  interactions: InteractionRecord[];
+  /** 本轮工具调用索引；结果帧据此补齐名称、摘要并更新同一 toolUseId */
+  toolCalls: Map<string, { name: string; summary: string; input?: string }>;
+  /** 本轮按真实顺序排列的在途消息；新视图据稳定 ID 恢复，不再拼接单段 streamText */
+  timeline: TimelineItem[];
+  /** 尚未拿到会话 ID 的侧车记录；onSessionId/onDone 落地后冲刷 */
+  sidecarPending: TimelineItem[];
   /** 输入框草稿镜像（chat.draft 上报更新；弹窗与侧边栏接力输入） */
   draft: string;
 }
@@ -148,18 +164,36 @@ interface HandlerCtx {
   clients: Set<WebSocket>;
   /** 广播状态事件给全部视图；except 用于 chat.draft 回显抑制（上报方已有本地草稿，回包会顶跳光标） */
   broadcast: (m: ServerMessage, except?: WebSocket) => void;
+  /** 唯一人工裁决收口；消息处理器与会话事件共用同一挂起 Map */
+  settleInteraction: (
+    requestId: string,
+    outcome: InteractionOutcome,
+    result?: Pick<InteractionRecord, "answers" | "feedback" | "decider" | "elicitationAction" | "submittedFields" | "userDialogAction">,
+  ) => InteractionRecord | null;
   /** 组装当前执行设置；includeRuntime=true 时携带/清空 CC 运行时真值 */
   settingsStateMsg: (includeRuntime?: boolean) => ServerMessage;
   /** 绑定文件夹并重建会话（folder.bind 与 alias.select/create 共用） */
   bindFolder: (p: string, forceSessionId?: string | null, reset?: boolean) => void;
   /** 为当前文件夹创建（或重建）Claude 会话 */
   openSession: (resumeId?: string) => void;
-  /** 清空在途轮次状态（换绑/换会话/删当前会话时：旧轮次随会话一起没了） */
-  resetInflight: () => void;
+  /** 清空在途轮次；clearConversation=true 同时清除旧会话的近期交互记录 */
+  resetInflight: (
+    outcome?: "cancelled" | "error",
+    decider?: "abort" | "close" | "system",
+    clearConversation?: boolean,
+  ) => void;
   /** client.ready 快照推送（只发请求方） */
   pushSnapshot: (send: (m: ServerMessage) => void) => void;
+  /** 转录与侧车合并后的历史分页 */
+  readHistoryPage: (
+    folder: string,
+    sessionId: string,
+    options?: { limit?: number; before?: string },
+  ) => ReturnType<typeof readTranscriptPage>;
   /** folder.open 处理（只回请求方） */
   handleFolderOpen: (send: (m: ServerMessage) => void) => Promise<void>;
+  /** 删除会话时同步删除其桥接侧车 */
+  deleteHistorySidecar: (folder: string, sessionId: string) => void;
   /** 广播会话列表 */
   pushSessionList: () => void;
   /** 广播别名列表 */
@@ -468,12 +502,14 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
   const newSession = deps.createSession ?? createClaudeSession;
   const persistedExecution = deps.workspaceStore?.loadExecutionSettings() ?? null;
   const openFolderImpl = deps.openFolder ?? defaultOpenFolder;
+  const interactionStore = deps.configDir ? new InteractionStore(path.join(deps.configDir, "interactions")) : undefined;
   let current: Running; // 当前监听着的服务（在线改端口会整体替换）
 
   /** 唯一工作区：全部视图共享的会话与在途状态 */
   const workspace: Workspace = {
     folder: null,
     claude: null,
+    sessionEpoch: 0,
     mode: persistedExecution?.permissionMode ?? "auto",
     model: persistedExecution?.model,
     effort: persistedExecution?.effort,
@@ -493,10 +529,16 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
     currentAliasId: null,
     busy: false,
     compacting: false,
+    requesting: false,
     streamText: "",
     inflightUser: null,
     pendingPerm: null,
     pendingAsk: null,
+    pendingInteractions: new Map(),
+    interactions: [],
+    toolCalls: new Map(),
+    timeline: [],
+    sidecarPending: [],
     draft: "",
   };
   /** 读取当前完整 fast 请求快照。 */
@@ -524,8 +566,130 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
     }
   }
 
+  /** 写入单条侧车事实；磁盘故障不阻断正在进行的聊天。 */
+  function writeTimelineItem(folder: string, sessionId: string, item: TimelineItem): void {
+    if (!interactionStore) return;
+    try {
+      interactionStore.append(folder, sessionId, item);
+    } catch (e) {
+      console.error("[ccc-bridge] 会话时间线保存失败:", e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  /** 会话 ID 到位后，按首次出现顺序冲刷此前暂存的状态与裁决。 */
+  function flushSidecar(folder: string, sessionId: string): void {
+    const pending = workspace.sidecarPending.splice(0);
+    for (const item of pending) writeTimelineItem(folder, sessionId, item);
+  }
+
+  /** 持久化只读事实；尚无会话 ID 时只暂存，避免误写到上一轮会话。 */
+  function persistTimelineItem(item: TimelineItem): void {
+    const folder = workspace.folder;
+    if (!folder || !interactionStore) return;
+    const sessionId = sessions.get(folder)?.sessionId;
+    if (!sessionId) {
+      const old = workspace.sidecarPending.findIndex((pending) => pending.id === item.id);
+      if (old >= 0) workspace.sidecarPending[old] = item;
+      else workspace.sidecarPending.push(item);
+      return;
+    }
+    flushSidecar(folder, sessionId);
+    writeTimelineItem(folder, sessionId, item);
+  }
+
+  /** CLI 转录与桥接侧车先合并，再按同一稳定游标分页。 */
+  function readHistoryPage(
+    folder: string,
+    sessionId: string,
+    options: { limit?: number; before?: string } = {},
+  ): ReturnType<typeof readTranscriptPage> {
+    return readTranscriptPage(folder, sessionId, {
+      ...options,
+      additional: interactionStore?.read(folder, sessionId) ?? [],
+    });
+  }
+
+  /** 删除会话时同步清理仅供该会话使用的侧车。 */
+  function deleteHistorySidecar(folder: string, sessionId: string): void {
+    interactionStore?.delete(folder, sessionId);
+  }
+
+  /** 唯一人工裁决收口：只处理仍挂起的 requestId，重复/迟到响应不会撤掉新卡或重复记账。 */
+  function settleInteraction(
+    requestId: string,
+    outcome: InteractionOutcome,
+    result: Pick<InteractionRecord, "answers" | "feedback" | "decider" | "elicitationAction" | "submittedFields" | "userDialogAction"> = {},
+  ): InteractionRecord | null {
+    const request = workspace.pendingInteractions.get(requestId);
+    if (!request) return null;
+    workspace.pendingInteractions.delete(requestId);
+    if (workspace.pendingAsk?.requestId === requestId) workspace.pendingAsk = null;
+    if (workspace.pendingPerm?.requestId === requestId) workspace.pendingPerm = null;
+    // 挂起请求保留完整 URL 供用户打开；只读记录和侧车只保留去敏地址。
+    const recordRequest = request.kind === "elicitation" && request.elicitation
+      ? {
+          ...request,
+          elicitation: {
+            ...request.elicitation,
+            // default 也是潜在表单值；结算后只留字段结构和 submittedFields 名称。
+            fields: request.elicitation.fields?.map((field) => ({
+              name: field.name, title: field.title, type: field.type, required: field.required,
+              ...(field.description !== undefined ? { description: field.description } : {}),
+              ...(field.enum !== undefined ? { enum: field.enum } : {}),
+            })),
+            url: request.elicitation.url ? sanitizeElicitationUrl(request.elicitation.url) ?? undefined : undefined,
+          },
+        }
+      : request;
+    const record: InteractionRecord = { ...recordRequest, ...result, outcome, resolvedAt: Date.now() };
+    workspace.interactions.push(record);
+    const item: TimelineItem = {
+      id: `interaction-${requestId}`, createdAt: record.resolvedAt, role: "tool", text: "",
+      interaction: record, ...(record.toolUseId ? { toolUseId: record.toolUseId } : {}),
+    };
+    workspace.timeline.push(item);
+    persistTimelineItem(item);
+    if (request.kind === "ask") broadcast({ type: "chat.ask.resolved", requestId, record });
+    else if (request.kind === "elicitation" || request.kind === "user_dialog") {
+      broadcast({ type: "chat.interaction.resolved", requestId, record });
+    } else broadcast({ type: "permission.resolved", requestId, record });
+    return record;
+  }
+
+  /** 结算当前全部挂起交互；迭代快照避免广播回调修改 Map 时漏项。 */
+  function settleAllInteractions(
+    outcome: "cancelled" | "error",
+    decider: "abort" | "close" | "system",
+  ): void {
+    for (const requestId of [...workspace.pendingInteractions.keys()]) {
+      settleInteraction(requestId, outcome, { decider });
+    }
+  }
+
+  /** 追加一条只读状态并实时广播；同一 item 随后由快照按稳定 ID 去重恢复。 */
+  function pushTimelineStatus(
+    text: string,
+    options: { id?: string; detail?: string; role?: "tool" | "assistant" } = {},
+  ): TimelineItem {
+    const id = options.id ?? `status-${Date.now()}-${randomBytes(4).toString("hex")}`;
+    const old = workspace.timeline.find((item) => item.id === id);
+    const item: TimelineItem = old ?? {
+      id, createdAt: Date.now(), role: options.role ?? "tool", text,
+    };
+    Object.assign(item, {
+      text,
+      ...(options.role ? { role: options.role } : {}),
+      ...(options.detail !== undefined ? { detail: options.detail } : {}),
+    });
+    if (!old) workspace.timeline.push(item);
+    persistTimelineItem(item);
+    broadcast({ type: "chat.timeline", item });
+    return item;
+  }
+
   /** 运行时真值只由 CC 回报更新；每次整体替换，缺字段不伪造 */
   function setRuntime(info: SessionRuntimeInfo): void {
+    const previousMode = workspace.runtime.permissionMode;
     const fastFresh = info.fast !== undefined && info.fastFresh === true;
     if (fastFresh) workspace.fastPending = false; // 只有本帧显式携带合法 fast_mode_state 才能确认等待
     workspace.runtimeAuthoritative = true;
@@ -533,7 +697,15 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
       ...(typeof info.model === "string" && info.model.length > 0 ? { model: info.model } : {}),
       ...(info.effort !== undefined ? { effort: info.effort } : {}),
       ...(info.fast && (!workspace.fastPending || fastFresh) ? { fast: info.fast } : {}), // pending 期间不回收缓存 fast
+      ...(info.permissionMode ? { permissionMode: info.permissionMode } : {}),
     };
+    if (info.permissionMode && info.permissionMode !== previousMode) {
+      const labels: Record<NonNullable<ExecutionRuntime["permissionMode"]>, string> = {
+        default: "标准确认", acceptEdits: "自动编辑", bypassPermissions: "跳过权限检查",
+        plan: "计划模式", dontAsk: "不再询问", auto: "自动判断",
+      };
+      pushTimelineStatus(`当前模式：${labels[info.permissionMode]}`);
+    }
   }
 
 
@@ -634,24 +806,38 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
     bindFolder(folder, alias ? (alias.sessionId ?? undefined) : undefined, false); // 恢复不是主动换绑
   }
 
-  function resetInflight(): void {
+  function resetInflight(
+    outcome: "cancelled" | "error" = "cancelled",
+    decider: "abort" | "close" | "system" = "system",
+    clearConversation = false,
+  ): void {
+    settleAllInteractions(outcome, decider);
     workspace.busy = false;
     workspace.streamText = "";
     workspace.inflightUser = null;
     workspace.pendingPerm = null;
     workspace.pendingAsk = null;
+    workspace.pendingInteractions.clear();
+    workspace.toolCalls.clear();
+    workspace.timeline = [];
+    workspace.sidecarPending = [];
+    if (clearConversation) workspace.interactions = [];
     workspace.compacting = false; // 轮次异常终结：压缩提示不悬挂
+    workspace.requesting = false; // 请求中同属瞬时状态，任何终结路径都清除
   }
 
   /** 为当前文件夹创建（或重建）Claude 会话；事件一律广播并记账到工作区（快照数据源） */
   function openSession(resumeId?: string): void {
     if (!workspace.folder) return;
     const f = workspace.folder;
+    const epoch = ++workspace.sessionEpoch;
+    const isCurrent = (): boolean => workspace.sessionEpoch === epoch && workspace.folder === f;
     const replacing = workspace.claude !== null;
     workspace.fastRollback = currentFastSnapshot(); // 新 Query 启动设置成为后续运行时切换的完整回滚基线
     workspace.fastRollbackSeq = workspace.fastRequestSeq;
     workspace.runtime = {}; // 新 Query 尚无真值；是否清扩展缓存由 runtimeAuthoritative 明确区分
     workspace.compacting = false; // 新 Query 不继承旧会话的压缩提示
+    workspace.requesting = false; // 新 Query 不继承旧会话的请求中提示
     if (replacing) workspace.runtimeAuthoritative = true; // 主动替换旧 Query：空快照也是权威失效通知
     workspace.claude = newSession(f, {
       resumeId,
@@ -661,56 +847,199 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
       fastMode: workspace.fastMode,
       events: {
         onDelta: (text) => {
+          if (!isCurrent()) return;
           workspace.streamText += text; // 真流式：每个 delta 立即广播一帧，同时记账供快照补齐
+          const last = workspace.timeline[workspace.timeline.length - 1];
+          if (last?.role === "assistant") last.text += text;
+          else workspace.timeline.push({
+            id: `assistant-${Date.now()}-${randomBytes(4).toString("hex")}`,
+            createdAt: Date.now(), role: "assistant", text,
+          });
           broadcast({ type: "chat.delta", text });
         },
-        onTool: (name, summary) => broadcast({ type: "chat.tool", name, summary }),
+        onTool: (name, summary, toolUseId, input) => {
+          if (!isCurrent()) return;
+          // 完整计划和计划文件由专用审批卡/只读决定展示，不再重复一行原始参数。
+          if (name === "ExitPlanMode") return;
+          const detail = input === undefined ? undefined : JSON.stringify(input, null, 2);
+          if (toolUseId) workspace.toolCalls.set(toolUseId, { name, summary, ...(detail !== undefined ? { input: detail } : {}) });
+          const old = toolUseId ? workspace.timeline.find((item) => item.toolUseId === toolUseId) : undefined;
+          if (old) {
+            Object.assign(old, {
+              toolName: name, text: summary, toolStatus: "running",
+              ...(detail !== undefined ? { toolInput: detail } : {}),
+            });
+          } else {
+            workspace.timeline.push({
+              id: toolUseId ? `tool-${toolUseId}` : `tool-${Date.now()}-${randomBytes(4).toString("hex")}`,
+              createdAt: Date.now(), role: "tool", toolName: name, text: summary,
+              ...(toolUseId ? { toolUseId, toolStatus: "running" as const } : {}),
+              ...(detail !== undefined ? { toolInput: detail } : {}),
+            });
+          }
+          broadcast({
+            type: "chat.tool", name, summary,
+            ...(toolUseId ? { toolUseId, status: "running" as const } : {}),
+            ...(detail !== undefined ? { input: detail } : {}),
+          });
+        },
+        onToolResult: ({ toolUseId, output, isError }) => {
+          if (!isCurrent()) return;
+          // Ask/计划已由只读交互记录完整呈现；tool_result 不再广播成缺少名称的通用工具活动。
+          if (workspace.interactions.some((item) =>
+            (item.kind === "ask" || item.kind === "exit_plan") && item.toolUseId === toolUseId
+          )) return;
+          const call = workspace.toolCalls.get(toolUseId) ?? { name: "tool", summary: "" };
+          const status = isError ? "error" as const : "success" as const;
+          const old = workspace.timeline.find((item) => item.toolUseId === toolUseId);
+          if (old) Object.assign(old, { toolStatus: status, toolOutput: output });
+          else workspace.timeline.push({
+            id: `tool-${toolUseId}`, createdAt: Date.now(), role: "tool",
+            toolName: call.name, text: call.summary, toolUseId, toolStatus: status, toolOutput: output,
+          });
+          broadcast({ type: "chat.tool", name: call.name, summary: call.summary, toolUseId, status, output });
+        },
+        onNotice: (notice) => {
+          if (!isCurrent()) return;
+          pushTimelineStatus(notice.text, {
+            ...(notice.id ?? notice.toolUseId ? { id: notice.id ?? `status-permission-${notice.toolUseId}` } : {}),
+            ...(notice.detail !== undefined ? { detail: notice.detail } : {}),
+            ...(notice.role ? { role: notice.role } : {}),
+          });
+        },
+        onRequesting: (requesting) => {
+          if (!isCurrent()) return;
+          workspace.requesting = requesting;
+          broadcast({ type: "chat.requesting", requesting });
+        },
         onCompact: (ev) => {
+          if (!isCurrent()) return;
           workspace.compacting = ev.phase === "start";
-          broadcast({ type: "chat.compact", ...ev });
+          if (ev.phase === "done") {
+            const text = ev.result === "failed"
+              ? `⚠️ 上下文压缩失败${ev.error ? `：${ev.error}` : ""}，继续使用当前上下文`
+              : compactBoundaryText(ev);
+            const sessionId = sessions.get(f)?.sessionId;
+            // 复用转录按 anchorUuid 关联的摘要，让实时记录与重载后的同一压缩保留相同折叠详情。
+            const detail = ev.result === "success" && sessionId
+              ? readHistoryPage(f, sessionId, { limit: 200 }).messages
+                .filter((item) => item.text === text && item.detail).at(-1)?.detail
+              : undefined;
+            pushTimelineStatus(text, { ...(detail ? { detail } : {}) });
+            broadcast({ type: "chat.compact", ...ev, recorded: true });
+          } else {
+            broadcast({ type: "chat.compact", ...ev });
+          }
         },
         onRuntime: (info) => {
+          if (!isCurrent()) return;
           setRuntime(info);
           broadcast(settingsStateMsg(true));
         },
         onDone: (sessionId, info) => {
+          if (!isCurrent()) return;
+          settleAllInteractions("cancelled", "system"); // 正常结束时仍未解决的回调不能无声消失
           if (info) setRuntime(info); // onRuntime 已即时上报；这里兜底快照数据源并兼容测试事件
           // info 字段为 undefined 时 JSON 序列化自动省略；effort 为 null 时显式下发（表示该会话无 effort 参数）
           const doneFast = info?.fast && (!workspace.fastPending || info.fastFresh === true) ? info.fast : undefined;
+          flushSidecar(f, sessionId); // 即使 init 的会话 ID 事件缺席，也不能丢掉本轮已暂存事实
+          if (workspace.requesting) {
+            workspace.requesting = false;
+            broadcast({ type: "chat.requesting", requesting: false });
+          }
           broadcast({ type: "chat.done", sessionId, model: info?.model, effort: info?.effort, fast: doneFast, compacted: info?.compacted });
           workspace.busy = false;
           workspace.streamText = "";
           workspace.inflightUser = null;
           workspace.pendingPerm = null;
           workspace.pendingAsk = null;
+          workspace.pendingInteractions.clear();
+          workspace.toolCalls.clear();
+          workspace.timeline = [];
           if (workspace.folder === f) {
             pushSessionList(); // 一轮结束后转录已落盘，刷新列表（新会话此刻才有文件）
             refreshAliasScript(); // 续聊脚本跟上最新会话
           }
         },
         onError: (message) => {
-          broadcast({ type: "chat.error", message });
-          resetInflight(); // 轮次终结：清在途状态，后续快照不再补这轮
+          if (!isCurrent()) return;
+          pushTimelineStatus(`⚠️ ${message}`, { role: "assistant" });
+          broadcast({ type: "chat.error", message, recorded: true });
+          resetInflight("error", "system"); // 轮次终结：错误记录保留，后续快照不再补这轮
         },
         onAborted: () => {
-          broadcast({ type: "chat.aborted" });
-          resetInflight(); // 用户停止：已生成的部分文字各视图已落为气泡；快照不再补（与历史回放口径一致）
+          if (!isCurrent()) return;
+          pushTimelineStatus("⏹ 已手动停止本轮生成", { role: "assistant" });
+          broadcast({ type: "chat.aborted", recorded: true });
+          resetInflight("cancelled", "abort"); // 用户停止：挂起交互逐项留下已取消记录
+        },
+        onInteractionSettled: ({ requestId, outcome, decider }) => {
+          if (!isCurrent()) return;
+          settleInteraction(requestId, outcome, { decider });
         },
         onPermission: (r) => {
+          if (!isCurrent()) return;
           workspace.pendingPerm = r;
+          workspace.pendingInteractions.set(r.requestId, {
+            requestId: r.requestId,
+            kind: r.kind ?? (r.tool === "ExitPlanMode" ? "exit_plan" : "permission"),
+            tool: r.tool,
+            detail: r.detail,
+            ...(r.summary ? { summary: r.summary } : {}),
+            ...(r.plan !== undefined ? { plan: r.plan } : {}),
+            ...(r.planFilePath ? { planFilePath: r.planFilePath } : {}),
+            ...(r.toolUseId ? { toolUseId: r.toolUseId } : {}),
+            createdAt: Date.now(),
+          });
           broadcast({ type: "permission.request", ...r });
         },
         onAsk: (r) => {
+          if (!isCurrent()) return;
           workspace.pendingAsk = r;
+          workspace.pendingInteractions.set(r.requestId, {
+            requestId: r.requestId,
+            kind: "ask",
+            questions: r.questions,
+            ...(r.toolUseId ? { toolUseId: r.toolUseId } : {}),
+            createdAt: Date.now(),
+          });
           broadcast({ type: "chat.ask", ...r });
         },
+        onElicitation: (r) => {
+          if (!isCurrent()) return;
+          const request: InteractionRequest = { ...r, createdAt: Date.now() };
+          workspace.pendingInteractions.set(r.requestId, request);
+          broadcast({ type: "chat.interaction", request });
+        },
+        onUserDialog: (r) => {
+          if (!isCurrent()) return;
+          const request: InteractionRequest = { ...r, createdAt: Date.now() };
+          workspace.pendingInteractions.set(r.requestId, request);
+          broadcast({ type: "chat.interaction", request });
+        },
+        onElicitationComplete: ({ serverName, elicitationId }) => {
+          if (!isCurrent()) return;
+          const record = workspace.interactions.find((item) => item.kind === "elicitation"
+            && item.elicitation?.serverName === serverName
+            && item.elicitation.elicitationId === elicitationId);
+          if (!record || record.elicitationComplete) return;
+          record.elicitationComplete = true; // 更新原记录，不新增一条重复时间线。
+          const item = workspace.timeline.find((entry) => entry.id === `interaction-${record.requestId}`);
+          if (item) {
+            item.interaction = record;
+            persistTimelineItem(item);
+          }
+          broadcast({ type: "chat.interaction.resolved", requestId: record.requestId, record });
+        },
         onSessionId: (id) => {
+          if (!isCurrent()) return;
           const existing = sessions.get(f);
           sessions.set(f, {
             sessionId: id,
             title: existing?.title ?? "(新会话)",
             updatedAt: new Date().toISOString(),
           });
+          flushSidecar(f, id);
           refreshAliasScript(); // 会话 ID 落地即有可续目标
           if (workspace.folder === f) {
             // 新会话 ID 写回当前别名（null 只是暂态）：再选该别名续聊此会话而非误开新会话
@@ -730,8 +1059,8 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
    */
   function bindFolder(p: string, forceSessionId?: string | null, reset = true): void {
     void workspace.claude?.close();
+    resetInflight("cancelled", "close", true); // 先在旧文件夹/旧会话结算，再改绑定，侧车不会串到新工作区
     workspace.folder = p;
-    resetInflight(); // 换绑即换会话：旧轮次的在途状态对新工作区无意义
     if (forceSessionId === undefined) {
       const rec = sessions.get(workspace.folder);
       openSession(rec?.sessionId);
@@ -767,10 +1096,21 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
    * @param send 目标连接的发送函数（快照只发请求方，不广播）
    */
   function pushSnapshot(send: (m: ServerMessage) => void): void {
+    let snapshotTimeline = workspace.timeline;
     if (workspace.folder) {
       const rec = sessions.get(workspace.folder);
       send({ type: "folder.bound", path: workspace.folder, resumed: Boolean(rec), title: rec?.title ?? "", sessionId: rec?.sessionId ?? null });
-      if (rec) send({ type: "session.history.data", messages: readTranscript(workspace.folder, rec.sessionId) });
+      if (rec) {
+        const history = readHistoryPage(workspace.folder, rec.sessionId);
+        send({ type: "session.history.data", ...history });
+        // 用户转录可能已落盘但在途轮尚未结束；用发送内容与时间证据去重，保留下一轮同文提问。
+        const persistedUsers = history.messages.filter((item) => item.role === "user");
+        snapshotTimeline = workspace.timeline.filter((item) => item.role !== "user" || !persistedUsers.some((old) =>
+          old.text === item.text
+          && (old.sentText ?? old.text) === (item.sentText ?? item.text)
+          && old.createdAt >= item.createdAt
+        ));
+      }
       const sl = sessionListMsg();
       if (sl) send(sl);
     }
@@ -787,6 +1127,10 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
       askReq: workspace.pendingAsk,
       draft: workspace.draft,
       compacting: workspace.compacting,
+      requesting: workspace.requesting,
+      pendingInteractions: [...workspace.pendingInteractions.values()],
+      interactions: workspace.interactions,
+      timeline: snapshotTimeline,
     });
   }
 
@@ -820,12 +1164,15 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
     workspace,
     clients,
     broadcast,
+    settleInteraction,
     settingsStateMsg,
     bindFolder,
     openSession,
     resetInflight,
     pushSnapshot,
+    readHistoryPage,
     handleFolderOpen,
+    deleteHistorySidecar,
     pushSessionList,
     pushAliasList,
     sessionListMsg,
@@ -965,12 +1312,15 @@ function attachHandlers(wss: WebSocketServer, deps: ServerDeps, instanceId: stri
     workspace,
     clients,
     broadcast,
+    settleInteraction,
     settingsStateMsg,
     bindFolder,
     openSession,
     resetInflight,
     pushSnapshot,
+    readHistoryPage,
     handleFolderOpen,
+    deleteHistorySidecar,
     pushSessionList,
     pushAliasList,
     sessionListMsg,
@@ -1078,13 +1428,20 @@ function attachHandlers(wss: WebSocketServer, deps: ServerDeps, instanceId: stri
             send({ type: "chat.error", message: "请先绑定文件夹" });
             break;
           }
+          workspace.timeline = []; // 新一轮只保留本轮在途顺序；近期已解决交互另表保留用于历史去重
+          workspace.toolCalls.clear();
           let text = m.text;
           if (m.uploads && m.uploads.length > 0) {
             // 先落盘到 <绑定文件夹>/copilotUploads，再把说明块拼在客户端原文之前（原文自带 [页面上下文]/[用户问题] 包装）
             const r = saveUploads(workspace.folder, m.uploads);
             for (const f of r.failed) broadcast({ type: "chat.error", message: `文件保存失败：${f.name}（${f.reason}）` });
             if (r.saved.length === 0) break; // 全部失败：错误已逐条上报，本次消息不发送
-            broadcast({ type: "chat.tool", name: "上传", summary: `已保存 ${r.saved.length} 个文件至 ${UPLOAD_DIR}` }); // 全部视图镜像上传结果
+            const uploadSummary = `已保存 ${r.saved.length} 个文件至 ${UPLOAD_DIR}`;
+            broadcast({ type: "chat.tool", name: "上传", summary: uploadSummary }); // 全部视图镜像上传结果
+            workspace.timeline.push({
+              id: `upload-${Date.now()}-${randomBytes(4).toString("hex")}`,
+              createdAt: Date.now(), role: "tool", toolName: "上传", text: uploadSummary,
+            });
             text = `${composeUploadNote(r.saved.map((s) => s.path))}\n\n${m.text}`;
           }
           const rec = sessions.get(workspace.folder);
@@ -1095,6 +1452,14 @@ function attachHandlers(wss: WebSocketServer, deps: ServerDeps, instanceId: stri
           }
           const display = m.display ?? m.text;
           workspace.inflightUser = { display, sent: text };
+          workspace.timeline.push({
+            id: `user-${Date.now()}-${randomBytes(4).toString("hex")}`,
+            createdAt: Date.now(), role: "user", text: display, sentText: text,
+          });
+          if (m.note) workspace.timeline.push({
+            id: `note-${Date.now()}-${randomBytes(4).toString("hex")}`,
+            createdAt: Date.now(), role: "tool", text: m.note, sentText: text,
+          });
           workspace.busy = true;
           workspace.streamText = "";
           if (workspace.draft) {
@@ -1118,20 +1483,85 @@ function attachHandlers(wss: WebSocketServer, deps: ServerDeps, instanceId: stri
           workspace.draft = m.text;
           broadcast({ type: "chat.draft", text: m.text }, ws); // 镜像到其它视图；不回显上报方（防光标被回包顶跳）
           break;
-        case "permission.response":
-          workspace.pendingPerm = null;
-          broadcast({ type: "permission.resolved", requestId: m.requestId }); // 任一视图裁决，全部视图撤卡片（裁决方幂等）
-          workspace.claude?.respondPermission(m.requestId, m.allow);
+        case "permission.response": {
+          const record = settleInteraction(m.requestId, m.allow ? "allowed" : "denied", {
+            decider: "user", ...(m.feedback?.trim() ? { feedback: m.feedback.trim() } : {}),
+          });
+          if (record) workspace.claude?.respondPermission(m.requestId, m.allow, m.feedback?.trim() || undefined);
           break;
-        case "chat.ask.answer":
-          workspace.pendingAsk = null;
-          broadcast({ type: "chat.ask.resolved", requestId: m.requestId }); // 任一视图作答，全部视图撤卡片（作答方幂等）
-          workspace.claude?.respondAsk(m.requestId, m.answers);
+        }
+        case "chat.ask.answer": {
+          const record = settleInteraction(m.requestId, "answered", { answers: m.answers, decider: "user" });
+          if (record) workspace.claude?.respondAsk(m.requestId, m.answers);
           break;
+        }
+        case "chat.interaction.respond": {
+          const request = workspace.pendingInteractions.get(m.requestId);
+          if (!request) break; // 迟到/重复响应不触碰新卡
+          if (request.kind === "user_dialog" && request.userDialog) {
+            const response = m.response;
+            const action = response.action;
+            if (action !== "retry_fallback" && action !== "edit_prompt" && action !== "continue"
+              && action !== "interrupt" && action !== "cancelled") break;
+            const valid = request.userDialog.dialogKind === "refusal_fallback_prompt"
+              ? action === "retry_fallback" || action === "edit_prompt" || action === "cancelled"
+              : action === "continue" || action === "interrupt" || action === "cancelled";
+            if (!valid) break; // 不用另一种对话框的枚举伪造用户选择
+            if (!workspace.claude?.respondUserDialog(m.requestId, { action })) break;
+            settleInteraction(m.requestId, action === "cancelled" ? "cancelled" : "answered", {
+              decider: "user", userDialogAction: action,
+            });
+            break;
+          }
+          if (request.kind !== "elicitation" || !request.elicitation) break;
+          const responseMessage = m.response;
+          if (responseMessage.action !== "accept" && responseMessage.action !== "decline"
+            && responseMessage.action !== "cancel") break;
+          const { action } = responseMessage;
+          const content = "content" in responseMessage ? responseMessage.content : undefined;
+          if (action !== "accept" && content !== undefined) {
+            send({ type: "chat.error", message: "拒绝或取消 MCP 请求时不能携带表单内容" });
+            break;
+          }
+          if (request.elicitation.mode === "url" && content !== undefined) {
+            send({ type: "chat.error", message: "MCP 链接确认不需要表单内容" });
+            break;
+          }
+          if (request.elicitation.mode === "form" && action === "accept") {
+            const errors = validateElicitationContent(request.elicitation.fields ?? [], content ?? {});
+            if (errors.length > 0) {
+              send({ type: "chat.error", message: `MCP 表单未提交：${errors.join("；")}` });
+              break;
+            }
+          }
+          const response = {
+            action,
+            ...(request.elicitation.mode === "form" && action === "accept" ? { content: content ?? {} } : {}),
+          };
+          if (!workspace.claude?.respondElicitation(m.requestId, response)) {
+            send({ type: "chat.error", message: "MCP 请求已失效，请等待新的请求" });
+            break;
+          }
+          const outcome = action === "accept"
+            ? request.elicitation.mode === "form" ? "answered" : "allowed"
+            : action === "decline" ? "denied" : "cancelled";
+          settleInteraction(m.requestId, outcome, {
+            decider: "user", elicitationAction: action,
+            ...(action === "accept" && content ? { submittedFields: Object.keys(content) } : {}),
+          });
+          break;
+        }
         case "session.history": {
           if (!workspace.folder) break;
           const rec = sessions.get(workspace.folder);
-          send({ type: "session.history.data", messages: rec ? readTranscript(workspace.folder, rec.sessionId) : [] });
+          const page = rec ? readHistoryPage(workspace.folder, rec.sessionId, {
+            ...(m.before !== undefined ? { before: m.before } : {}),
+            ...(m.limit !== undefined ? { limit: m.limit } : {}),
+          }) : { messages: [], hasMore: false };
+          send({
+            type: "session.history.data", ...page,
+            ...(m.before !== undefined ? { before: m.before } : {}),
+          });
           break;
         }
         case "session.list": {
@@ -1142,8 +1572,8 @@ function attachHandlers(wss: WebSocketServer, deps: ServerDeps, instanceId: stri
         case "session.new": {
           if (!workspace.folder) break;
           void workspace.claude?.close();
+          resetInflight("cancelled", "close", true); // 旧会话取消记录先落旧侧车
           sessions.delete(workspace.folder); // 清掉映射：下一条消息走全新会话
-          resetInflight();
           openSession(undefined);
           broadcast({ type: "folder.bound", reset: true, path: workspace.folder, resumed: false, title: "", sessionId: null });
           pushSessionList();
@@ -1160,8 +1590,8 @@ function attachHandlers(wss: WebSocketServer, deps: ServerDeps, instanceId: stri
             break;
           }
           void workspace.claude?.close();
+          resetInflight("cancelled", "close", true); // 先结算到旧 sessionId，再切换到目标会话
           sessions.set(workspace.folder, { sessionId: target.sessionId, title: target.title, updatedAt: new Date(target.updatedAt).toISOString() });
-          resetInflight();
           openSession(target.sessionId);
           broadcast({ type: "folder.bound", reset: true, path: workspace.folder, resumed: true, title: target.title, sessionId: target.sessionId });
           pushSessionList();
@@ -1174,11 +1604,12 @@ function attachHandlers(wss: WebSocketServer, deps: ServerDeps, instanceId: stri
           if (!workspace.folder) break;
           const wasCurrent = sessions.get(workspace.folder)?.sessionId === m.sessionId;
           deleteTranscript(workspace.folder, m.sessionId);
+          deleteHistorySidecar(workspace.folder, m.sessionId);
           if (wasCurrent) {
             // 删的是当前会话：关会话、清映射，回到"未开始"状态
             void workspace.claude?.close();
             sessions.delete(workspace.folder);
-            resetInflight();
+            resetInflight("cancelled", "close", true);
             openSession(undefined);
             broadcast({ type: "folder.bound", reset: true, path: workspace.folder, resumed: false, title: "", sessionId: null });
           }

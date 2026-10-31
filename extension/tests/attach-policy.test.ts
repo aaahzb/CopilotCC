@@ -31,6 +31,11 @@ describe("composeMessage", () => {
     expect(composeMessage("你好", null, false)).toBe("[用户问题]\n你好");
   });
 
+  it("CLI 斜杠命令即使有页面上下文也保持原文", () => {
+    expect(composeMessage("/compact", page, true)).toBe("/compact");
+    expect(composeMessage("/model opus", null, false)).toBe("/model opus");
+  });
+
   it("超长正文截断到 MAX_PAGE_CHARS", () => {
     const big: PageSnapshot = { ...page, markdown: "x".repeat(MAX_PAGE_CHARS + 100), selection: "" };
     const out = composeMessage("q", big, true);

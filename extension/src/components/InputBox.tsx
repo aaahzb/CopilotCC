@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import type { PermissionModeSetting, EffortLevelSetting, FastModeRuntime } from "../lib/protocol";
+import type { PermissionModeSetting, EffortLevelSetting, FastModeRuntime, ActualPermissionMode } from "../lib/protocol";
 import { fastDisabledReasonText, fastStatusText } from "../lib/format";
 import { formatSize, readFilesAsUploads, validateFiles, type PendingUpload } from "../lib/upload-files";
 
@@ -26,6 +26,8 @@ export function InputBox(props: {
   fastMode: boolean;
   /** CC 最近回报的 fast 真值；undefined = 等待回报或老 CLI 未提供 */
   fastRuntime?: FastModeRuntime;
+  /** CC 实际权限模式；与上方用户请求下拉不是同一状态 */
+  actualPermissionMode?: ActualPermissionMode;
   /** 原生设置应用失败；只显示在设置区 */
   settingsError?: string;
   onFastModeChange(v: boolean): void;
@@ -124,6 +126,15 @@ export function InputBox(props: {
   const effortText = props.effectiveEffort !== undefined ? (props.effectiveEffort ?? "") : props.effort;
   const effortHint = effortText ? `${effortText}${effortPending ? "（待确认）" : ""}` : "";
   const hint = [modelHint, effortHint].filter(Boolean).join(" · ");
+  const permissionLabels: Record<ActualPermissionMode, string> = {
+    default: "标准确认",
+    acceptEdits: "自动编辑",
+    bypassPermissions: "跳过权限确认",
+    plan: "计划模式",
+    dontAsk: "免询问",
+    auto: "自动判断",
+  };
+  const actualPermissionText = props.actualPermissionMode ? permissionLabels[props.actualPermissionMode] : "等待回报";
   const fastReason = props.fastRuntime?.disabledReason;
   const fastTitle = [
     `请求 fast ${props.fastMode ? "on" : "off"}；实际状态由 Claude Code 回报，单独切换不会中断当前轮次`,
@@ -216,6 +227,9 @@ export function InputBox(props: {
       {/* 发送行：模型仍在上方选择；点击左侧模型·effort 状态选 effort，CC fast 真值紧跟其右 */}
       <div className="send-row">
         <div className="execution-status" ref={effortStatusRef}>
+          <span className="permission-runtime" title="Claude Code 最近实际上报的原生权限模式；上方下拉只是你的请求设置">
+            当前：{actualPermissionText}
+          </span>
           <button
             type="button"
             className="model-effort"

@@ -34,6 +34,11 @@ export function decideAttach(lastUrl: string | null, currentUrl: string, enabled
   return { attachFull: false, reason: "same-url" };
 }
 
+/** 输入已trim；CLI 对开头为 / 的消息按斜杠命令处理，必须保持原文。 */
+export function isCliSlashCommand(text: string): boolean {
+  return text.startsWith("/");
+}
+
 /**
  * 组装发给桥接的最终消息文本（页面全文 + 选中文字 + 用户问题）。
  * @param question 用户输入
@@ -43,6 +48,7 @@ export function decideAttach(lastUrl: string | null, currentUrl: string, enabled
  * @returns 最终消息文本
  */
 export function composeMessage(question: string, page: PageSnapshot | null, attachFull: boolean, richness: PageRichness = "standard"): string {
+  if (isCliSlashCommand(question)) return question;
   const parts: string[] = [];
   if (page && attachFull && page.markdown) {
     parts.push(`[页面上下文 url=${page.url} 标题=${page.title}]\n${page.markdown.slice(0, PAGE_RICHNESS_CAPS[richness])}`);

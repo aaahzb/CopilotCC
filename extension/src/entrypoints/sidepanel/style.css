@@ -42,6 +42,28 @@ body { margin: 0; font-family: "Segoe UI", system-ui, sans-serif; font-size: 13p
 .ask-card .row { display: flex; justify-content: flex-end; margin-top: 8px; }
 .ask-card .allow { background: #2f4f7f; color: #fff; border: none; border-radius: 4px; padding: 5px 14px; cursor: pointer; }
 .ask-card .allow:disabled { opacity: 0.4; cursor: default; }
+/* MCP/CLI 独立交互卡：窄侧栏可换行，长说明和 URL 不撑破布局 */
+.elicitation-card, .user-dialog-card { border: 1px solid #8064a2; border-radius: 8px; margin: 6px 10px; padding: 8px 10px; max-height: 55vh; overflow-y: auto; }
+.elicitation-heading { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline; }
+.elicitation-heading span, .elicitation-description { color: #9aa0a6; font-size: 11px; }
+.elicitation-message { margin-top: 5px; overflow-wrap: anywhere; white-space: pre-wrap; }
+.elicitation-fields { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+.elicitation-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.elicitation-field small { color: #9aa0a6; }
+.elicitation-field .required { color: #ff8a80; }
+.elicitation-field input[type="text"], .elicitation-field input[type="number"], .elicitation-field select { box-sizing: border-box; width: 100%; min-width: 0; background: #2a2b31; color: inherit; border: 1px solid #444; border-radius: 4px; padding: 5px 7px; }
+.elicitation-field input[type="checkbox"] { align-self: flex-start; }
+.elicitation-url { margin-top: 8px; color: #c9cdd4; overflow-wrap: anywhere; }
+.elicitation-errors { margin-top: 8px; color: #ff8a80; font-size: 12px; }
+.elicitation-card .row, .user-dialog-card .row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.elicitation-card .row button, .user-dialog-card .row button { border: 1px solid #555; border-radius: 4px; padding: 4px 12px; background: #2a2b31; color: inherit; cursor: pointer; }
+.elicitation-card .row .allow, .user-dialog-card .row .allow { background: #2e7d32; border-color: #2e7d32; color: #fff; }
+.elicitation-card .row .deny, .user-dialog-card .row .deny { background: #c62828; border-color: #c62828; color: #fff; }
+.elicitation-card .row button:disabled, .user-dialog-card .row button:disabled { opacity: .45; cursor: default; }
+.elicitation-record-detail, .user-dialog-record-detail, .user-dialog-detail { overflow-wrap: anywhere; }
+.user-dialog-detail { margin-top: 6px; }
+.user-dialog-detail p { margin: 5px 0; white-space: pre-wrap; }
+.user-dialog-guidance { margin-top: 6px; }
 .input-box { border-top: 1px solid #333; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; }
 .input-box .toggles { display: flex; flex-wrap: nowrap; overflow: hidden; min-width: 0; gap: 6px 8px; align-items: center; font-size: 12px; color: #9aa0a6; }
 .input-box .toggles > label { flex-shrink: 0; }
@@ -97,6 +119,9 @@ body { margin: 0; font-family: "Segoe UI", system-ui, sans-serif; font-size: 13p
 .code-wrap .code-copy:hover { opacity: 1; }
 .chat-switch { max-width: 140px; background: #2a2b31; color: inherit; border: 1px solid #444; border-radius: 4px; margin-left: 6px; }
 .message-wrap { position: relative; flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.history-more { align-self: center; flex-shrink: 0; margin: 0 0 4px; padding: 4px 12px; border: 1px solid #444; border-radius: 14px; background: #2a2b31; color: #c9cdd4; font-size: 12px; cursor: pointer; }
+.history-more:hover { border-color: #666; color: #fff; }
+.history-more:disabled { opacity: .55; cursor: default; }
 .scroll-bottom { position: absolute; right: 14px; bottom: 12px; background: #2f4f7f; color: #fff; border: 1px solid #444; border-radius: 16px; padding: 4px 10px; font-size: 12px; cursor: pointer; }
 .session-chip { font-family: monospace; font-size: 11px; background: #2a2b31; color: #9aa0a6; border: 1px solid #444; border-radius: 4px; padding: 1px 6px; cursor: pointer; margin-left: 6px; }
 .session-chip:hover { color: #e8eaed; border-color: #666; }
