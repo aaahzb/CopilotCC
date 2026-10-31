@@ -18,7 +18,7 @@
 
 - [x] README 改为简洁项目首页：定位、CI/下载/许可证/平台徽章、真实界面主图、三平台下载、核心亮点、快速上手和文档入口；完整说明不因首页精简而删除。
 - [x] 原详细内容拆分为 `docs/guide.md`（安装、功能、交互矩阵、安全与 FAQ）和 `docs/development.md`（架构、开发、测试、发布与验证边界）；Markdown 本地链接检查通过。
-- [x] `docs/img/main.png` 使用隔离 exe、真实 CLI、真实 Chrome 和 `127.0.0.1` 假上游生成，仅展示固定产品摘要与一次 Read 工具调用；runtimeErrors=[]，未调用真实 API。最终截图结果：`D:/ccc-fast-final-verify-20261026/tool-history-20261027/readme-screenshot-1793440454778/result.json`。
+- [x] 首页功能图采用用户提供的 `捕获.JPG` / `捕获1.JPG`：第一张展示当前网页与侧边栏问答，第二张展示独立窗口、原网页指向和双视图会话；分别整理为 `docs/img/main.png` / `docs/img/popup.jpg`。原截图保持不变且不提交，文档图片不含配对串或 API 密钥。
 - [x] Release 改为读取完整 Git 历史，自动组合固定下载说明、上一 tag 至当前 tag 的非合并提交列表和 compare 链接，不再只依赖 PR 驱动的 `--generate-notes`。同一段 shell 已 dry-run，实际生成包含提交条目的 Markdown；Bun YAML 解析和 `bash -n` 通过。
 - [ ] 未实际打 tag 或改写已有 Release；新正文逻辑待下一个 `v*` 标签执行真实 GitHub 发布端到端验证。
 
