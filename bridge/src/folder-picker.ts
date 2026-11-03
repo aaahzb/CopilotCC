@@ -54,7 +54,8 @@ export function openInFileManager(p: string): Promise<boolean> {
   const cmd = process.platform === "win32" ? "explorer.exe" : process.platform === "darwin" ? "open" : "xdg-open";
   return new Promise((resolve) => {
     try {
-      const child = spawn(cmd, [p], { detached: true, stdio: "ignore", windowsHide: true });
+      // Explorer 是 GUI 程序：windowsHide=true 会把它的窗口也隐藏，必须显式保持可见。
+      const child = spawn(cmd, [p], { detached: true, stdio: "ignore", windowsHide: false });
       child.on("spawn", () => {
         child.unref(); //  detached+unref：桥接退出不等文件管理器
         resolve(true);

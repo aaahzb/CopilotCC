@@ -14,6 +14,16 @@
 - [x] Task 12: page-extract.ts + UI 组件 + App 装配
 - [ ] Task 13: 端到端手动验收 + README.md
 
+## 别名主行打开当前文件夹（2026-10-31，已完成）
+
+- [x] 真实根因：`openInFileManager` 用 `windowsHide:true` 启动 `explorer.exe`，桥接虽返回 `folder.opened`，Windows Shell 却报告新窗口 `Visible=false`。只将该项改为 `false` 的对照实验中，目标窗口变为 `Visible=true`；不是扩展未发请求，也不是运行了旧桥接。
+- [x] 修复与入口：Explorer 启动显式保持 GUI 可见；📂 按钮移到别名主行，无需展开详情，复用现有无参数 `folder.open` 和服务端当前别名/绑定目录解析。详情区旧入口移除，成功反馈在主行下方显示，`folder.error` 仍在消息区可见。
+- [x] TDD：桥接新回归先因实际参数 `windowsHide:true` 与预期 `false` 不符而 RED；扩展两个主行用例先因按钮不存在而 RED，最小修改后转 GREEN。另覆盖未绑定禁用、详情展开后仍只有一个入口及失败错误可见。
+- [x] 自动验证：桥接 17 个测试文件、291/291 项通过；扩展 19 个测试文件、149/149 项通过；两端 typecheck、Windows exe 与扩展 production build 通过，扩展仅有既有大 chunk 警告。
+- [x] 真实 Windows/Chrome 验收：使用新 dist exe、独立 `CCC_BRIDGE_HOME` / `CLAUDE_CONFIG_DIR` 和真实扩展，在详情始终收起时点击主行 📂；两个别名各发送一帧无参数 `folder.open`，分别收到正确目录的 `folder.opened`，主行仅一个按钮且 runtimeErrors=[]。Windows Shell 确认两个目标窗口均为 `Visible=true`，截图与结果位于 `D:/ccc-fast-final-verify-20261026/tool-history-20261027/folder-open-20261031-final-2`。未调用真实 API，未停止或替换 Desktop 当前桥接。
+- [x] 发布追查（2026-11-03）：远端 `v2026.10.31.2` 指向 `72b188b`，该 tag 的源码和用户实际运行的 CI exe 均仍为 `windowsHide:true`；修复当时只在未提交工作区，CI 按 tag 构建并无漏文件。旧 Release 不回改，修复必须由新提交和新 tag 发布。
+- [ ] 新版发布验收：推送本次提交并发布 `v2026.11.03.1` 后，核对 Windows CI 资产内的 Explorer 启动参数为 `windowsHide:false`，再下载干净环境验证真实窗口可见；发布前不得宣称线上版本已修复。
+
 ## GitHub 首页与 Release 说明（2026-10-31）
 
 - [x] README 改为简洁项目首页：定位、CI/下载/许可证/平台徽章、真实界面主图、三平台下载、核心亮点、快速上手和文档入口；完整说明不因首页精简而删除。

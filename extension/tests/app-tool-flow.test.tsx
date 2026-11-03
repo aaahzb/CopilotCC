@@ -118,6 +118,44 @@ describe("App 斜杠命令发送", () => {
   });
 });
 
+describe("App 别名栏打开文件夹", () => {
+  it("详情收起时可从别名主行发送 folder.open，并显示成功反馈", async () => {
+    const { host, ws } = await mountApp();
+    await emit(ws, {
+      type: "alias.list.data",
+      aliases: [{ id: "alias-1", name: "笔记", folder: "D:\\notes", sessionId: "session-1" }],
+      currentId: "alias-1",
+    });
+    const button = host.querySelector<HTMLButtonElement>('.alias-bar-row button[aria-label="在文件资源管理器中打开当前文件夹"]');
+    expect(button).not.toBeNull();
+    expect(button?.disabled).toBe(false);
+    await act(async () => button?.click());
+    const frames = ws.sent.map((raw) => JSON.parse(raw) as { type: string });
+    expect(frames.filter((message) => message.type === "folder.open")).toEqual([{ type: "folder.open" }]);
+
+    await emit(ws, { type: "folder.opened", path: "D:\\notes", script: null });
+    expect(host.querySelector(".alias-bar > .folder-open-flash")?.textContent).toBe("已打开");
+    await act(async () => {
+      Array.from(host.querySelectorAll<HTMLButtonElement>("button")).find((item) => item.textContent === "▸ 详情")?.click();
+    });
+    expect(host.querySelectorAll('button[aria-label="在文件资源管理器中打开当前文件夹"]')).toHaveLength(1);
+  });
+
+  it("没有别名或绑定目录时主行按钮禁用", async () => {
+    const { host } = await mountApp();
+    const button = host.querySelector<HTMLButtonElement>('.alias-bar-row button[aria-label="在文件资源管理器中打开当前文件夹"]');
+    expect(button).not.toBeNull();
+    expect(button?.disabled).toBe(true);
+  });
+
+  it("打开失败时无需展开详情即可在消息区看到错误", async () => {
+    const { host, ws } = await mountApp();
+    await emit(ws, { type: "folder.error", message: "无法打开文件管理器: D:\\notes" });
+    expect(host.querySelector(".alias-detail")).toBeNull();
+    expect(host.querySelector(".message-wrap")?.textContent).toContain("无法打开文件管理器: D:\\notes");
+  });
+});
+
 describe("App 压缩进度显示", () => {
   it("start 后状态栏出现“正在压缩”，done 插入记录行并清除提示", async () => {
     const { host, ws } = await mountApp();

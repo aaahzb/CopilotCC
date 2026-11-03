@@ -3,7 +3,7 @@ import type { AliasInfo, PageRichness, SessionInfo } from "../lib/protocol";
 import { FolderBar } from "./FolderBar";
 
 /**
- * 别名栏：平时只显别名标签（一行：别名下拉 + 新建/删除/详情按钮）。
+ * 别名栏：平时只显别名标签（一行：别名下拉 + 打开文件夹/新建/删除/详情按钮）。
  * 文件夹+会话详情默认折叠，点「详情」展开（改绑定即改别名，粘性同步）。
  * 「＋新建」时才出现绑定框（别名+文件夹+会话），创建即切换；删别名不动会话。
  */
@@ -114,6 +114,15 @@ export function AliasBar(props: {
             <option key={a.id} value={a.id}>{a.name}</option>
           ))}
         </select>
+        <button
+          className="mini-btn"
+          aria-label="在文件资源管理器中打开当前文件夹"
+          title={current ? `在文件资源管理器中打开别名「${current.name}」所在文件夹（内含续聊脚本，终端运行即可回到 CLI 接着聊）` : "在文件资源管理器中打开当前绑定文件夹"}
+          disabled={!current && !props.bound}
+          onClick={props.onOpenFolder}
+        >
+          📂
+        </button>
         <button className="mini-btn" title="新建别名（绑定文件夹+会话）" onClick={startCreate}>＋新建</button>
         {current ? (
           <button className="mini-btn danger" title="删除当前别名（会话保留）" onClick={confirmDelete}>🗑</button>
@@ -126,6 +135,7 @@ export function AliasBar(props: {
           {expanded ? "▾ 收起" : "▸ 详情"}
         </button>
       </div>
+      {props.openFolderFlash ? <div className="folder-open-flash">{props.openFolderFlash}</div> : null}
       {creating ? (
         <div className="alias-create">
           <input
@@ -195,17 +205,6 @@ export function AliasBar(props: {
               <option value="standard">标准（约 3 万字）</option>
               <option value="rich">丰富（约 10 万字）</option>
             </select>
-          </div>
-          <div className="folder-open-row">
-            <button
-              className="mini-btn"
-              title={current ? `打开别名「${current.name}」所在文件夹（内含「继续聊天-${current.name}.sh」续聊脚本，终端运行即可回到 CLI 接着聊）` : "打开当前绑定文件夹"}
-              disabled={!current && !props.bound}
-              onClick={props.onOpenFolder}
-            >
-              📂 打开文件夹
-            </button>
-            {props.openFolderFlash ? <span className="folder-open-flash">{props.openFolderFlash}</span> : null}
           </div>
           <FolderBar
             history={props.history}
