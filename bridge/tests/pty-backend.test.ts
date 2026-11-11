@@ -10,7 +10,7 @@ import { createPtyBackend, type PtySpawnOptions } from "../src/pty-backend";
 const OPTIONS: PtySpawnOptions = {
   file: "claude",
   args: ["--resume", "11111111-1111-4111-8111-111111111111"],
-  cwd: "C:/work",
+  cwd: path.resolve("work"),
   cols: 100,
   rows: 30,
   env: { ONLY_TEST: "yes" },

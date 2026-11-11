@@ -126,3 +126,11 @@
 - 后续只读核对本机 CLI 2.1.316 实际键表与既有真实导出记录后，根因进一步明确：`[` 并未删除，仍是 detailed viewer 的 `print to scrollback`，只是提示移入 `?` 帮助；普通画面的 `[`/`]` 则是上一条/下一条用户提示导航。正确最小修复是用 `Showing detailed transcript` 与 `↑↓ scroll` 同时确认详细视图，再发送 `[`；普通画面绝不发送。第二版“详细视图滚轮映射方向键”不作为最终替代方案，避免叠加未验收交互；真实验收继续要求原生 scrollHeight 增长、向上/向下滚轮实际移动 scrollTop，且滚轮不向 PTY 发送方向键。
 - 最终真实证据 `interaction-fix-real-portable-02`：真实 CLI 的 Ctrl+O 与 `[` 均实际进入 PTY，导出后 xterm scrollHeight 从 526 增至 6222；真实 CDP 向上滚轮使 scrollTop 从 5696 移至 4976，向下从 4976 回到 5696，代理未观察到滚轮方向键。该轮同时通过真实系统/内嵌 resume、旧上下文、镜像、Ctrl+C 中断后继续、退出恢复和单 exe 正常关闭，且只访问本机假上游。
 - 最终完整假 CLI 证据 `interaction-fix-embedded-05` 与真实系统专项 `interaction-fix-system-05` 互补覆盖：前者验证真实剪贴板、中文/IME、多行粘贴、resize、Hooks、重连与完整生命周期，后者验证 9637ms 慢启动成功不报错、20 秒最终超时取消及迟到 child 不启动。三轮最终 JSON 均无运行错误或清理残留；real-only 报告中非适用的假 CLI 字段保持 false，不把这些字段解读为功能失败。
+
+## 2026-11-12 CI #42 跨平台失败发现
+
+- Ubuntu 与 macOS 的 25 项失败不是 25 个独立产品缺陷，而是两个测试准备问题：12 项 Windows 字面路径被 POSIX `path.isAbsolute()` 拒绝；13 项 WS fixture 在假运行时之前被真实 CLI 解析门槛以 `CLI_NOT_FOUND` 阻断。Windows Runner 恰好能解析 Claude，因此同一提交在 Windows 通过，形成平台相关的隐式环境依赖。
+- `TerminalService.openRuntime()` 先执行 `deps.resolveCli()`，再调用 system/embedded runtime；仅 mock 终端适配器不足以隔离 CLI 发现。把可选 `resolveCli` 放在服务端 terminal deps 装配层，可让每个 fixture 注入自己的临时路径，避免全局 `CLAUDE_CODE_PATH` 与 `cachedCliPath` 在测试间形成隐式耦合；生产默认仍是 `resolveClaudeExecutable`。
+- 两个新增断言不仅检查 fixture 配置，还检查 system context 和实际 PTY spawn 收到的 `cliPath` / `file`。实现前二者都拿到本机真实 Claude 路径，证明测试能捕获原缺口；实现后同命令 20/20。通用路径夹具改用宿主 `path.resolve(...)`，但相对 cwd 负测试、平台不匹配负测试及 Windows 长路径/dlopen 语义均保留。
+- 日志中的开发 Origin 放行、普通 stderr 和故意 `boom-测试异常` 均有对应预期场景，不应按关键词当作失败根因。有效统计来自完整日志：Ubuntu/macOS 各 5 文件、25 失败、398 通过、4 跳过；共同测试步骤失败使后续真实 PTY、发行布局和项目树外 smoke 没有运行，旧 #42 不能作为这些后续步骤的新证据。
+- 本地修复证据为原失败五文件 36/36、bridge 427/427、启动器 8/8、extension 180/180，两端 typecheck 与扩展 build 通过。该证据只支持提交修复，不支持宣称 POSIX 已转绿；必须等待新提交的 Runner。即便 macOS CI 通过，也不等于 Terminal.app、原生 PTY、签名和真实窗口产品验收。

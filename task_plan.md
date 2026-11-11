@@ -2,7 +2,7 @@
 
 日期：2026-11-10
 执行方式：Inline Execution
-状态：Windows 绿色单文件、真实 Claude Code CLI 2.1.316 双终端、完整假 CLI、生命周期、双终端交互缺陷修复及最终静态检查均已完成；单文件真实大小 51.6 MiB，公开 CI/Release 已接为仅发布 `CopilotCC.exe`。macOS 实机、GitHub Runner 与真实 API 中转仍未验收，不自动提交、推送或发布。
+状态：Windows 绿色单文件、真实 Claude Code CLI 2.1.316 双终端、完整假 CLI、生命周期、双终端交互缺陷修复及最终静态检查均已完成；单文件真实大小 51.6 MiB，公开 CI/Release 已接为仅发布 `CopilotCC.exe`。GitHub Actions #42 已实际运行并暴露跨平台测试准备缺陷，六文件修复及本地完整回归已完成；修复后的三平台云端复验、macOS 实机与真实 API 中转仍未验收。本轮已获提交并推送 `main` 授权，不包括 tag 或 Release。
 
 ## 目标
 
@@ -49,21 +49,32 @@
 - [x] Task 2：以失败测试固定成功后清旧启动错误、复制/粘贴按钮与快捷键、真实 transcript 检测后导出可滚历史，再最小实现（聚焦 50/50；`interaction-fix-embedded-04` 完整假 CLI 真实验收通过）。
 - [x] Task 3：两端完整回归、typecheck、扩展 production build、完整 Windows 目录与绿色单 exe 重建（bridge 427/427、extension 180/180；新 exe 54,134,784 bytes）。
 - [x] Task 4：用新 exe + 真实 Chrome + 真实 CLI/隔离假上游复验慢启动、迟到取消、滚轮、选择、中文/多行复制粘贴、Ctrl+C 中断和 resize；`interaction-fix-system-05`、`interaction-fix-real-portable-02`、`interaction-fix-embedded-05` 均完整通过且关键截图已人工核对，文档已同步。
-- [x] 全程未自动提交、推送、打 tag 或发布；macOS、GitHub Runner 与真实 API 中转仍保持未验收边界。
+- [x] 全程此前未自动提交、推送、打 tag 或发布；CI #42 已提供 GitHub Runner 真实失败证据，macOS 实机与真实 API 中转仍保持未验收边界。
+
+## 阶段 E：GitHub Actions #42 跨平台测试修复（2026-11-12）
+
+- [x] 获取完整 Ubuntu/macOS 失败日志并分类：5 文件、25 项失败；12 项 Windows 路径夹具不适用于 POSIX，13 项假运行时测试在入口被真实 CLI 解析的 `CLI_NOT_FOUND` 阻断，Windows CI 通过。
+- [x] 严格 RED→GREEN：新增系统/内嵌运行时实际收到注入 CLI 的断言，本机先 2 项失败、18 项通过；可选 `resolveCli` 注入点后 20/20，生产默认解析不变。
+- [x] 通用路径夹具改用 `path.resolve(...)`，不放宽生产绝对路径校验；原失败五文件 36/36，bridge 427/427、启动器 8/8、extension 180/180，两端 typecheck 与扩展 build 通过。
+- [ ] 按已获授权仅提交相关修复和文档、核对用户本人身份并推送 `main`；跟踪新提交的三平台真实 CI。未获 tag/Release 授权，macOS 实机产品仍未验收。
 
 ## 当前阻塞
 
 1. 无首次修改授权阻塞：用户已选择创建 `feature/dual-terminal` 并授权按计划修改已有文件。
-2. 所有提交检查点继续跳过；不自动提交、推送、打 tag 或发布。
-3. 阶段 A Task 1～8 和阶段 B Task 1～7 已完成。`embedded-green-27` 与补全截图后的 `embedded-green-28` 均完整通过全部必需项，Hook 失败、页面运行错误、真实上游请求和最终清理残留均为零；最终 bridge 35 文件 403/403、extension 24 文件 173/173、两端 typecheck、扩展 production build、原生布局/SHA-256、工作流 YAML 与脚本语法检查通过。CI/Release 未触发云端运行，macOS 仍无实机证据。
+2. 阶段 E 已获提交修复及必要文档、推送 `main` 的明确授权；提交只能使用用户本人身份，不含共同作者或 AI 署名，不延伸到 tag/Release。
+3. 阶段 A Task 1～8、阶段 B Task 1～7 和后续真实 Windows 验收均已完成。CI #42（提交 `d4ce58f`）已真实触发：Windows 通过，Ubuntu/macOS 在共同测试步骤各失败 25 项，后续平台步骤未执行；六文件修复后的本地回归通过，但新提交对应的三平台 Runner 结果仍待取得，macOS 实机仍无证据。
 4. 曾误写项目外文件 `D:\SVN_Cursor\bridge\tests\terminal-child.test.ts`；正确项目内文件已建立，项目外误写文件仍保留，删除前必须另获用户确认。
-5. `README.md`、`docs/guide.md`、`docs/development.md`、`TODO.md` 已完成双终端更新：Windows 完整目录、插件终端用法、重连/刷新/关闭、缺帧、原生失败隔离、构建验收命令及真实证据均已写明；macOS 与 GitHub Runner 保持未验收。
+5. `README.md`、`docs/guide.md`、`docs/development.md`、`TODO.md` 已完成双终端更新；本次同步 CI #42 的真实失败分类、修复和本地证据，继续区分云端自动测试与 macOS 实机产品验收。
 6. 阶段 C 最终证据：单 exe 54,134,272 bytes（约 51.6 MiB），SHA-256 `9a32c30310efdf9b4b6eda17387a34a1687264e72269972494b99820f0995598`。真实 CLI `portable-real-cli-dual-terminal-20261111-02`、完整假 CLI `portable-embedded-green-20261111-04`、生命周期 `portable-lifecycle-20261111-06` 均退出码 0；生命周期 15 项全 true，进度截图人工确认非黑帧，源/副本哈希一致，所有最终 cleanup remaining/errors 双空。完整 bridge 422/422、extension 173/173 和两端 typecheck/build 通过；最终聚焦 6 文件 46/46、启动器 8/8、原生布局/SHA-256、CI/Release YAML 与 20 个 shell 段语法通过。
 
 ## 遇到的错误
 
 | 错误 | 次数 | 处理 |
 |---|---:|---|
+| CI #42 通用夹具的 Windows 绝对路径在 Ubuntu/macOS 被判为相对路径 | 12 项 | 通用夹具改 `path.resolve(...)`；生产校验、相对路径负测试与 Windows 长路径专项保持不变 |
+| CI #42 两个 WS 套件未注入 CLI 路径，假运行时之前即返回 `CLI_NOT_FOUND` | 13 项 | 增加可选 `resolveCli` 测试注入点并断言实际收到注入值；生产默认解析不变 |
+| 首次 RED 命令在 `extension` 目录执行，未找到目标测试 | 1 | 不作为测试证据；改在 `bridge` 目录运行，得到有效 2 项 RED，随后同命令转 20/20 |
+| 并行最终复验的扩展命令继承 `bridge` CWD，误跑桥接且缺少 build script | 1 | 不记作扩展失败；改用 `npm --prefix D:/.../extension` 明确目录，扩展 typecheck、180/180 和 production build 均通过 |
 | Task 5 四个新模块不存在，RED 为 4 个 suite 失败 | 1 | 按计划补最小实现，聚焦测试转为 15/15 |
 | `TerminalBackend` 从 `terminal-lease` 误导入，typecheck 失败 | 1 | 改从 `protocol` 导入，typecheck 与全套测试通过 |
 | `terminal-child.test.ts` 首次写到项目外错误根路径 | 1 | 已在正确项目路径重建；误写文件未擅自删除，等待用户确认清理 |

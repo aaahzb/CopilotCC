@@ -57,6 +57,8 @@ export interface ServerDeps {
     /** 身份匹配后定向清理异常重启遗留的内嵌 PTY；unknown 身份不得调用 */
     recoverEmbedded?: (record: TerminalLeaseRecord) => Promise<void>;
     privateDir: string;
+    /** 测试注入确定性的 CLI 路径；生产缺省使用真实 Claude 解析器 */
+    resolveCli?: () => string | undefined;
     /** 重启后接管既有 exit.json；不启动新终端 */
     recover?: (record: TerminalLeaseRecord) => TerminalRuntimeHandle;
     /** 测试注入身份核对；生产缺省使用 PID+可执行路径+启动时间的真实查询 */
@@ -1330,7 +1332,7 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
     configDir: deps.configDir ?? path.dirname(deps.terminal.privateDir),
     privateDir: deps.terminal.privateDir,
     getPort: () => current.port,
-    resolveCli: resolveClaudeExecutable,
+    resolveCli: deps.terminal.resolveCli ?? resolveClaudeExecutable,
     system: deps.terminal.system,
     ...(deps.terminal.embedded ? { embedded: deps.terminal.embedded } : {}),
     ...(deps.terminal.recoverEmbedded ? { recoverEmbedded: deps.terminal.recoverEmbedded } : {}),

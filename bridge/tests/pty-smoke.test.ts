@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import path from "node:path";
 import { runPtySmoke } from "../src/pty-smoke";
 import type { PtyBackend, PtyExitEvent, PtyProcess } from "../src/pty-backend";
 
@@ -35,7 +36,7 @@ describe("显式 PTY 行为 smoke", () => {
     const result = await runPtySmoke({
       expectedPlatform: process.platform,
       expectedArch: process.arch,
-      cliPath: "C:/isolated/fake-claude.exe",
+      cliPath: path.resolve("isolated/fake-claude.exe"),
       executableDir: "C:/isolated/bridge",
       backend: f.backend,
     });
@@ -53,7 +54,7 @@ describe("显式 PTY 行为 smoke", () => {
     await expect(runPtySmoke({
       expectedPlatform: process.platform === "win32" ? "darwin" : "win32",
       expectedArch: process.arch,
-      cliPath: "C:/isolated/fake-claude.exe",
+      cliPath: path.resolve("isolated/fake-claude.exe"),
       executableDir: "C:/isolated/bridge",
       backend: f.backend,
     })).rejects.toThrow("PTY_SMOKE_PLATFORM_MISMATCH");
@@ -66,7 +67,7 @@ describe("显式 PTY 行为 smoke", () => {
     await expect(runPtySmoke({
       expectedPlatform: process.platform,
       expectedArch: process.arch,
-      cliPath: "C:/isolated/fake-claude.exe",
+      cliPath: path.resolve("isolated/fake-claude.exe"),
       executableDir: "C:/isolated/bridge",
       backend: f.backend,
     })).rejects.toThrow("PTY_SMOKE_EXIT_0");

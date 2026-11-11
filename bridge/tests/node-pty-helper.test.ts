@@ -1,4 +1,5 @@
 import { PassThrough } from "node:stream";
+import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseHelperRequest, runNodePtyHelper } from "../src/node-pty-helper";
 import type { PtySpawnOptions } from "../src/pty-backend";
@@ -12,7 +13,7 @@ function options(): PtySpawnOptions {
   return {
     file: "C:/runtime/node.exe",
     args: ["child.cjs"],
-    cwd: "C:/work",
+    cwd: path.resolve("work"),
     cols: 80,
     rows: 24,
     env: { ONLY_TEST: "yes" },

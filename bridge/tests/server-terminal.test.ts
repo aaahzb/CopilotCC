@@ -80,6 +80,7 @@ async function fixture(withAlias = false) {
   previousConfigDir = process.env.CLAUDE_CONFIG_DIR;
   process.env.CLAUDE_CONFIG_DIR = path.join(dir, "claude-config");
   const work = path.join(dir, "work with space");
+  const cliPath = path.join(dir, process.platform === "win32" ? "fake-claude.exe" : "fake-claude");
   fs.mkdirSync(work, { recursive: true });
   writeTranscript(work, SID_1, "初始会话");
   const sessions = new SessionManager(path.join(dir, "sessions.json"));
@@ -123,6 +124,7 @@ async function fixture(withAlias = false) {
     }) as never,
     terminal: {
       privateDir: path.join(dir, "terminal"),
+      resolveCli: () => cliPath,
       system: async (context) => {
         contexts.push(context);
         return runtime;
@@ -140,7 +142,7 @@ async function fixture(withAlias = false) {
   }
   await view.inbox.waitWhere((message) => message.type === "folder.bound" && message.sessionId === SID_1, "绑定 SID_1");
   return {
-    dir, work, sessions, aliases, alias, server, view, contexts, createdSessions,
+    dir, work, cliPath, sessions, aliases, alias, server, view, contexts, createdSessions,
     sdkSend, sdkClose, runtimeStop,
     exit: (code: number | null) => exitCallback?.(code, "exit"),
   };
@@ -256,6 +258,7 @@ describe("系统终端生产 WS 接线", () => {
   it("接管后写请求全部 READ_ONLY，历史、草稿和快照仍可用", async () => {
     const f = await fixture();
     await openTerminal(f);
+    expect(f.contexts[0]?.cliPath).toBe(f.cliPath);
     expect(f.sdkClose).toHaveBeenCalled();
     const writes = [
       { type: "chat.send", text: "不得双写" }, { type: "chat.abort" },

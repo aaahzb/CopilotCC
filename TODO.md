@@ -40,7 +40,7 @@
 - [x] 不再把隔离假 CLI 的 `resumedCorrectSession=true` 当作真实 CC 恢复证据；真实 CLI 2.1.316 的 `real-cli-resume-20261111-03/04` 均证明恢复请求携带首轮用户与助手独特标记、消息数由 2 增至 4，并继续写入同一 sessionId，全程只访问 `127.0.0.1` 假上游，未调用真实 API。
 - [x] 真实双终端完整补验：`real-cli-dual-terminal-20261111-12` 退出码 0，插件终端与 Windows Terminal 都完成真实 `--resume`、有效 resume Hook、旧用户/旧助手上下文、同一 JSONL、双视图镜像和退出恢复。系统关窗采样仍为包装 PID 消失且无 exit.json，但关窗后的新 idle 正常到达，双视图恢复可写并保留草稿；`realCliSystemExitRestored=true`、`realCliBridgeShutdownClean=true`，cleanup remaining/errors 双空。两张真实截图已人工核对，三轮请求分别包含 2、5、7 条消息，`realApiCalled=false`。
 - [x] 系统关窗缺陷 RED→GREEN：第 11 轮证明旧适配器只等 exit.json，导致包装进程已消失时 lease 永久 active；新回归先以退出回调 0 次失败，最小修复后聚焦 6/6。生产仅在无退出文件且包装 PID 明确 ESRCH 时补发退出，存活或查询未知不释放。修复后完整假 CLI 双终端 `embedded-post-system-close-fix-20261111-01` 全部 33 项通过，hook/runtime 错误与 cleanup 残留均为零；bridge 35 文件 405/405、extension 24 文件 173/173、两端 typecheck 和扩展 production build 通过。
-- [ ] macOS Terminal.app、原生 PTY、签名和真实窗口，以及 GitHub Runner 仍未实际验收。
+- [ ] macOS Terminal.app、原生 PTY、签名和真实窗口仍无实机证据；GitHub Runner 后续已在 CI #42 实际执行，见下方跨平台修复记录。
 
 ## Windows 绿色单文件（2026-11-11，真实双终端与生命周期已完成）
 
@@ -51,7 +51,7 @@
 - [x] 新 payload 完整假 CLI `portable-embedded-green-20261111-04` 退出码 0：33 项终端行为及便携单文件、运行身份、正常退出全部 true，覆盖中文/IME、132×36、Hooks、双视图、重连、刷新、缺帧、异常恢复与原生失败隔离；`runtimeErrors=[]`、`hookFailures=[]`、`upstreamRequests=0`，cleanup 双空。真实终端截图已人工核对。
 - [x] 新 payload 生命周期 `portable-lifecycle-20261111-06` 退出码 0、`ok=true`：15 项必需断言全部通过，包括先清理再解压、旧版本/staging 回收、活跃/未知/foreign/junction 保护、篡改重建、重复启动有界、无 sidecar、GUI subsystem 和当前哈希一致。源 exe 与验收副本 SHA-256 均为 `9a32c303…5598`，cleanup remaining/errors 双空。第 05 轮 `PrintWindow` 虽成功却抓到未绘制黑帧，未采用为视觉证据；第 06 轮增加客户区像素门槛后，截图已人工确认“正在解压当前组件”和绿色进度条真实可见，未修改生产启动器或增加人为延时。
 - [x] 当前最终回归：bridge 38 个测试文件 422/422、extension 24 个测试文件 173/173，两端 typecheck 和扩展 production build 通过；构建仅有既有大 chunk 警告。生命周期根目录策略已接入本机白名单与 GitHub `RUNNER_TEMP` 严格子目录，CI/Release 配置已改为构建、验收并只发布单 exe。最终聚焦 6 文件 46/46、启动器 8/8、bridge typecheck、原生布局/SHA-256、工作流 YAML 与 20 个 shell 段语法、脚本语法及 `git diff --check` 均通过。
-- [ ] macOS 与 GitHub Runner 未实际执行本轮新配置；未自动提交、推送、打 tag 或发布，不能宣称云端 Release 已生成。
+- [ ] macOS 实机仍未验收；CI #42 已实际运行新配置但 Ubuntu/macOS 共同测试步骤失败，后续平台步骤未执行。修复后的三平台结果、tag 与 Release 仍待验证，不能宣称云端 Release 已生成。
 
 ## 双终端交互缺陷修复（2026-11-11，Windows 已完成）
 
@@ -59,7 +59,15 @@
 - [x] 侧边栏：新打开和 `terminal.opened` 清旧启动错误，后续新错误不被误清。插件终端提供复制/粘贴按钮、选择感知 Ctrl+C、Ctrl+Shift+C/V 和明确反馈；真实 CLI 的「可滚历史」先确认 detailed transcript，再发送 `[` 导出，普通画面不会误发导航键。
 - [x] 真实 CLI 单 exe `interaction-fix-real-portable-02` 退出码 0：插件终端与 Windows Terminal 均真实恢复旧上下文并同步镜像，Ctrl+C 中止本机延迟请求后可继续会话；导出后 xterm scrollHeight 526→6222，向上滚轮 scrollTop 5696→4976、向下 4976→5696，且没有滚轮方向键进入 PTY。单文件身份、正常托盘退出、桥接清理均通过，`realApiCalled=false`、`runtimeErrors=[]`、cleanup 双空，三张关键截图已人工核对。
 - [x] 最终完整假 CLI 单 exe `interaction-fix-embedded-05` 退出码 0且 `ok=true`：真实剪贴板多行复制、Ctrl+C/Ctrl+Shift+C 选区复制、按钮/Ctrl+Shift+V 中文多行粘贴、IME、132×36 resize、Hooks、折叠、重连重放、关闭/刷新/异常恢复、双终端互斥及便携正常退出全部通过；`commandHooksWithoutFailure=true`、`realApiCalled=false`、`runtimeErrors=[]`、cleanup 双空，四张关键截图已人工核对。
-- [x] 最终静态回归：bridge 38 个测试文件 427/427、extension 24 个测试文件 180/180，两端 typecheck 和扩展 production build 通过；绿色单 exe 为 `bridge/dist/portable-win-x64/CopilotCC.exe`（54,134,784 bytes，约 51.6 MiB）。未自动提交、推送、打 tag 或发布；macOS、GitHub Runner 与真实 API 中转仍未验收。
+- [x] 最终静态回归：bridge 38 个测试文件 427/427、extension 24 个测试文件 180/180，两端 typecheck 和扩展 production build 通过；绿色单 exe 为 `bridge/dist/portable-win-x64/CopilotCC.exe`（54,134,784 bytes，约 51.6 MiB）。macOS 实机与真实 API 中转仍未验收；GitHub Runner 已运行 CI #42，失败分类与修复见下节。
+
+## GitHub Actions #42 跨平台测试修复（2026-11-12，本地修复完成）
+
+- [x] 真实 CI #42（run `43058589061`，提交 `d4ce58f`）已核实：Windows 通过；Ubuntu 与 macOS 均为 5 个测试文件失败、25 项失败、398 项通过、4 项跳过。普通 stderr、开发模式 Origin 警告和故意注入的 `boom-测试异常` 不是失败根因。
+- [x] 其中 12 项是通用夹具使用 `C:/work` 等 Windows 路径，POSIX 的 `path.isAbsolute()` 合法拒绝；通用夹具改用 `path.resolve(...)`，保留生产绝对路径校验、相对路径负测试和 Windows 长路径专项。
+- [x] 另外 13 项是 WS 测试只注入假终端运行时、未注入 CLI 路径，真实 CLI 解析在假运行时之前返回 `CLI_NOT_FOUND`；`ServerDeps.terminal.resolveCli` 增加可选测试注入点，生产缺省仍为 `resolveClaudeExecutable`。两个新增注入值断言先在本机 RED（2 项失败、18 项通过），最小实现后 20/20 通过。
+- [x] 本地回归：原失败五文件 36/36，bridge 38 文件 427/427、启动器 8/8，extension 24 文件 180/180；两端 typecheck 与扩展 production build 均通过，仅有既有大 chunk 警告。
+- [ ] 已获提交并推送 `main` 授权；推送后必须读取新提交对应的三平台真实 run，不能把旧 #42 或本地 Windows 结果当作 POSIX 已通过。macOS 实机产品功能仍未验收，不打 tag、不发布 Release。
 
 ## 别名主行打开当前文件夹（2026-10-31，已完成）
 

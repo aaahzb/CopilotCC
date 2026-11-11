@@ -109,6 +109,7 @@ async function fixture(options: { spawnError?: string; tinyBuffer?: boolean; ear
   previousConfigDir = process.env.CLAUDE_CONFIG_DIR;
   process.env.CLAUDE_CONFIG_DIR = path.join(dir, "claude-config");
   const work = path.join(dir, "work with space");
+  const cliPath = path.join(dir, process.platform === "win32" ? "fake-claude.exe" : "fake-claude");
   fs.mkdirSync(work, { recursive: true });
   writeTranscript(work, SID_1, "初始会话");
   writeTranscript(work, SID_2, "终端新会话");
@@ -166,6 +167,7 @@ async function fixture(options: { spawnError?: string; tinyBuffer?: boolean; ear
     }) as never,
     terminal: {
       privateDir: path.join(dir, "terminal"),
+      resolveCli: () => cliPath,
       system: systemStart,
       embedded: (context) => {
         startContext = context;
@@ -180,7 +182,7 @@ async function fixture(options: { spawnError?: string; tinyBuffer?: boolean; ear
   view.ws.send(JSON.stringify({ type: "folder.bind", path: work }));
   await view.inbox.waitWhere((message) => message.type === "folder.bound" && message.sessionId === SID_1, "绑定 SID_1");
   return {
-    dir, work, sessions, server, view, createdSessions, sdkSend, sdkClose, pty, spawn, systemStart,
+    dir, work, cliPath, sessions, server, view, createdSessions, sdkSend, sdkClose, pty, spawn, systemStart,
     get startContext() {
       if (!startContext) throw new Error("embedded 尚未启动");
       return startContext;
@@ -322,7 +324,7 @@ describe("内嵌终端真实 WS 服务接线", () => {
     const other = await connect(f.server.port);
     const opened = await openEmbedded(f);
     expect(f.spawn.mock.calls[0]?.[0].args.slice(0, 2)).toEqual(["--resume", SID_1]);
-    expect(f.spawn.mock.calls[0]?.[0]).toMatchObject({ cwd: f.work, cols: 120, rows: 32 });
+    expect(f.spawn.mock.calls[0]?.[0]).toMatchObject({ file: f.cliPath, cwd: f.work, cols: 120, rows: 32 });
     const saved = new TerminalLeaseStore(path.join(f.dir, "terminal", "embedded-lease.json")).load();
     expect(saved?.identity).toEqual({
       pid: 4321, executable: "C:/fake/claude.exe", startedAt: "2026-11-10T08:00:00.000Z",

@@ -179,3 +179,12 @@
 - 历史检测根因修正后，以真实页脚而非可见 `[` 作为详细视图条件：新回归先因未发送 `[` 和超时提示缺少手动键序而 2 项失败，最小恢复安全导出后聚焦 8/8；普通画面明确不发送 `[`。完整扩展 24 文件 180/180、typecheck、production build，bridge 38 文件 427/427、typecheck均 fresh 通过。第 02 轮真实 portable 验收已启动，硬断言为导出键实际进入 PTY、scrollback 高度增长、滚轮上下移动原生视口且没有滚动方向键输入帧；结果待取证。
 - `interaction-fix-real-portable-02` 已退出码 0并独立核对 `ok=true`：真实 CLI 2.1.316 在项目外单 exe 的插件终端和 Windows Terminal 中均恢复旧用户/助手上下文并同步镜像；Ctrl+C 产生 1 次本机延迟请求 abort，之后可继续。真实 Ctrl+O 和 `[` 均进入 PTY，scrollHeight 526→6222，滚轮向上/向下分别移动 5696→4976→5696，未发送滚轮方向键。便携身份、系统/内嵌退出恢复、托盘正常退出及桥接清理均通过，`outerExitCode=0`、`realApiCalled=false`、`runtimeErrors=[]`、cleanup 双空；历史滚轮、内嵌 resume、系统 resume 三张截图已人工查看。
 - 最终 `interaction-fix-embedded-05` 完整假 CLI 便携回归退出码 0并独立核对 `ok=true`：复制/粘贴工具栏、真实系统剪贴板多行复制、Ctrl+C/Ctrl+Shift+C、按钮/Ctrl+Shift+V 中文多行粘贴、IME、132×36 resize、Hooks、折叠、重连重放、pagehide/桥接关闭/异常恢复、原生失败隔离与双终端互斥全部通过。`commandHooksWithoutFailure=true`、`realApiCalled=false`、`runtimeErrors=[]`、Hook 失败和 cleanup 均为空；初始窗口、中文 IME、选区复制和中文多行粘贴四张截图已人工查看。阶段 D 四项验收全部完成，仅剩文档与最终工作区复核；未提交或发布。
+
+## 2026-11-12 GitHub Actions #42 跨平台测试修复
+
+- 读取 CI #42（run `43058589061`，提交 `d4ce58f`）完整失败日志：Windows job 通过；Ubuntu job `130654648629` 与 macOS job `130654648912` 均为 5 个测试文件失败、25 项失败、398 项通过、4 项跳过。页面 annotation 和普通 stderr 不能替代完整断言统计。
+- 12 项失败来自 `pty-backend`、`node-pty-helper`、`pty-smoke` 的 Windows 路径夹具：POSIX 不接受 `C:/work` 与 `C:/isolated/fake-claude.exe` 为绝对路径。通用夹具改为 `path.resolve(...)`，生产 `INVALID_REQUEST` / `PTY_SMOKE_CLI_REQUIRED` 校验和 Windows 长路径专项未放宽。
+- 13 项失败来自 `server-terminal`、`server-embedded-terminal`：fixture 注入假运行时但漏注 CLI，`TerminalService` 在调用假适配器前解析真实 CLI，无 Claude 的 Runner 返回 `CLI_NOT_FOUND`，后续等待超时及预期 `PTY_UNAVAILABLE` 的断言都是同一准备缺口的下游表现。
+- TDD 证据：先在系统/内嵌测试断言运行时收到 fixture 的临时假 CLI；首次误在 `extension` 目录执行为“无测试文件”，不记作 RED。改在 `bridge` 目录得到有效 RED：2 项失败、18 项通过，实际值是本机真实 Claude 路径。为 `ServerDeps.terminal` 增加可选 `resolveCli` 后同命令 20/20，生产缺省 `resolveClaudeExecutable` 不变。
+- 修复后原失败五文件 36/36；完整 bridge 38 文件 427/427、C# 启动器 8/8、bridge typecheck 通过；extension 24 文件 180/180、typecheck、production build 通过，只有既有大 chunk 警告。文档同步前代码 diff 为 6 文件、18 行新增、9 行删除，`git diff --check` 通过。
+- 用户已授权提交相关修复及必要文档并推送 `main`，提交身份只使用用户本人且不添加共同作者；下一步是审核最终 diff、提交、推送并读取新 run 的三平台结果。旧 #42 不是修复后证据，macOS 实机产品功能仍未验收，不打 tag、不发布 Release。
