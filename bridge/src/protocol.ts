@@ -169,6 +169,31 @@ export interface SessionInfo {
   updatedAt: number;
 }
 
+/** 终端模式与接管状态；公开状态永不包含 hook/attach token 或进程环境。 */
+export type TerminalMode = "system" | "embedded";
+export type TerminalPhase = "idle" | "starting" | "active" | "degraded" | "stopping";
+export type TerminalBackend = "windows-terminal" | "windows-console" | "terminal-app" | "pty";
+export type TerminalErrorCode =
+  | "NO_FOLDER" | "WORKSPACE_BUSY" | "ALREADY_ACTIVE" | "CLI_NOT_FOUND"
+  | "START_FAILED" | "NOT_OWNER" | "NOT_FOUND" | "READ_ONLY"
+  | "HOOK_DEGRADED" | "IDENTITY_UNKNOWN" | "CONFIRM_REQUIRED"
+  | "OUTPUT_GAP" | "PTY_UNAVAILABLE" | "ATTACH_REQUIRED" | "DETACHED";
+
+export interface TerminalPublicState {
+  leaseId: string | null;
+  mode: TerminalMode | null;
+  phase: TerminalPhase;
+  folder: string | null;
+  initialSessionId: string | null;
+  currentSessionId: string | null;
+  backend: TerminalBackend | null;
+  message?: string;
+  canManualRelease: boolean;
+}
+
+/** Claude sessionId 与终端 leaseId 共用的规范 UUID 校验。 */
+export const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
 /** 别名：文件夹+会话组合的命名快捷方式（桥接 aliases.json 持久化，扩展平时只显别名标签） */
 export interface AliasInfo {
   id: string;
@@ -238,6 +263,13 @@ export type ClientMessage =
   | { type: "alias.select"; id: string; reset?: boolean }
   // folder.open：无参——服务端按"当前别名.folder ?? 工作区.folder"解析目标，客户端不传路径（杜绝任意路径打开）
   | { type: "folder.open" }
+  // 终端启动目标只接受模式；文件夹、sessionId 和 CLI 参数全部由服务端解析
+  | { type: "terminal.open"; mode: TerminalMode }
+  | { type: "terminal.attach"; leaseId: string; attachToken: string; afterSeq: number }
+  | { type: "terminal.input"; leaseId: string; data: string }
+  | { type: "terminal.resize"; leaseId: string; cols: number; rows: number }
+  | { type: "terminal.close"; leaseId: string }
+  | { type: "terminal.release"; leaseId: string; confirmedClosed: true }
   // fastOnly=true 时只有 fastMode 是变更意图；其余完整字段仅供旧桥兼容，不得据旧值重建会话
   // hello=true 仅表示自动播种；已初始化桥必须忽略，手动用户操作不得携带
   | { type: "settings.set"; permissionMode: PermissionModeSetting; model?: string; effort?: EffortLevelSetting; fastMode?: boolean; fastOnly?: boolean; hello?: boolean; fields?: ExecutionSettingField[] };
@@ -337,6 +369,20 @@ export type ServerMessage =
       nextCursor?: string;
     }
   | { type: "session.list.data"; sessions: SessionInfo[]; currentId: string | null }
+  | { type: "terminal.state"; state: TerminalPublicState }
+  | { type: "terminal.opened"; leaseId: string; mode: TerminalMode; backend: TerminalBackend; attachToken?: string }
+  | { type: "terminal.attached"; leaseId: string; replayGap: boolean; latestSeq: number }
+  | { type: "terminal.output"; leaseId: string; seq: number; data: string }
+  | { type: "terminal.exit"; leaseId: string; exitCode: number | null; reason: string }
+  | { type: "terminal.error"; code: TerminalErrorCode; message: string; leaseId?: string }
+  | {
+      type: "session.mirror.data";
+      sessionId: string;
+      revision: number;
+      messages: HistoryMessage[];
+      hasMore: boolean;
+      nextCursor?: string;
+    }
   | { type: "alias.list.data"; aliases: AliasInfo[]; currentId: string | null };
 
 /** 页面信息丰富度档位：brief 精简 / standard 标准 / rich 丰富（对应附带网页时注入正文的最大字符数，档位上限见扩展 attach-policy） */
@@ -476,6 +522,38 @@ export function parseClientMessage(raw: string): ClientMessage | null {
         return typeof m.text === "string" && m.text.length <= 100_000 ? m : null;
       case "folder.bind":
         return typeof m.path === "string" && m.path.length > 0 ? m : null;
+      case "terminal.open":
+        return m.mode === "system" || m.mode === "embedded"
+          ? { type: "terminal.open", mode: m.mode }
+          : null;
+      case "terminal.attach":
+        return typeof m.leaseId === "string" && UUID_RE.test(m.leaseId)
+          && typeof m.attachToken === "string" && /^[A-Za-z0-9_-]{43}$/.test(m.attachToken)
+          && Number.isSafeInteger(m.afterSeq) && m.afterSeq >= 0
+          ? { type: "terminal.attach", leaseId: m.leaseId, attachToken: m.attachToken, afterSeq: m.afterSeq }
+          : null;
+      case "terminal.input":
+        // UTF-16 长度先作廉价上界，再用浏览器/Node 共有的 TextEncoder 精确限制 UTF-8 字节。
+        return typeof m.leaseId === "string" && UUID_RE.test(m.leaseId)
+          && typeof m.data === "string" && m.data.length <= 65_536
+          && new TextEncoder().encode(m.data).byteLength <= 65_536
+          ? { type: "terminal.input", leaseId: m.leaseId, data: m.data }
+          : null;
+      case "terminal.resize":
+        return typeof m.leaseId === "string" && UUID_RE.test(m.leaseId)
+          && Number.isInteger(m.cols) && m.cols >= 2 && m.cols <= 500
+          && Number.isInteger(m.rows) && m.rows >= 2 && m.rows <= 200
+          ? { type: "terminal.resize", leaseId: m.leaseId, cols: m.cols, rows: m.rows }
+          : null;
+      case "terminal.close":
+        return typeof m.leaseId === "string" && UUID_RE.test(m.leaseId)
+          ? { type: "terminal.close", leaseId: m.leaseId }
+          : null;
+      case "terminal.release":
+        return typeof m.leaseId === "string" && UUID_RE.test(m.leaseId)
+          && m.confirmedClosed === true
+          ? { type: "terminal.release", leaseId: m.leaseId, confirmedClosed: true }
+          : null;
       case "chat.send": {
         if (typeof m.text !== "string" || m.text.length === 0) return null;
         // display/note 为可选镜像字段：只接受字符串（display 允许空串=纯文件发送；note 空串剥掉）

@@ -16,7 +16,7 @@ CopilotCC 是免费开源的 Chrome 扩展 + 本地桥接工具。它使用你�
 | 平台 | 下载 | 运行要求 |
 |---|---|---|
 | **Chrome / Edge** | [扩展安装包](https://github.com/aaahzb/CopilotCC/releases/latest) | 解压后通过「加载已解压的扩展程序」安装 |
-| **Windows 10+ x64** | [本地桥接](https://github.com/aaahzb/CopilotCC/releases/latest) | 解压后运行 `ccc-bridge.exe`，常驻系统托盘 |
+| **Windows 10+ x64** | [绿色单文件 `CopilotCC.exe`](https://github.com/aaahzb/CopilotCC/releases/latest) | 下载后直接运行，无需安装或解压，常驻系统托盘；exe 旁不需要其他文件 |
 | **macOS Apple Silicon** | [本地桥接 DMG](https://github.com/aaahzb/CopilotCC/releases/latest) | 仅 arm64；首次打开方式见[用户指南](docs/guide.md) |
 
 使用前需要已安装并能正常运行的 Claude Code CLI。macOS Intel 和 Linux 可从源码运行。
@@ -27,6 +27,7 @@ CopilotCC 是免费开源的 Chrome 扩展 + 本地桥接工具。它使用你�
 - **不只是聊天**：上传文件、读取网页，并让 Claude 在你绑定的文件夹中写笔记、改代码。
 - **过程完整可见**：正文、工具状态、输出、错误、提问和审批按真实顺序显示；长报告、diff 和压缩摘要默认折叠，不静默丢失。
 - **无需记住命令行**：新建/切换会话、选择模型与权限、停止任务、批准计划都可在界面完成；`/compact` 等命令也会原样交给 CLI。
+- **系统终端或插件终端**：别名行的 `>_` 菜单可在当前文件夹打开 Windows Terminal（不可用时回退系统控制台），或打开独立 Chrome 窗口中的 xterm.js + 真实 PTY 终端；两者都继续当前会话，Windows 已通过真实 Claude Code CLI 恢复验收。插件终端提供复制/粘贴按钮、快捷键和一键「可滚历史」。接管期间插件只读同步会话与工具记录，终端退出后自动恢复输入。
 - **本地配对与按需读取**：桥接只监听 `127.0.0.1`，页面仅在发送消息时按需提取，没有常驻网页内容脚本。
 
 ## 侧边栏与独立窗口

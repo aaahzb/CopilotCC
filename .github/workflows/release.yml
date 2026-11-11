@@ -1,5 +1,5 @@
 # 发布：打 v* 标签触发。先跑测试门禁，再分平台构建（win 在 Windows runner、mac 在 macOS runner
-# 保证 zip 保留可执行位、扩展 zip 在 Linux runner），最后汇总创建 GitHub Release。
+# 保证 macOS 可执行位、Windows 绿色单 exe 与扩展 zip），最后汇总创建 GitHub Release。
 name: Release
 
 on:
@@ -37,7 +37,7 @@ jobs:
           npm test
 
   build-win:
-    name: 构建 Windows x64 桥接
+    name: 构建 Windows x64 绿色单文件
     needs: test
     runs-on: windows-latest
     steps:
@@ -51,17 +51,36 @@ jobs:
         run: |
           npm ci
           node -e "const fs=require('fs');const f='package.json';const j=JSON.parse(fs.readFileSync(f,'utf8'));j.version=process.argv[1];fs.writeFileSync(f,JSON.stringify(j,null,2)+'\n')" "${GITHUB_REF_NAME#v}" # npm version 会做 semver 规范化，把 2026.10.21.7 改写成 2026.10.2-1.7（.7 扩展 zip 文件名事故）；node 直写 JSON 不校验
-      - name: 编译托盘 exe（内嵌桥形图标、GUI 子系统）
+      - name: 实探 PTY 路线并编译完整 Windows 发行目录
         working-directory: bridge
-        run: node scripts/build-exe.mjs win
-      - name: 产物冒烟：win exe 能跑且自报架构正确（--smoke；GUI 子系统无 stdout，靠退出码断言）
-        run: ./bridge/dist/ccc-bridge-win-x64/ccc-bridge.exe --smoke win32 x64
-      - name: 打包 zip（含顶层文件夹，用户解压即用）
-        run: 7z a -tzip ccc-bridge-win-x64.zip ./bridge/dist/ccc-bridge-win-x64
+        run: |
+          node scripts/run-pty-probe.mjs --route auto --target win --root "$RUNNER_TEMP/ccc-pty-win"
+          node scripts/build-exe.mjs win --pty-route "$RUNNER_TEMP/ccc-pty-win/pty-route.json"
+          node scripts/verify-native-layout.mjs "$GITHUB_WORKSPACE/bridge/dist/ccc-bridge-win-x64" win32 x64
+      - name: 产物冒烟：GUI exe 自报架构，完整复制目录通过真实 PTY 行为
+        working-directory: bridge
+        run: |
+          ./dist/ccc-bridge-win-x64/ccc-bridge.exe --smoke win32 x64
+          bun build scripts/fake-terminal-claude.ts --compile --target=bun-windows-x64 --outfile "$RUNNER_TEMP/ccc-pty-fake-win.exe"
+          mkdir -p "$RUNNER_TEMP/ccc-pty-smoke-win/tmp"
+          cp -R dist/ccc-bridge-win-x64 "$RUNNER_TEMP/ccc-pty-smoke-win/app"
+          cd "$RUNNER_TEMP/ccc-pty-smoke-win"
+          CCC_PTY_SMOKE_CLI="$RUNNER_TEMP/ccc-pty-fake-win.exe" TEMP="$RUNNER_TEMP/ccc-pty-smoke-win/tmp" TMP="$RUNNER_TEMP/ccc-pty-smoke-win/tmp" TMPDIR="$RUNNER_TEMP/ccc-pty-smoke-win/tmp" ./app/ccc-terminal.exe --pty-smoke win32 x64
+      - name: 构建绿色单 exe 并在项目树外验收清理、重建与正常启动
+        working-directory: bridge
+        run: |
+          node scripts/run-portable-launcher-tests.mjs
+          node scripts/build-portable-exe.mjs
+          node scripts/verify-portable-exe.mjs --root "$RUNNER_TEMP/ccc-portable-release-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pty-route-windows
+          path: ${{ runner.temp }}/ccc-pty-win/pty-route.json
+          if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:
           name: bridge-win
-          path: ccc-bridge-win-x64.zip
+          path: bridge/dist/portable-win-x64/CopilotCC.exe
           if-no-files-found: error
 
   build-mac:
@@ -79,11 +98,22 @@ jobs:
         run: |
           npm ci
           node -e "const fs=require('fs');const f='package.json';const j=JSON.parse(fs.readFileSync(f,'utf8'));j.version=process.argv[1];fs.writeFileSync(f,JSON.stringify(j,null,2)+'\n')" "${GITHUB_REF_NAME#v}" # npm version 会做 semver 规范化，把 2026.10.21.7 改写成 2026.10.2-1.7（.7 扩展 zip 文件名事故）；node 直写 JSON 不校验
-      - name: 编译 darwin-arm64
+      - name: 实探 PTY 路线并编译 darwin-arm64 完整发行目录
         working-directory: bridge
-        run: node scripts/build-exe.mjs darwin
-      - name: 组装 .app、ad-hoc 预签并打包 dmg（标准应用包 + 一键解除隔离脚本；hdiutil 保留可执行位与符号链接）
+        run: |
+          node scripts/run-pty-probe.mjs --route auto --target darwin --root "$RUNNER_TEMP/ccc-pty-mac"
+          node scripts/build-exe.mjs darwin --pty-route "$RUNNER_TEMP/ccc-pty-mac/pty-route.json"
+          node scripts/verify-native-layout.mjs "$GITHUB_WORKSPACE/bridge/dist/ccc-bridge-darwin-arm64" darwin arm64
+          bun build scripts/fake-terminal-claude.ts --compile --target=bun-darwin-arm64 --outfile "$RUNNER_TEMP/ccc-pty-fake-mac"
+      - name: 组装 .app、内层签名、完整复制包 PTY 冒烟并打包 dmg
+        env:
+          CCC_PTY_SMOKE_CLI: ${{ runner.temp }}/ccc-pty-fake-mac
         run: bash bridge/scripts/build-mac-app.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pty-route-macos
+          path: ${{ runner.temp }}/ccc-pty-mac/pty-route.json
+          if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:
           name: bridge-mac
@@ -136,7 +166,7 @@ jobs:
           ## 下载
 
           - **Chrome / Edge**：`ccc-extension-*-chrome.zip`，解压到固定位置后通过「加载已解压的扩展程序」安装。
-          - **Windows 10+ x64**：`ccc-bridge-win-x64.zip`，解压后运行 `ccc-bridge.exe`。
+          - **Windows 10+ x64**：`CopilotCC.exe`，绿色单文件，下载后直接运行，无需安装或解压。
           - **macOS Apple Silicon**：`ccc-bridge-darwin-arm64.dmg`，首次使用请右键运行包内的「首次使用-右键打开我.command」。'
           if [ -n "$PREV" ]; then
             LOG=$(git log --no-merges --pretty=format:'- %s' "${PREV}..${CUR}")
@@ -150,7 +180,10 @@ jobs:
           printf '%s\n\n## 本次变更（%s）\n\n%s%s\n' "$HEADER" "$RANGE" "$LOG" "$LINK" > release-notes.md
       - uses: actions/download-artifact@v4
         with:
-          pattern: "*"
+          # 探针报告只保留为 workflow 验收证据，不混入用户下载的 Release 资产。
+          pattern: |
+            bridge-*
+            extension
           path: assets
           merge-multiple: true
       - name: 列出待发布资产（日志可见，防止再出现静默缺包）

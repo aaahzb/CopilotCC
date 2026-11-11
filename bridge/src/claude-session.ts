@@ -333,7 +333,7 @@ let cachedShellEnv: Record<string, string> | null | undefined;
  * 缺密钥类变量时借登录 shell dump 全量环境，把缺失的补进 process.env（只补缺的，不覆盖显式配置；
  * 结果缓存只探一次）。Windows 环境变量全局生效，无需此兜底。
  */
-function ensureShellEnvFallback(): void {
+export function ensureShellEnvFallback(): void {
   if (process.platform === "win32") return;
   if (process.env.ANTHROPIC_AUTH_TOKEN && process.env.ANTHROPIC_API_KEY) return; // 密钥类变量已在，无需兜底
   if (cachedShellEnv === undefined) {
@@ -355,7 +355,7 @@ function ensureShellEnvFallback(): void {
 }
 
 let cachedCliPath: string | null | undefined;
-function resolveClaudeExecutable(): string | undefined {
+export function resolveClaudeExecutable(): string | undefined {
   if (cachedCliPath !== undefined) return cachedCliPath ?? undefined;
   cachedCliPath = ((): string | null => {
     if (process.env.CLAUDE_CODE_PATH) return process.env.CLAUDE_CODE_PATH; // 显式覆盖优先

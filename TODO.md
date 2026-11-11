@@ -14,6 +14,53 @@
 - [x] Task 12: page-extract.ts + UI 组件 + App 装配
 - [ ] Task 13: 端到端手动验收 + README.md
 
+## 双终端阶段 A：系统终端续聊（2026-11-10，Windows 验收完成）
+
+- [x] 共用 lease、Session Hooks、TranscriptWatcher 与结构化历史镜像；系统终端独占期间侧边栏和独立窗口只读，草稿与历史分页保留，服务端拒绝全部写操作。
+- [x] Windows 优先打开 Windows Terminal，不可用时回退可见系统控制台并显示提示。生产压缩包使用同目录双 exe：GUI `ccc-bridge.exe` + Console `ccc-terminal.exe`，不再复用 GUI 托盘作为交互终端，也不修改发行 PE 头。
+- [x] `/clear`、`/resume`、fork、compact 由有效 command Hook 驱动；普通外部终端新会话只刷新列表，不抢占接管镜像。10 秒无有效 SessionStart 进入 degraded，保持只读且不猜 sessionId；真实进程退出按“最终镜像 → 恢复最后确认会话 → idle”处理。
+- [x] 系统 lease 跨桥接重启恢复；进程身份使用 PID + 可执行路径 + OS 启动时间核对，unknown 保持只读并要求人工解除，人工解除不杀进程。
+- [x] 最终自动回归：桥接 27 个测试文件、342/342 项通过；扩展 20 个测试文件、158/158 项通过；两端 typecheck、扩展 production build 和 Windows 双 exe 构建退出码均为 0。
+- [x] 有效 Hook 负控：`red-final-2/red-result.json` 非零退出并准确失败于 `clearFollowedNewSession=false`，不是准备阶段或脚本错误。
+- [x] 最终正常验收：`final-run-2/system-verification.json` 全部 required=true，`commandHooksWithoutFailure=true`、`hookFailures=[]`、`runtimeErrors=[]`、`consoleSubsystemProbe=false`、`loopbackRequests=0`、`realApiCalled=false`。真实 Windows Terminal、回退 Console、`/clear` 和 Chrome 双视图截图均已人工查看。
+- [x] 最终证据汇总：`D:/ccc-fast-final-verify-20261026/tool-history-20261027/dual-terminal-20261110/system-verification.json`。验收隔离副本与最终 dist 双 exe 逐字节一致；全程使用隔离假 CLI 和本机假上游，未调用真实 API，未停止或替换用户正在使用的桥接。
+- [ ] macOS Terminal.app 尚无真实运行证据，保持未验收。
+
+## 双终端阶段 B：插件独立终端（2026-11-10 起）
+
+- [x] 原生依赖与真实 PTY 路线探针：锁定 `node-pty@1.1.0`，Windows 真实编译产物选择 `bun-node-pty`，Node helper 回退也已实现；输入、连续输出、中文、132×36 resize 和退出码均经探针验证。
+- [x] 内嵌终端复用唯一 `TerminalLeaseManager`：输出使用 leaseId + 单调 seq，有界缓冲重放，attach/input/resize 严格校验；独立持久化记录 PID + executable + startedAt，unknown 不猜杀。
+- [x] 独立 `terminal.html` + xterm.js：认证后 opened → attached → 重放，支持中文/IME、fit/resize、pagehide 和结束按钮；attachToken 只在原页面内存，3 秒重连宽限后清理 owned PTY，输出缺口保留明确错误。
+- [x] Windows 完整发行布局：双 exe、`pty/`、`pty-manifest.json` 及按路线需要的 `runtime/`；项目树外真实 PTY 冒烟和缺文件负控通过，CI/Release 已接原生硬门槛但尚未宣称云端运行通过。
+- [x] 最终双终端真实 Windows 验收与文档：`embedded-green-27` 与补全截图后的 `embedded-green-28` 均退出码 0、全部必需项为 true；覆盖正常链路、Hooks、双视图、中文/IME、132×36、重连、刷新、缺帧、关闭、三类异常恢复、原生失败后系统终端与普通聊天。`runtimeErrors=[]`、`hookFailures=[]`、`upstreamRequests=0`、`realApiCalled=false`，cleanup remaining/errors 双空；关键真实截图已人工核对。最终 bridge 35 文件 403/403、extension 24 文件 173/173、两端 typecheck、扩展 production build 和原生布局/SHA-256 校验通过。
+- [ ] macOS Terminal.app、原生 PTY、签名与真实窗口均无实机证据，保持未验收。
+
+## 真实 Claude Code CLI 会话恢复补验（2026-11-11，Windows 已完成）
+
+- [x] 不再把隔离假 CLI 的 `resumedCorrectSession=true` 当作真实 CC 恢复证据；真实 CLI 2.1.316 的 `real-cli-resume-20261111-03/04` 均证明恢复请求携带首轮用户与助手独特标记、消息数由 2 增至 4，并继续写入同一 sessionId，全程只访问 `127.0.0.1` 假上游，未调用真实 API。
+- [x] 真实双终端完整补验：`real-cli-dual-terminal-20261111-12` 退出码 0，插件终端与 Windows Terminal 都完成真实 `--resume`、有效 resume Hook、旧用户/旧助手上下文、同一 JSONL、双视图镜像和退出恢复。系统关窗采样仍为包装 PID 消失且无 exit.json，但关窗后的新 idle 正常到达，双视图恢复可写并保留草稿；`realCliSystemExitRestored=true`、`realCliBridgeShutdownClean=true`，cleanup remaining/errors 双空。两张真实截图已人工核对，三轮请求分别包含 2、5、7 条消息，`realApiCalled=false`。
+- [x] 系统关窗缺陷 RED→GREEN：第 11 轮证明旧适配器只等 exit.json，导致包装进程已消失时 lease 永久 active；新回归先以退出回调 0 次失败，最小修复后聚焦 6/6。生产仅在无退出文件且包装 PID 明确 ESRCH 时补发退出，存活或查询未知不释放。修复后完整假 CLI 双终端 `embedded-post-system-close-fix-20261111-01` 全部 33 项通过，hook/runtime 错误与 cleanup 残留均为零；bridge 35 文件 405/405、extension 24 文件 173/173、两端 typecheck 和扩展 production build 通过。
+- [ ] macOS Terminal.app、原生 PTY、签名和真实窗口，以及 GitHub Runner 仍未实际验收。
+
+## Windows 绿色单文件（2026-11-11，真实双终端与生命周期已完成）
+
+- [x] Windows 公开产物改为唯一 `CopilotCC.exe`：压缩内嵌完整双 exe、PTY 和 manifest，1 MiB 固定块跨文件去重；当前实测 54,134,272 bytes（约 51.6 MiB），SHA-256 `9a32c30310efdf9b4b6eda17387a34a1687264e72269972494b99820f0995598`，不是安装包，exe 旁无任何附属文件。
+- [x] 私有运行目录按 payload SHA-256 隔离，启动先清理带 CopilotCC 标记的旧版本和 staging，再校验或原子发布当前组件；完整版本复用、损坏重建、并发 Mutex、深路径、活跃/未知/foreign/junction 保护均有自动与真实生命周期证据。
+- [x] 原生深目录修复：真实探针证明 Bun 对 258 字符 `conpty.node` 的普通 LoadLibrary 失败、250 字符对照成功；发行 `node-pty/lib/utils.js` 使用扩展路径 `process.dlopen()` 同时覆盖 conpty 和关闭时 fork 的 conpty_console_list。后端与打包测试先 RED 后 GREEN，未采用同样受 MAX_PATH 限制的 `useConptyDll`。
+- [x] 新 payload 真实 CLI `portable-real-cli-dual-terminal-20261111-02` 退出码 0：真实 CLI 2.1.316 在插件终端和 Windows Terminal 均完成 resume、旧用户/旧助手上下文、同一 JSONL 镜像、退出恢复；单文件/内层身份/真实托盘退出/桥接正常关闭均为 true，三次本机假上游请求消息数为 2、5、7，`realApiCalled=false`，cleanup 双空。
+- [x] 新 payload 完整假 CLI `portable-embedded-green-20261111-04` 退出码 0：33 项终端行为及便携单文件、运行身份、正常退出全部 true，覆盖中文/IME、132×36、Hooks、双视图、重连、刷新、缺帧、异常恢复与原生失败隔离；`runtimeErrors=[]`、`hookFailures=[]`、`upstreamRequests=0`，cleanup 双空。真实终端截图已人工核对。
+- [x] 新 payload 生命周期 `portable-lifecycle-20261111-06` 退出码 0、`ok=true`：15 项必需断言全部通过，包括先清理再解压、旧版本/staging 回收、活跃/未知/foreign/junction 保护、篡改重建、重复启动有界、无 sidecar、GUI subsystem 和当前哈希一致。源 exe 与验收副本 SHA-256 均为 `9a32c303…5598`，cleanup remaining/errors 双空。第 05 轮 `PrintWindow` 虽成功却抓到未绘制黑帧，未采用为视觉证据；第 06 轮增加客户区像素门槛后，截图已人工确认“正在解压当前组件”和绿色进度条真实可见，未修改生产启动器或增加人为延时。
+- [x] 当前最终回归：bridge 38 个测试文件 422/422、extension 24 个测试文件 173/173，两端 typecheck 和扩展 production build 通过；构建仅有既有大 chunk 警告。生命周期根目录策略已接入本机白名单与 GitHub `RUNNER_TEMP` 严格子目录，CI/Release 配置已改为构建、验收并只发布单 exe。最终聚焦 6 文件 46/46、启动器 8/8、bridge typecheck、原生布局/SHA-256、工作流 YAML 与 20 个 shell 段语法、脚本语法及 `git diff --check` 均通过。
+- [ ] macOS 与 GitHub Runner 未实际执行本轮新配置；未自动提交、推送、打 tag 或发布，不能宣称云端 Release 已生成。
+
+## 双终端交互缺陷修复（2026-11-11，Windows 已完成）
+
+- [x] 系统终端：20 秒慢启动窗口 + status/start/cancel 握手，避免先报失败后迟到窗口失去 lease；真实失败仍明确结束。`interaction-fix-system-05` 中受控慢启动 9637ms 后成功且无错误，最终超时后的迟到 child 有 cancel、无 start，交互式 CLI 启动数保持为 0；回退控制台、Hooks、只读镜像、退出恢复、重启恢复与定向清理全部通过。
+- [x] 侧边栏：新打开和 `terminal.opened` 清旧启动错误，后续新错误不被误清。插件终端提供复制/粘贴按钮、选择感知 Ctrl+C、Ctrl+Shift+C/V 和明确反馈；真实 CLI 的「可滚历史」先确认 detailed transcript，再发送 `[` 导出，普通画面不会误发导航键。
+- [x] 真实 CLI 单 exe `interaction-fix-real-portable-02` 退出码 0：插件终端与 Windows Terminal 均真实恢复旧上下文并同步镜像，Ctrl+C 中止本机延迟请求后可继续会话；导出后 xterm scrollHeight 526→6222，向上滚轮 scrollTop 5696→4976、向下 4976→5696，且没有滚轮方向键进入 PTY。单文件身份、正常托盘退出、桥接清理均通过，`realApiCalled=false`、`runtimeErrors=[]`、cleanup 双空，三张关键截图已人工核对。
+- [x] 最终完整假 CLI 单 exe `interaction-fix-embedded-05` 退出码 0且 `ok=true`：真实剪贴板多行复制、Ctrl+C/Ctrl+Shift+C 选区复制、按钮/Ctrl+Shift+V 中文多行粘贴、IME、132×36 resize、Hooks、折叠、重连重放、关闭/刷新/异常恢复、双终端互斥及便携正常退出全部通过；`commandHooksWithoutFailure=true`、`realApiCalled=false`、`runtimeErrors=[]`、cleanup 双空，四张关键截图已人工核对。
+- [x] 最终静态回归：bridge 38 个测试文件 427/427、extension 24 个测试文件 180/180，两端 typecheck 和扩展 production build 通过；绿色单 exe 为 `bridge/dist/portable-win-x64/CopilotCC.exe`（54,134,784 bytes，约 51.6 MiB）。未自动提交、推送、打 tag 或发布；macOS、GitHub Runner 与真实 API 中转仍未验收。
+
 ## 别名主行打开当前文件夹（2026-10-31，已完成）
 
 - [x] 真实根因：`openInFileManager` 用 `windowsHide:true` 启动 `explorer.exe`，桥接虽返回 `folder.opened`，Windows Shell 却报告新窗口 `Visible=false`。只将该项改为 `false` 的对照实验中，目标窗口变为 `Visible=true`；不是扩展未发请求，也不是运行了旧桥接。

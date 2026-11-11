@@ -11,6 +11,7 @@ import { SessionManager } from "../src/session-manager";
 import { AliasManager } from "../src/alias-manager";
 import type { BridgeConfig } from "../src/config";
 import type { ServerMessage } from "../src/protocol";
+import type { TerminalLeaseRecord } from "../src/terminal-lease";
 
 let dir: string;
 let sessions: SessionManager;
@@ -311,6 +312,44 @@ describe("server 会话管理（一文件夹多会话）", () => {
     expect(sessions.get(dir)).toBeUndefined();
     ws.close();
     await server.close();
+  });
+});
+
+describe("终端 Hook HTTP 接线", () => {
+  it("把固定路径交给终端 lease，不改变 /config 处理", async () => {
+    const leaseId = "33333333-3333-4333-8333-333333333333";
+    const sessionId = "22222222-2222-4222-8222-222222222222";
+    const projectsRoot = path.join(dir, "projects");
+    const record: TerminalLeaseRecord = {
+      leaseId, hookToken: "hook-secret", mode: "system", folder: dir,
+      initialSessionId: sessionId, resumeSessionId: sessionId, currentSessionId: sessionId,
+      confirmedSessionId: null, cliPath: "unused", port: 0, privateDir: dir,
+      phase: "starting", backend: null, pid: 1234, createdAt: new Date().toISOString(),
+      canManualRelease: false,
+    };
+    let confirmed = 0;
+    const { server } = await boot(makeConfig(), {
+      terminalHooks: {
+        currentRecord: () => record,
+        confirmSession: () => { confirmed += 1; return true; },
+        projectsRoot,
+      },
+    });
+    try {
+      const response = await fetch(`http://127.0.0.1:${server.port}/terminal-hook/${leaseId}`, {
+        method: "POST",
+        headers: { Authorization: "Bearer hook-secret" },
+        body: JSON.stringify({
+          hook_event_name: "SessionStart", session_id: sessionId, cwd: dir,
+          transcript_path: path.join(projectsRoot, slugifyPath(path.resolve(dir)), `${sessionId}.jsonl`),
+          source: "startup",
+        }),
+      });
+      expect(response.status).toBe(200);
+      expect(confirmed).toBe(1);
+    } finally {
+      await server.close();
+    }
   });
 });
 

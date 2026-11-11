@@ -20,7 +20,25 @@ export interface PinInfo {
 export class PopupRegistry {
   private winToTab = new Map<number, number>(); // 弹窗 winId → 页面 tabId
   private pins = new Map<number, PinInfo>(); // 页面 tabId → 钉住信息
+  private terminalWindowByAlias = new Map<string, number>(); // 终端 alias（空串=无别名）→ 独立窗口
 
+  /**
+   * 登记独立终端窗口；与聊天弹窗/网页钉住使用不同命名空间。
+   * @param winId 终端窗口 ID
+   * @param aliasId 当前别名；null 与空串均表示未选别名
+   */
+  registerTerminal(winId: number, aliasId: string | null): void {
+    this.terminalWindowByAlias.set(aliasId ?? "", winId);
+  }
+
+  /**
+   * 按别名寻找终端窗口。
+   * @param aliasId 当前别名；null 表示未选别名
+   * @returns 已登记窗口 ID，不存在时返回 null
+   */
+  terminalWindowFor(aliasId: string | null): number | null {
+    return this.terminalWindowByAlias.get(aliasId ?? "") ?? null;
+  }
   /**
    * 登记弹窗窗口（windows.create 成功后调用）。
    * @param winId 弹窗窗口 ID
@@ -73,6 +91,9 @@ export class PopupRegistry {
    * @returns 需摘除徽标的页面 tabId；该窗未登记或未钉住返回 null
    */
   windowRemoved(winId: number): number | null {
+    for (const [alias, id] of this.terminalWindowByAlias) {
+      if (id === winId) this.terminalWindowByAlias.delete(alias);
+    }
     const tabId = this.winToTab.get(winId) ?? null;
     this.winToTab.delete(winId);
     for (const [t, p] of this.pins) {

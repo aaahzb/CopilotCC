@@ -199,3 +199,20 @@ body { margin: 0; font-family: "Segoe UI", system-ui, sans-serif; font-size: 13p
 
 /* 别名主行下方：打开文件夹的瞬时反馈，详情收起时也可见 */
 .folder-open-flash { margin-top: 4px; font-size: 11px; color: #4caf50; overflow-wrap: anywhere; }
+/* 终端状态同样位于详情外：接管、降级与错误不得被折叠隐藏 */
+.terminal-readonly,
+.terminal-notice,
+.terminal-error { margin-top: 5px; padding: 6px 8px; border-radius: 4px; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.terminal-readonly { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; color: #f0c674; background: #3a321f; border: 1px solid #66552b; }
+.terminal-readonly > span { flex: 1; min-width: 180px; }
+.terminal-notice { color: #9ecfff; background: #203243; border: 1px solid #34536d; }
+.terminal-error { color: #ffaaaa; background: #402626; border: 1px solid #704040; }
+.alias-bar-row button[aria-label="在系统终端打开并继续当前会话"] { font-family: ui-monospace, monospace; }
+/* 系统/插件终端共用紧凑入口；菜单浮在消息区上方，不挤压别名主行。 */
+.alias-bar-row .terminal-menu { position: relative; flex: 0 0 auto; }
+.alias-bar-row .terminal-menu > summary { display: block; margin-left: 0; font-family: ui-monospace, monospace; list-style: none; user-select: none; }
+.alias-bar-row .terminal-menu > summary::-webkit-details-marker { display: none; }
+.alias-bar-row .terminal-menu[open] > summary { border-color: #7aa2d8; background: #33445c; }
+.terminal-menu-items { position: absolute; top: calc(100% + 5px); left: 0; z-index: 40; display: flex; flex-direction: column; min-width: 150px; padding: 4px; border: 1px solid #555; border-radius: 6px; background: #24262c; box-shadow: 0 8px 24px #0008; }
+.terminal-menu-items .mini-btn { margin-left: 0; padding: 7px 9px; border: 0; text-align: left; background: transparent; }
+.terminal-menu-items .mini-btn:hover:not(:disabled) { background: #343842; }

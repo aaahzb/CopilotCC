@@ -4,6 +4,8 @@ import type { InteractionRequest } from "../lib/protocol";
 /** 权限与退出计划审批卡；关键动作直显，完整参数和计划默认折叠。 */
 export function PermissionCard(props: {
   request: (InteractionRequest & { tool: string; detail: string }) | null;
+  /** 终端接管时保留审批事实与完整详情，但禁止作答 */
+  disabled?: boolean;
   onRespond(requestId: string, allow: boolean, feedback?: string): void;
 }): React.ReactElement | null {
   const [feedback, setFeedback] = useState("");
@@ -33,6 +35,7 @@ export function PermissionCard(props: {
           退回意见（可选）
           <textarea
             value={feedback}
+            disabled={props.disabled}
             placeholder="告诉 Claude 需要修改什么"
             onChange={(event) => setFeedback(event.target.value)}
           />
@@ -41,6 +44,7 @@ export function PermissionCard(props: {
       <div className="row">
         <button
           className="allow"
+          disabled={props.disabled}
           onClick={() => isPlan
             ? props.onRespond(r.requestId, true, undefined)
             : props.onRespond(r.requestId, true)}
@@ -49,6 +53,7 @@ export function PermissionCard(props: {
         </button>
         <button
           className="deny"
+          disabled={props.disabled}
           onClick={() => isPlan
             ? props.onRespond(r.requestId, false, feedback.trim() || undefined)
             : props.onRespond(r.requestId, false)}

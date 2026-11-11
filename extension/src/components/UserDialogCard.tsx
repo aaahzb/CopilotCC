@@ -30,6 +30,7 @@ export function safeUserDialogUrl(raw: string): string | null {
 /** CLI 自有对话框专用卡；只提交本机 CLI 已验证的枚举结果。 */
 export function UserDialogCard(props: {
   request: InteractionRequest;
+  disabled?: boolean;
   onRespond(requestId: string, response: UserDialogResponse): void;
 }): React.ReactElement | null {
   const { request } = props;
@@ -38,6 +39,7 @@ export function UserDialogCard(props: {
 
   /** 把按钮对应的枚举原样交给桥接，由 SDK 包装成 completed/cancelled。 */
   function respond(action: UserDialogAction): void {
+    if (props.disabled) return;
     props.onRespond(request.requestId, { action });
   }
 
@@ -68,16 +70,16 @@ export function UserDialogCard(props: {
       <div className="row">
         {info.dialogKind === "refusal_fallback_prompt" ? (
           <>
-            <button className="allow" onClick={() => respond("retry_fallback")}>使用回退模型重试</button>
-            <button onClick={() => respond("edit_prompt")}>返回修改提问</button>
+            <button disabled={props.disabled} className="allow" onClick={() => respond("retry_fallback")}>使用回退模型重试</button>
+            <button disabled={props.disabled} onClick={() => respond("edit_prompt")}>返回修改提问</button>
           </>
         ) : (
           <>
-            <button className="allow" onClick={() => respond("continue")}>继续自动模式</button>
-            <button className="deny" onClick={() => respond("interrupt")}>停止本轮</button>
+            <button disabled={props.disabled} className="allow" onClick={() => respond("continue")}>继续自动模式</button>
+            <button disabled={props.disabled} className="deny" onClick={() => respond("interrupt")}>停止本轮</button>
           </>
         )}
-        <button onClick={() => respond("cancelled")}>取消</button>
+        <button disabled={props.disabled} onClick={() => respond("cancelled")}>取消</button>
       </div>
     </section>
   );

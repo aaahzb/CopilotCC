@@ -20,6 +20,7 @@ function elicitationUrlOrigin(raw: string | undefined): string {
 /** MCP 表单/URL 专用交互卡；表单值仅存在本地并用于当次应答。 */
 export function ElicitationCard(props: {
   request: InteractionRequest;
+  disabled?: boolean;
   onRespond(requestId: string, response: ElicitationResponse): void;
 }): React.ReactElement | null {
   const { request } = props;
@@ -47,6 +48,7 @@ export function ElicitationCard(props: {
 
   /** 本地先校验，错误保留在卡上；桥接仍会做第二次权威校验。 */
   function acceptForm(): void {
+    if (props.disabled) return;
     const nextErrors = validateElicitationContent(fields, values);
     if (nextErrors.length > 0) {
       setErrors(nextErrors);
@@ -57,7 +59,7 @@ export function ElicitationCard(props: {
 
   /** URL 必须由真实点击触发打开，随后立即接受，不能等待 complete 才回调 SDK。 */
   function acceptUrl(): void {
-    if (!url) return;
+    if (!url || props.disabled) return;
     window.open(url, "_blank", "noopener,noreferrer");
     props.onRespond(request.requestId, { action: "accept" });
   }
@@ -82,6 +84,7 @@ export function ElicitationCard(props: {
                 {field.type === "boolean" ? (
                   <input
                     name={field.name}
+                    disabled={props.disabled}
                     type="checkbox"
                     checked={value === true}
                     onChange={(event) => setValue(field, event.target.checked)}
@@ -89,6 +92,7 @@ export function ElicitationCard(props: {
                 ) : field.enum ? (
                   <select
                     name={field.name}
+                    disabled={props.disabled}
                     value={typeof value === "string" ? value : ""}
                     onChange={(event) => setValue(field, event.target.value || undefined)}
                   >
@@ -98,6 +102,7 @@ export function ElicitationCard(props: {
                 ) : field.type === "number" || field.type === "integer" ? (
                   <input
                     name={field.name}
+                    disabled={props.disabled}
                     type="number"
                     step={field.type === "integer" ? 1 : "any"}
                     value={typeof value === "number" ? String(value) : ""}
@@ -106,6 +111,7 @@ export function ElicitationCard(props: {
                 ) : (
                   <input
                     name={field.name}
+                    disabled={props.disabled}
                     type="text"
                     value={typeof value === "string" ? value : ""}
                     onChange={(event) => setValue(field, event.target.value)}
@@ -122,13 +128,13 @@ export function ElicitationCard(props: {
       <div className="row">
         <button
           className="allow"
-          disabled={info.mode === "url" && !info.url}
+          disabled={props.disabled || (info.mode === "url" && !info.url)}
           onClick={info.mode === "form" ? acceptForm : acceptUrl}
         >
           {info.mode === "form" ? "提交" : "打开链接并继续"}
         </button>
-        <button className="deny" onClick={() => props.onRespond(request.requestId, { action: "decline" })}>拒绝</button>
-        <button onClick={() => props.onRespond(request.requestId, { action: "cancel" })}>取消</button>
+        <button className="deny" disabled={props.disabled} onClick={() => props.onRespond(request.requestId, { action: "decline" })}>拒绝</button>
+        <button disabled={props.disabled} onClick={() => props.onRespond(request.requestId, { action: "cancel" })}>取消</button>
       </div>
     </section>
   );

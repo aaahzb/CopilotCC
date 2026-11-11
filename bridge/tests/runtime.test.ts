@@ -1,9 +1,9 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { claimInstance, writeRuntime, releaseRuntime, isPidAlive } from "../src/runtime";
+import { claimInstance, writeRuntime, releaseRuntime, releaseRuntimeOnExit, isPidAlive } from "../src/runtime";
 
 let dir: string;
 
@@ -47,5 +47,41 @@ describe("单实例守卫", () => {
     } finally {
       child.kill();
     }
+  });
+});
+
+describe("正常退出清理", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it.each(["SIGTERM", "SIGHUP"] as const)("%s 等待异步服务关闭后才释放 runtime 并退出，重复信号只关闭一次", async (signal) => {
+    const handlers = new Map<string, () => void>();
+    vi.spyOn(process, "on").mockImplementation(((event: string, listener: () => void) => {
+      handlers.set(event, listener);
+      return process;
+    }) as unknown as typeof process.on);
+    const exitCodes: Array<number | null> = [];
+    vi.spyOn(process, "exit").mockImplementation(((code?: number | null) => {
+      exitCodes.push(code ?? null);
+      return undefined as never;
+    }) as typeof process.exit);
+    let finishClose!: () => void;
+    const close = vi.fn(() => new Promise<void>((resolve) => { finishClose = resolve; }));
+    writeRuntime(dir, 19280);
+
+    releaseRuntimeOnExit(dir, close);
+    handlers.get(signal)?.();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(exitCodes).toEqual([]);
+    expect(fs.existsSync(path.join(dir, "runtime.json"))).toBe(true);
+
+    handlers.get("SIGINT")?.();
+    finishClose();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(exitCodes).toEqual([0]);
+    expect(fs.existsSync(path.join(dir, "runtime.json"))).toBe(false);
   });
 });

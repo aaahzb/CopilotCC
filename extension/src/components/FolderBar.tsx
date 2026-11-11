@@ -10,6 +10,8 @@ export function FolderBar(props: {
   sessionId: string | null;
   /** 当前绑定文件夹下的会话列表（mtime 倒序） */
   sessions: SessionInfo[];
+  /** 终端接管时禁止换绑及会话写操作；复制续聊命令仍可用 */
+  disabled: boolean;
   onBind(path: string): void;
   onNewSession(): void;
   onSwitchSession(sessionId: string): void;
@@ -45,7 +47,7 @@ export function FolderBar(props: {
 
   /** 删除当前会话（弹确认；删的是本地转录文件，不可恢复） */
   function confirmDelete(): void {
-    if (!props.sessionId) return;
+    if (!props.sessionId || props.disabled) return;
     if (window.confirm("确定删除当前会话？会同时删除本地转录文件，不可恢复。")) {
       props.onDeleteSession(props.sessionId);
     }
@@ -58,13 +60,14 @@ export function FolderBar(props: {
           list="ccc-folder-history"
           placeholder="绑定文件夹绝对路径，如 D:\notes"
           value={value}
+          disabled={props.disabled}
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && props.onBind(value)}
         />
         <datalist id="ccc-folder-history">
           {props.history.map((h) => <option key={h} value={h} />)}
         </datalist>
-        <button onClick={() => props.onBind(value)}>绑定</button>
+        <button disabled={props.disabled} onClick={() => props.onBind(value)}>绑定</button>
       </div>
       <div className="folder-bar-row">
         {props.history.length > 0 ? (
@@ -72,6 +75,7 @@ export function FolderBar(props: {
             className="chat-switch"
             title="切换到绑过的文件夹"
             value=""
+            disabled={props.disabled}
             onChange={(e) => {
               if (e.target.value) props.onBind(e.target.value);
             }}
@@ -88,6 +92,7 @@ export function FolderBar(props: {
               className="chat-switch session-switch"
               title="切换当前文件夹下的会话"
               value=""
+              disabled={props.disabled}
               onChange={(e) => {
                 if (e.target.value) props.onSwitchSession(e.target.value);
               }}
@@ -101,12 +106,12 @@ export function FolderBar(props: {
                 </option>
               ))}
             </select>
-            <button className="mini-btn" title="在当前文件夹新建会话" onClick={props.onNewSession}>＋新会话</button>
+            <button className="mini-btn" title="在当前文件夹新建会话" disabled={props.disabled} onClick={props.onNewSession}>＋新会话</button>
             <button
               className="mini-btn danger"
               title="删除当前会话（含本地转录文件）"
               onClick={confirmDelete}
-              disabled={!props.sessionId}
+              disabled={props.disabled || !props.sessionId}
             >
               🗑删会话
             </button>

@@ -10,10 +10,10 @@ type Respond = (requestId: string, answers: Record<string, string>) => void;
  * @param props 挂起提问与提交回调
  * @returns 提问卡片；无挂起提问时返回 null
  */
-export function AskCard(props: { request: AskRequest | null; onRespond: Respond }): React.ReactElement | null {
+export function AskCard(props: { request: AskRequest | null; disabled?: boolean; onRespond: Respond }): React.ReactElement | null {
   const request = props.request;
   if (!request) return null;
-  return <AskForm key={request.requestId} request={request} onRespond={props.onRespond} />;
+  return <AskForm key={request.requestId} request={request} disabled={props.disabled} onRespond={props.onRespond} />;
 }
 
 /**
@@ -21,7 +21,7 @@ export function AskCard(props: { request: AskRequest | null; onRespond: Respond 
  * @param props 非空提问与提交回调
  * @returns 可提交的作答表单
  */
-function AskForm(props: { request: AskRequest; onRespond: Respond }): React.ReactElement {
+function AskForm(props: { request: AskRequest; disabled?: boolean; onRespond: Respond }): React.ReactElement {
   const { request } = props;
   // 选项按题号记录；数组顺序就是用户选择顺序，多选答案据此连接
   const [selected, setSelected] = useState<Record<number, string[]>>({});
@@ -68,7 +68,7 @@ function AskForm(props: { request: AskRequest; onRespond: Respond }): React.Reac
    */
   function submit(event: React.FormEvent): void {
     event.preventDefault();
-    if (!complete) return;
+    if (!complete || props.disabled) return;
     const answers: Record<string, string> = {};
     request.questions.forEach((q, index) => { answers[q.question] = answerAt(index); });
     props.onRespond(request.requestId, answers);
@@ -92,6 +92,7 @@ function AskForm(props: { request: AskRequest; onRespond: Respond }): React.Reac
                       name={`ask-${request.requestId}-${index}`}
                       value={o.label}
                       checked={values.includes(o.label)}
+                      disabled={props.disabled}
                       onChange={() => toggle(index, o.label, q.multiSelect)}
                     />
                     <span>{o.label}{o.description && <small>{o.description}</small>}</span>
@@ -109,6 +110,7 @@ function AskForm(props: { request: AskRequest; onRespond: Respond }): React.Reac
                     name={`ask-${request.requestId}-${index}`}
                     value={OTHER_VALUE}
                     checked={values.includes(OTHER_VALUE)}
+                    disabled={props.disabled}
                     onChange={() => toggle(index, OTHER_VALUE, q.multiSelect)}
                   />
                   <span>其他（自定义）</span>
@@ -121,6 +123,7 @@ function AskForm(props: { request: AskRequest; onRespond: Respond }): React.Reac
                   placeholder="输入自定义回答"
                   aria-label={`${q.question} 自定义回答`}
                   value={otherText[index] ?? ""}
+                  disabled={props.disabled}
                   onChange={(e) => setOtherText((current) => ({ ...current, [index]: e.target.value }))}
                 />
               )}
@@ -128,7 +131,7 @@ function AskForm(props: { request: AskRequest; onRespond: Respond }): React.Reac
           );
         })}
         <div className="row">
-          <button className="allow" type="submit" disabled={!complete}>提交回答</button>
+          <button className="allow" type="submit" disabled={props.disabled || !complete}>提交回答</button>
         </div>
       </form>
     </div>

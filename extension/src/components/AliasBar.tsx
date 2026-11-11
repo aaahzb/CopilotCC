@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import type { AliasInfo, PageRichness, SessionInfo } from "../lib/protocol";
+import type { AliasInfo, PageRichness, SessionInfo, TerminalPublicState } from "../lib/protocol";
 import { FolderBar } from "./FolderBar";
 
 /**
@@ -24,6 +24,17 @@ export function AliasBar(props: {
   onOpenFolder(): void;
   /** folder.opened 的瞬时反馈文案（约 4 秒）；null 不显示 */
   openFolderFlash: string | null;
+  /** 服务端权威终端状态；非 idle 时禁止所有会话写操作 */
+  terminal: TerminalPublicState;
+  /** 实际终端后端/回退提示 */
+  terminalNotice: string | null;
+  /** 终端错误；位于默认折叠的详情区之外 */
+  terminalError: string | null;
+  onOpenSystemTerminal(): void;
+  /** 打开或聚焦独立插件终端窗口；只有页面成功创建后才由页面发起 WS open */
+  onOpenEmbeddedTerminal(): void;
+  /** 仅在用户确认原进程已关闭后调用；不得停止进程 */
+  onReleaseTerminal(): void;
   /** 弹系统文件夹选择框；用户取消返回 null */
   onPickFolder(): Promise<string | null>;
   onBind(path: string): void;
@@ -41,9 +52,11 @@ export function AliasBar(props: {
     const [manualSid, setManualSid] = useState(false); // 手动输入会话 ID 模式（绑定外部会话的通道）
     const [sidInput, setSidInput] = useState("");
   const current = props.aliases.find((a) => a.id === props.currentAliasId) ?? null;
+  const terminalControlled = props.terminal.phase !== "idle";
 
   /** 打开新建表单：预填当前绑定状态（未绑定时留空等用户选） */
   function startCreate(): void {
+    if (terminalControlled) return;
     setName("");
     setFolder(props.bound ?? "");
     setSessionId(props.sessionId ?? "");
@@ -66,6 +79,7 @@ export function AliasBar(props: {
 
   /** 提交创建：文件夹被改成非当前绑定路径时该文件夹的会话无从预知，固定开新会话 */
   function submit(): void {
+    if (terminalControlled) return;
     const f = folder.trim();
     if (!name.trim() || !f) return;
     const sid = manualSid ? sidInput.trim().replace(/^claude\s+--resume\s+/i, "").trim() || null : f === props.bound ? sessionId || null : null; // 手动模式容忍直接粘贴整行 resume 命令
@@ -76,9 +90,17 @@ export function AliasBar(props: {
 
   /** 删除当前别名（只删别名，文件夹与会话记录全部保留） */
   function confirmDelete(): void {
-    if (!current) return;
+    if (!current || terminalControlled) return;
     if (window.confirm(`删除别名「${current.name}」？仅删除别名，文件夹与会话记录全部保留。`)) {
       props.onAliasDelete(current.id);
+    }
+  }
+
+  /** 身份未知时只解除插件 lease；确认文案明确不会结束任何进程。 */
+  function releaseTerminal(): void {
+    if (!props.terminal.canManualRelease) return;
+    if (window.confirm("请确认原系统终端已经关闭。解除后不会尝试结束任何进程。是否继续？")) {
+      props.onReleaseTerminal();
     }
   }
 
@@ -104,6 +126,7 @@ export function AliasBar(props: {
           className="alias-switch"
           title="选择进行中的别名"
           value={current?.id ?? ""}
+          disabled={terminalControlled}
           onChange={(e) => {
             if (e.target.value) props.onAliasSelect(e.target.value);
           }}
@@ -123,9 +146,49 @@ export function AliasBar(props: {
         >
           📂
         </button>
-        <button className="mini-btn" title="新建别名（绑定文件夹+会话）" onClick={startCreate}>＋新建</button>
+        <details className="terminal-menu">
+          <summary
+            className="mini-btn"
+            aria-label="打开终端菜单"
+            title={!current && !props.bound ? "请先绑定文件夹" : "选择系统终端或插件终端，继续当前会话"}
+          >
+            &gt;_
+          </summary>
+          <div className="terminal-menu-items">
+            <button
+              className="mini-btn"
+              aria-label="在系统终端打开并继续当前会话"
+              title="在系统终端打开并继续当前会话；接管期间插件只读，终端退出后恢复输入"
+              disabled={terminalControlled || (!current && !props.bound)}
+              onClick={(event) => {
+                event.currentTarget.closest("details")?.removeAttribute("open");
+                props.onOpenSystemTerminal();
+              }}
+            >
+              在系统终端打开
+            </button>
+            <button
+              className="mini-btn"
+              aria-label="在插件终端打开并继续当前会话"
+              title={props.terminal.mode === "system" && terminalControlled
+                ? "系统终端已接管"
+                : props.terminal.mode === "embedded" && terminalControlled
+                  ? "聚焦已打开的插件终端"
+                  : "在独立 Chrome 窗口中打开真实终端"}
+              disabled={(!current && !props.bound)
+                || (terminalControlled && props.terminal.mode !== "embedded")}
+              onClick={(event) => {
+                event.currentTarget.closest("details")?.removeAttribute("open");
+                props.onOpenEmbeddedTerminal();
+              }}
+            >
+              {props.terminal.mode === "embedded" && terminalControlled ? "聚焦插件终端" : "在插件终端打开"}
+            </button>
+          </div>
+        </details>
+        <button className="mini-btn" title="新建别名（绑定文件夹+会话）" disabled={terminalControlled} onClick={startCreate}>＋新建</button>
         {current ? (
-          <button className="mini-btn danger" title="删除当前别名（会话保留）" onClick={confirmDelete}>🗑</button>
+          <button className="mini-btn danger" title="删除当前别名（会话保留）" disabled={terminalControlled} onClick={confirmDelete}>🗑</button>
         ) : null}
         <button
           className="mini-btn"
@@ -136,11 +199,32 @@ export function AliasBar(props: {
         </button>
       </div>
       {props.openFolderFlash ? <div className="folder-open-flash">{props.openFolderFlash}</div> : null}
+      {terminalControlled ? (
+        <div className="terminal-readonly" role="status">
+          <span>
+            终端接管中 · 当前为只读镜像 · 终端退出后恢复输入
+            {props.terminal.phase === "degraded" ? " · 不能可靠跟随当前会话或进程状态" : ""}
+            {props.terminal.message ? ` · ${props.terminal.message}` : ""}
+          </span>
+          {props.terminal.canManualRelease ? (
+            <button
+              className="mini-btn"
+              aria-label="确认原终端已关闭并解除接管"
+              onClick={releaseTerminal}
+            >
+              确认已关闭并解除
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+      {props.terminalNotice ? <div className="terminal-notice">{props.terminalNotice}</div> : null}
+      {props.terminalError ? <div className="terminal-error" role="alert">{props.terminalError}</div> : null}
       {creating ? (
         <div className="alias-create">
           <input
             placeholder="别名，如：读书笔记"
             value={name}
+            disabled={terminalControlled}
             onChange={(e) => setName(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && submit()}
             autoFocus
@@ -149,14 +233,16 @@ export function AliasBar(props: {
             <input
               placeholder="文件夹绝对路径"
               value={folder}
+              disabled={terminalControlled}
               onChange={(e) => setFolder(e.target.value)}
             />
-            <button className="mini-btn" disabled={picking} onClick={() => void browse()}>
+            <button className="mini-btn" disabled={picking || terminalControlled} onClick={() => void browse()}>
               {picking ? "选择中…" : "选择文件夹…"}
             </button>
           </div>
           <select
             value={manualSid ? MANUAL : folderIsBound ? sessionId : ""}
+            disabled={terminalControlled}
             title={folderIsBound ? "绑定该文件夹下的会话，或手动输入会话 ID" : "新文件夹：开新会话，或手动输入会话 ID 续聊"}
             onChange={(e) => {
               if (e.target.value === MANUAL) setManualSid(true);
@@ -173,12 +259,14 @@ export function AliasBar(props: {
             <input
               placeholder="会话 ID（可直接粘贴 claude --resume 整行命令）"
               value={sidInput}
+              disabled={terminalControlled}
               onChange={(e) => setSidInput(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && submit()}
             />
           ) : null}
           <select
             value={richness}
+            disabled={terminalControlled}
             title="页面信息丰富度：附带网页时注入正文的最大字符数（该别名每次提问生效）"
             onChange={(e) => setRichness(e.target.value as PageRichness)}
           >
@@ -187,7 +275,7 @@ export function AliasBar(props: {
             <option value="rich">页面丰富度：丰富（约 10 万字）</option>
           </select>
           <div className="alias-create-actions">
-            <button className="primary" disabled={!name.trim() || !folder.trim()} onClick={submit}>创建并切换</button>
+            <button className="primary" disabled={terminalControlled || !name.trim() || !folder.trim()} onClick={submit}>创建并切换</button>
             <button className="mini-btn" onClick={() => setCreating(false)}>取消</button>
           </div>
         </div>
@@ -198,7 +286,7 @@ export function AliasBar(props: {
             <span>页面丰富度</span>
             <select
               value={current?.pageRichness ?? "standard"}
-              disabled={!current}
+              disabled={!current || terminalControlled}
               onChange={(e) => { if (current) props.onAliasUpdate(current.id, { pageRichness: e.target.value as PageRichness }); }}
             >
               <option value="brief">精简（约 5 千字）</option>
@@ -212,6 +300,7 @@ export function AliasBar(props: {
             resumed={props.resumed}
             sessionId={props.sessionId}
             sessions={props.sessions}
+            disabled={terminalControlled}
             onBind={props.onBind}
             onNewSession={props.onNewSession}
             onSwitchSession={props.onSwitchSession}

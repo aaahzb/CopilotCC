@@ -9,6 +9,7 @@ import { InputBox } from "../src/components/InputBox";
 
 const base: React.ComponentProps<typeof InputBox> = {
   disabled: false,
+  readOnly: false,
   busy: false,
   attachEnabled: true,
   permissionMode: "auto",
@@ -102,6 +103,21 @@ describe("InputBox 原生 fast 与实际执行状态", () => {
     const css = readFileSync("src/entrypoints/sidepanel/style.css", "utf8");
     const togglesRule = css.split(".input-box .toggles")[1]?.split("}")[0] ?? "";
     expect(togglesRule.replaceAll(" ", "")).toContain("flex-wrap:nowrap");
+  });
+
+  it("终端只读时禁用全部写控件但保留草稿，不伪造成生成中", () => {
+    const host = mount({ readOnly: true, draft: "接管前草稿" });
+    expect(host.querySelector<HTMLTextAreaElement>("textarea")?.value).toBe("接管前草稿");
+    expect(host.querySelector<HTMLTextAreaElement>("textarea")?.disabled).toBe(true);
+    expect(host.querySelector<HTMLSelectElement>('select[title="权限模式"]')?.disabled).toBe(true);
+    expect(host.querySelectorAll<HTMLInputElement>('.toggles input[type="checkbox"]')).toHaveLength(2);
+    expect(Array.from(host.querySelectorAll<HTMLInputElement>('.toggles input[type="checkbox"]')).every((input) => input.disabled)).toBe(true);
+    expect(host.querySelector<HTMLButtonElement>(".model-effort")?.disabled).toBe(true);
+    expect(host.querySelector<HTMLButtonElement>(".force-attach")?.disabled).toBe(true);
+    expect(host.querySelector<HTMLInputElement>('input[type="file"]')?.disabled).toBe(true);
+    expect(host.querySelector<HTMLButtonElement>(".upload-btn")?.disabled).toBe(true);
+    expect(host.querySelector(".stop-btn")).toBeNull();
+    expect(Array.from(host.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent === "发送")?.disabled).toBe(true);
   });
 
   it("点击模型状态展开 effort，选择后回调并关闭", () => {

@@ -16,6 +16,14 @@ function projectsDir(): string {
 }
 
 /**
+ * 向终端 Hook/watcher 暴露同一转录根目录算法，避免隔离配置规则分叉。
+ * @returns 当前 CLAUDE_CONFIG_DIR/测试 home 对应的 projects 绝对路径
+ */
+export function transcriptProjectsRoot(): string {
+  return projectsDir();
+}
+
+/**
  * cwd → Claude 项目目录名。规则：非 [a-zA-Z0-9-] 字符替换为 '-'（下划线也替换）。
  * 例：D:\SVN_Cursor\chromeClaudeCode → D--SVN-Cursor-chromeClaudeCode（以真实目录名为准）
  * @param p 目录路径

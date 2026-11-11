@@ -24,6 +24,12 @@ import { AliasManager } from "./alias-manager";
 import { WorkspaceStore } from "./workspace-store";
 import { ICON_ICO_B64, ICON_PNG_B64 } from "./icon";
 import { TRAYBIN_WIN_B64 } from "./traybin-win-b64";
+import { runTerminalHookHelper } from "./terminal-hook-helper";
+import { runTerminalChild } from "./terminal-child";
+import { SystemTerminalAdapter } from "./system-terminal";
+import { createEmbeddedTerminalAdapter } from "./embedded-terminal";
+import { runPtySmoke } from "./pty-smoke";
+import { terminalChildCommand, terminalNativeDirectory } from "./runtime-entry";
 
 /** systray2 的 MenuItem 没有 click 字段（那是它的自定义扩展属性），本地扩一个 */
 type TrayItem = MenuItem & { click?: () => void };
@@ -132,6 +138,8 @@ async function main(): Promise<void> {
   sessions.load();
   const aliases = new AliasManager(path.join(configDir(), "aliases.json"));
   aliases.load();
+  const systemTerminal = new SystemTerminalAdapter({ childCommand: terminalChildCommand() });
+  const embeddedTerminal = createEmbeddedTerminalAdapter();
 
   // 在线改端口的回调在 startServer 之前就注册，但触发一定在托盘建好之后（用户从托盘菜单进设置页）；
   // 回调里复用同一份 items 对象（systray2 按 init 时分配的 __id 映射点击，对象不换引用就不会失配）
@@ -157,10 +165,17 @@ async function main(): Promise<void> {
     aliases,
     workspaceStore: new WorkspaceStore(path.join(configDir(), "workspace.json")), // 托盘重启后恢复绑定与执行设置
     configDir: configDir(),
+    terminal: {
+      privateDir: path.join(configDir(), "terminal"),
+      system: (context) => systemTerminal.start(context),
+      embedded: (context) => embeddedTerminal.start(context),
+      recoverEmbedded: (record) => embeddedTerminal.recover(record),
+      recover: (record) => systemTerminal.recover(record),
+    },
     onPortChanged,
   });
   writeRuntime(configDir(), server.port);
-  releaseRuntimeOnExit(configDir());
+  releaseRuntimeOnExit(configDir(), () => server.close());
   console.log(`[ccc-bridge] 已启动 ws://127.0.0.1:${server.port}/ws（托盘模式）`);
 
   chdirToTraybinParent();
@@ -189,7 +204,9 @@ async function main(): Promise<void> {
       tooltip: "",
       enabled: true,
       click: () => {
-        void systray?.kill(false).then(() => process.exit(0));
+        void server.close().catch(() => {})
+          .then(() => systray?.kill(false))
+          .then(() => process.exit(0));
       },
     },
   ];
@@ -229,15 +246,48 @@ if (smokeIdx >= 0) {
   process.exit(ok ? 0 : 1);
 }
 
-main().catch((e: unknown) => {
-  const msg = e instanceof Error ? e.stack ?? e.message : String(e);
-  console.error("[ccc-bridge] 托盘启动失败:", msg);
-  try {
-    // --windows-hide-console 编译版没有控制台，错误同时落一份日志便于排查
-    fs.mkdirSync(configDir(), { recursive: true });
-    fs.appendFileSync(path.join(configDir(), "tray-error.log"), `${new Date().toISOString()} ${msg}\n`, "utf-8");
-  } catch {
-    // 日志写不了就算了
+if (process.argv[2] === "--pty-smoke") {
+  // 只有显式产物探针读取隔离假 CLI；正常托盘与 WS 不使用该环境变量选择命令。
+  runPtySmoke({
+    expectedPlatform: process.argv[3] ?? "",
+    expectedArch: process.argv[4] ?? "",
+    cliPath: process.env.CCC_PTY_SMOKE_CLI ?? "",
+    executableDir: terminalNativeDirectory(),
+  }).then((result) => {
+    process.stdout.write(`PTY_SMOKE_RESULT:${JSON.stringify(result)}\n`, () => process.exit(0));
+  }).catch((error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`PTY_SMOKE_ERROR:${message.slice(0, 500)}\n`, () => process.exit(1));
+  });
+} else if (process.argv[2] === "--terminal-hook") {
+  // command Hook 只转发本次 stdin，不能继续初始化托盘或第二份桥接服务。
+  runTerminalHookHelper({ stdin: process.stdin, env: process.env }).catch(() => {
+    console.error("command Hook 转发失败");
+    process.exitCode = 1;
+  });
+} else if (process.argv[2] === "--terminal-child") {
+  const requestFile = path.resolve(process.argv[3] ?? "");
+  const privateDir = path.resolve(configDir(), "terminal");
+  if (path.dirname(requestFile) !== privateDir) {
+    console.error("私有终端请求路径非法");
+    process.exitCode = 1;
+  } else {
+    runTerminalChild(requestFile).catch(() => {
+      console.error("私有终端包装进程失败");
+      process.exitCode = 1;
+    });
   }
-  process.exit(1);
-});
+} else {
+  main().catch((e: unknown) => {
+    const msg = e instanceof Error ? e.stack ?? e.message : String(e);
+    console.error("[ccc-bridge] 托盘启动失败:", msg);
+    try {
+      // --windows-hide-console 编译版没有控制台，错误同时落一份日志便于排查
+      fs.mkdirSync(configDir(), { recursive: true });
+      fs.appendFileSync(path.join(configDir(), "tray-error.log"), `${new Date().toISOString()} ${msg}\n`, "utf-8");
+    } catch {
+      // 日志写不了就算了
+    }
+    process.exit(1);
+  });
+}

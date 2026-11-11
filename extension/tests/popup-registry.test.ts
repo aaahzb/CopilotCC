@@ -61,4 +61,18 @@ describe("PopupRegistry 弹窗钉住注册表", () => {
     expect(r.winForTab(20)).toBe(200);
     expect(r.pinForTab(20)?.aliasName).toBe("B");
   });
+
+  it("终端窗口按 alias 独立去重，与聊天弹窗和网页钉住互不影响", () => {
+    const r = new PopupRegistry();
+    r.registerPopup(100, 10);
+    r.registerTerminal(200, "alias-a");
+    r.registerTerminal(300, "");
+    expect(r.terminalWindowFor("alias-a")).toBe(200);
+    expect(r.terminalWindowFor(null)).toBe(300);
+    expect(r.terminalWindowFor("alias-b")).toBeNull();
+    expect(r.winForTab(10)).toBe(100);
+    r.windowRemoved(200);
+    expect(r.terminalWindowFor("alias-a")).toBeNull();
+    expect(r.terminalWindowFor(null)).toBe(300);
+  });
 });

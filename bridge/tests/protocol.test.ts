@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { describe, it, expect } from "vitest";
 import { parseClientMessage, encode, isPermissionMode, isFastModeState, isFastModeDisabledReason, sanitizeElicitationUrl, validateElicitationContent, type ServerMessage } from "../src/protocol";
 
@@ -256,5 +257,90 @@ describe("原生 fast 设置协议", () => {
     const error: ServerMessage = { type: "settings.error", message: "native rejected" };
     expect(encode(state)).toContain('"cooldown"');
     expect(encode(error)).toContain('"settings.error"');
+  });
+});
+
+describe("终端协议", () => {
+  it("只接受模式，剥离路径、会话和命令注入字段", () => {
+    expect(parseClientMessage(JSON.stringify({
+      type: "terminal.open", mode: "system", path: "D:/other",
+      sessionId: "attacker", command: "calc.exe",
+    }))).toEqual({ type: "terminal.open", mode: "system" });
+    expect(parseClientMessage(JSON.stringify({ type: "terminal.open", mode: "bad" }))).toBeNull();
+  });
+
+  it("关闭要求规范 leaseId，人工解除要求明确确认", () => {
+    const leaseId = randomUUID();
+    expect(parseClientMessage(JSON.stringify({ type: "terminal.close", leaseId })))
+      .toEqual({ type: "terminal.close", leaseId });
+    expect(parseClientMessage(JSON.stringify({ type: "terminal.close", leaseId: "lease-1" }))).toBeNull();
+    expect(parseClientMessage(JSON.stringify({ type: "terminal.release", leaseId }))).toBeNull();
+    expect(parseClientMessage(JSON.stringify({
+      type: "terminal.release", leaseId, confirmedClosed: true,
+    }))).toEqual({ type: "terminal.release", leaseId, confirmedClosed: true });
+  });
+
+  it("公开状态和镜像可以编码且不包含 hookToken", () => {
+    const state: ServerMessage = {
+      type: "terminal.state",
+      state: {
+        leaseId: randomUUID(), mode: "system", phase: "active",
+        folder: "D:/notes", initialSessionId: randomUUID(), currentSessionId: randomUUID(),
+        backend: "windows-terminal", canManualRelease: false,
+      },
+    };
+    expect(JSON.parse(encode(state))).toEqual(state);
+    expect(JSON.stringify(state)).not.toContain("hookToken");
+  });
+
+  it("attach 严格校验 leaseId、43 位 base64url token 和安全序号", () => {
+    const leaseId = randomUUID();
+    const attachToken = "A".repeat(43);
+    expect(parseClientMessage(JSON.stringify({
+      type: "terminal.attach", leaseId, attachToken, afterSeq: 4,
+      file: "calc.exe", cwd: "D:/other",
+    }))).toEqual({ type: "terminal.attach", leaseId, attachToken, afterSeq: 4 });
+    for (const message of [
+      { type: "terminal.attach", leaseId, attachToken: "A".repeat(42), afterSeq: 0 },
+      { type: "terminal.attach", leaseId, attachToken: `${"A".repeat(42)}=`, afterSeq: 0 },
+      { type: "terminal.attach", leaseId, attachToken, afterSeq: -1 },
+      { type: "terminal.attach", leaseId, attachToken, afterSeq: 1.5 },
+      { type: "terminal.attach", leaseId, attachToken, afterSeq: Number.MAX_SAFE_INTEGER + 1 },
+      { type: "terminal.attach", leaseId: "lease-1", attachToken, afterSeq: 0 },
+    ]) expect(parseClientMessage(JSON.stringify(message))).toBeNull();
+  });
+
+  it("终端输入按 UTF-8 字节限制 65536，并剥离注入字段", () => {
+    const leaseId = randomUUID();
+    expect(parseClientMessage(JSON.stringify({
+      type: "terminal.input", leaseId, data: "中文\r", env: { PATH: "bad" },
+    }))).toEqual({ type: "terminal.input", leaseId, data: "中文\r" });
+    expect(parseClientMessage(JSON.stringify({ type: "terminal.input", leaseId, data: "x".repeat(65_536) }))).not.toBeNull();
+    expect(parseClientMessage(JSON.stringify({ type: "terminal.input", leaseId, data: "x".repeat(65_537) }))).toBeNull();
+    expect(parseClientMessage(JSON.stringify({ type: "terminal.input", leaseId, data: "中".repeat(21_845) }))).not.toBeNull();
+    expect(parseClientMessage(JSON.stringify({ type: "terminal.input", leaseId, data: "中".repeat(21_846) }))).toBeNull();
+    expect(parseClientMessage(JSON.stringify({ type: "terminal.input", leaseId, data: 1 }))).toBeNull();
+  });
+
+  it("resize 只接受整数行列范围，opened/output/exit 字段可编码", () => {
+    const leaseId = randomUUID();
+    expect(parseClientMessage(JSON.stringify({ type: "terminal.resize", leaseId, cols: 132, rows: 36 })))
+      .toEqual({ type: "terminal.resize", leaseId, cols: 132, rows: 36 });
+    expect(parseClientMessage(JSON.stringify({ type: "terminal.resize", leaseId, cols: 500, rows: 200 }))).not.toBeNull();
+    for (const message of [
+      { type: "terminal.resize", leaseId, cols: 1, rows: 36 },
+      { type: "terminal.resize", leaseId, cols: 501, rows: 36 },
+      { type: "terminal.resize", leaseId, cols: 132, rows: 1 },
+      { type: "terminal.resize", leaseId, cols: 132, rows: 201 },
+      { type: "terminal.resize", leaseId, cols: 13.2, rows: 36 },
+    ]) expect(parseClientMessage(JSON.stringify(message))).toBeNull();
+
+    const messages: ServerMessage[] = [
+      { type: "terminal.opened", leaseId, mode: "embedded", backend: "pty", attachToken: "A".repeat(43) },
+      { type: "terminal.attached", leaseId, replayGap: true, latestSeq: 8 },
+      { type: "terminal.output", leaseId, seq: 8, data: "中文\r\n" },
+      { type: "terminal.exit", leaseId, exitCode: null, reason: "OUTPUT_GAP" },
+    ];
+    for (const message of messages) expect(JSON.parse(encode(message))).toEqual(message);
   });
 });

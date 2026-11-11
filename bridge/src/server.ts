@@ -5,9 +5,9 @@ import { WebSocketServer, WebSocket } from "ws";
 import type { AddressInfo } from "node:net";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { encode, parseClientMessage, sanitizeElicitationUrl, validateElicitationContent, type PermissionModeSetting, type EffortLevelSetting, type ServerMessage, type ExecutionRuntime } from "./protocol";
-import type { ClientMessage, AskRequest, InteractionRequest, InteractionRecord, InteractionOutcome, TimelineItem } from "./protocol";
+import type { ClientMessage, AskRequest, InteractionRequest, InteractionRecord, InteractionOutcome, TimelineItem, TerminalErrorCode } from "./protocol";
 import { isValidFolder, normalizeFolder, SessionManager } from "./session-manager";
-import { createClaudeSession, type ClaudeSessionLike } from "./claude-session";
+import { createClaudeSession, resolveClaudeExecutable, type ClaudeSessionLike } from "./claude-session";
 import type { SessionRuntimeInfo } from "./claude-session";
 import { readTranscriptPage, listSessions, deleteTranscript, compactBoundaryText } from "./transcript";
 import { saveConfig, type BridgeConfig } from "./config";
@@ -19,6 +19,16 @@ import { composeUploadNote, UPLOAD_DIR } from "./upload-note";
 import { writeResumeScript, removeResumeScript } from "./resume-script";
 import { WorkspaceStore, type FastRestoreBaseline, type WorkspaceExecutionSettings } from "./workspace-store";
 import { InteractionStore } from "./interaction-store";
+import { handleTerminalHookHttp, type TerminalHookHttpDeps } from "./terminal-hooks";
+import { TerminalService } from "./terminal-service";
+import type {
+  ProcessIdentity,
+  TerminalLeaseRecord,
+  TerminalRuntimeFactory,
+  TerminalRuntimeHandle,
+  TerminalStartContext,
+} from "./terminal-lease";
+import type { EmbeddedTerminalHandle } from "./embedded-terminal";
 
 /** 服务依赖。createSession 仅供测试注入假会话工厂。 */
 export interface ServerDeps {
@@ -37,6 +47,23 @@ export interface ServerDeps {
   openFolder?: (path: string) => Promise<boolean>;
   /** 工作区绑定持久化（桥接重启后恢复 文件夹+别名）；缺省时关闭恢复（测试不注入即不恢复） */
   workspaceStore?: WorkspaceStore;
+  /** 终端 Session Hook 与当前 lease 的窄接口；测试可注入，生产由内部 TerminalService 提供 */
+  terminalHooks?: TerminalHookHttpDeps;
+  /** 系统终端运行时与私有目录；生产入口始终注入，旧测试缺省时终端命令返回 START_FAILED */
+  terminal?: {
+    system: TerminalRuntimeFactory;
+    /** 内嵌 PTY 运行时；不注入时仅 embedded 不可用 */
+    embedded?: (context: TerminalStartContext) => Promise<EmbeddedTerminalHandle>;
+    /** 身份匹配后定向清理异常重启遗留的内嵌 PTY；unknown 身份不得调用 */
+    recoverEmbedded?: (record: TerminalLeaseRecord) => Promise<void>;
+    privateDir: string;
+    /** 重启后接管既有 exit.json；不启动新终端 */
+    recover?: (record: TerminalLeaseRecord) => TerminalRuntimeHandle;
+    /** 测试注入身份核对；生产缺省使用 PID+可执行路径+启动时间的真实查询 */
+    matchesIdentity?: (identity: ProcessIdentity) => Promise<boolean>;
+    /** 测试注入无副作用存活探测；只有 ESRCH 才允许按进程已退出清理 */
+    isProcessAlive?: (pid: number) => boolean;
+  };
 }
 
 /** 启动结果：wss/port 始终指向当前实例（在线改端口后跟随），close 关闭当前实例并终结会话，setPort 在线改端口 */
@@ -216,6 +243,45 @@ interface HandlerCtx {
   persistExecutionSettings: () => void;
   /** 工作区未绑定且有持久化记录时恢复绑定（首个视图接入触发；已绑定则空转） */
   restoreWorkspaceIfIdle: () => void;
+  /** 唯一终端服务；缺省时所有终端命令明确返回 START_FAILED */
+  terminal?: TerminalService;
+}
+
+const TERMINAL_READ_ONLY = new Set<ClientMessage["type"]>([
+  "chat.send", "chat.abort", "permission.response", "chat.ask.answer", "chat.interaction.respond",
+  "session.new", "session.switch", "session.delete", "folder.bind",
+  "alias.create", "alias.select", "alias.update", "alias.delete",
+]);
+
+/** @param message 已严格解析的客户端帧 @returns 终端接管期间是否必须拒绝写入 */
+function blockedByTerminal(message: ClientMessage): boolean {
+  if (message.type === "settings.set" && message.hello !== true) return true;
+  return TERMINAL_READ_ONLY.has(message.type);
+}
+
+const TERMINAL_ERROR_MESSAGES: Record<TerminalErrorCode, string> = {
+  NO_FOLDER: "请先绑定有效文件夹",
+  WORKSPACE_BUSY: "当前会话仍在执行或等待交互",
+  ALREADY_ACTIVE: "已有终端正在接管当前工作区",
+  CLI_NOT_FOUND: "找不到 Claude CLI",
+  START_FAILED: "终端启动失败",
+  NOT_OWNER: "只有发起接管的视图可以关闭终端",
+  NOT_FOUND: "终端接管记录不存在",
+  READ_ONLY: "终端接管中，当前为只读镜像",
+  HOOK_DEGRADED: "未收到会话事件，插件不能可靠跟随",
+  IDENTITY_UNKNOWN: "无法确认原终端进程身份",
+  CONFIRM_REQUIRED: "确认原终端已关闭后才能人工解除",
+  OUTPUT_GAP: "终端输出存在缺口，已停止以避免丢失内容",
+  PTY_UNAVAILABLE: "当前安装无法启动内嵌终端",
+  ATTACH_REQUIRED: "请先绑定终端窗口",
+  DETACHED: "终端窗口已断开",
+};
+
+/** @param error 服务层抛出的固定错误码 @returns 可安全公开的错误码和固定中文说明 */
+function terminalFailure(error: unknown): { code: TerminalErrorCode; message: string } {
+  const candidate = error instanceof Error ? error.message : "";
+  const code = Object.hasOwn(TERMINAL_ERROR_MESSAGES, candidate) ? candidate as TerminalErrorCode : "START_FAILED";
+  return { code, message: TERMINAL_ERROR_MESSAGES[code] };
 }
 
 /**
@@ -1052,6 +1118,50 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
     if (replacing) broadcast(settingsStateMsg(true)); // 新建/切换/普通重建：全部视图立即丢弃旧 Query 真值
   }
 
+  async function suspendSdk(): Promise<void> {
+    const old = workspace.claude;
+    workspace.claude = null;
+    workspace.sessionEpoch += 1; // 旧 Query 的迟到事件不得写入终端只读镜像
+    await old?.close();
+  }
+
+  /**
+   * 终端退出或启动失败后恢复唯一 SDK Query；只采用 lease 已确认的会话。
+   * @param sessionId 最后 Hook 会话；从未确认时回退初始会话，可为 null
+   */
+  function restoreSdk(sessionId: string | null): void {
+    const folder = workspace.folder;
+    if (!folder) return;
+    const existing = sessions.get(folder);
+    const previousSessionId = existing?.sessionId ?? null;
+    const discovered = sessionId
+      ? listSessions(folder).find((item) => item.sessionId === sessionId)
+      : undefined;
+    if (sessionId) {
+      sessions.set(folder, {
+        sessionId,
+        title: discovered?.title ?? (existing?.sessionId === sessionId ? existing.title : "(新会话)"),
+        updatedAt: new Date().toISOString(),
+      });
+    } else {
+      sessions.delete(folder);
+    }
+    syncCurrentAlias();
+    pushAliasList();
+    openSession(sessionId ?? undefined);
+    broadcast({
+      type: "folder.bound",
+      ...(previousSessionId !== sessionId ? { reset: true } : {}),
+      path: folder,
+      resumed: sessionId !== null,
+      title: sessions.get(folder)?.title ?? "",
+      sessionId,
+    });
+    pushSessionList();
+    refreshAliasScript();
+    persistWorkspace();
+  }
+
   /**
    * 绑定文件夹并重建会话（folder.bind 与 alias.select/create 共用）；p 需已通过 isValidFolder 校验。
    * @param p 目标文件夹
@@ -1061,24 +1171,29 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
     void workspace.claude?.close();
     resetInflight("cancelled", "close", true); // 先在旧文件夹/旧会话结算，再改绑定，侧车不会串到新工作区
     workspace.folder = p;
+    terminal?.bindFolder(p);
+    // 重启恢复 lease 时只恢复绑定和 watcher；终端仍持有唯一写入权，不能创建 SDK Query。
+    const openBoundSession = (resumeId?: string): void => {
+      if (!terminal?.isActive()) openSession(resumeId);
+    };
     if (forceSessionId === undefined) {
       const rec = sessions.get(workspace.folder);
-      openSession(rec?.sessionId);
+      openBoundSession(rec?.sessionId);
       broadcast({ type: "folder.bound", ...(reset ? { reset: true } : {}), path: workspace.folder, resumed: Boolean(rec), title: rec?.title ?? "", sessionId: rec?.sessionId ?? null });
     } else if (forceSessionId === null) {
       sessions.delete(workspace.folder); // 别名指向"新会话"：清掉映射，下一条消息开全新会话
-      openSession(undefined);
+      openBoundSession(undefined);
       broadcast({ type: "folder.bound", ...(reset ? { reset: true } : {}), path: workspace.folder, resumed: false, title: "", sessionId: null });
     } else {
       const target = listSessions(workspace.folder).find((s) => s.sessionId === forceSessionId);
       if (target) {
         sessions.set(workspace.folder, { sessionId: target.sessionId, title: target.title, updatedAt: new Date(target.updatedAt).toISOString() });
-        openSession(target.sessionId);
+        openBoundSession(target.sessionId);
         broadcast({ type: "folder.bound", ...(reset ? { reset: true } : {}), path: workspace.folder, resumed: true, title: target.title, sessionId: target.sessionId });
       } else {
         // 别名指向的会话已被删除：退回新会话，别名的 sessionId 由 syncCurrentAlias 顺带修正
         sessions.delete(workspace.folder);
-        openSession(undefined);
+        openBoundSession(undefined);
         broadcast({ type: "folder.bound", ...(reset ? { reset: true } : {}), path: workspace.folder, resumed: false, title: "", sessionId: null });
         broadcast({ type: "folder.error", message: `会话 ${forceSessionId} 在该文件夹下没有转录，已改为开新会话` }); // 必须在 folder.bound 之后发：客户端收 bound 会清屏，先发警告会被抹掉
       }
@@ -1088,6 +1203,34 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
     pushAliasList();
     refreshAliasScript();
     persistWorkspace();
+  }
+
+  /**
+   * 私有 lease 是重启后的写入权权威；恢复其文件夹和最后 Hook 会话，但不创建 SDK Query。
+   * @param record 已通过 TerminalLeaseStore 严格校验的系统 lease
+   */
+  function prepareTerminalRecovery(record: TerminalLeaseRecord): void {
+    if (workspace.folder || !isValidFolder(record.folder)) return;
+    const sessionId = record.confirmedSessionId ?? record.initialSessionId;
+    const existing = sessions.get(record.folder);
+    const discovered = sessionId
+      ? listSessions(record.folder).find((item) => item.sessionId === sessionId)
+      : undefined;
+    if (sessionId) {
+      sessions.set(record.folder, {
+        sessionId,
+        title: discovered?.title ?? (existing?.sessionId === sessionId ? existing.title : "(新会话)"),
+        updatedAt: new Date().toISOString(),
+      });
+    } else {
+      sessions.delete(record.folder);
+    }
+    const persisted = deps.workspaceStore?.load();
+    const alias = persisted?.aliasId && aliases ? aliases.get(persisted.aliasId) : undefined;
+    if (alias && normalizeFolder(alias.folder) === normalizeFolder(record.folder)) {
+      workspace.currentAliasId = alias.id;
+    }
+    bindFolder(record.folder, undefined, false);
   }
 
   /**
@@ -1117,6 +1260,13 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
     // 别名列表是全局数据（不依附文件夹绑定）：未绑定也必须下发，否则空工作区时别名下拉永空
     const al = aliasListMsg();
     if (al) send(al);
+    send({
+      type: "terminal.state",
+      state: terminal?.publicState() ?? {
+        leaseId: null, mode: null, phase: "idle", folder: null,
+        initialSessionId: null, currentSessionId: null, backend: null, canManualRelease: false,
+      },
+    });
     send(settingsStateMsg(workspace.runtimeAuthoritative)); // 重启恢复省略空快照；主动重建后显式空快照清旧缓存
     send({
       type: "chat.sync",
@@ -1159,6 +1309,37 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
     }
   }
 
+  const terminal = deps.terminal ? new TerminalService({
+    sessions,
+    ...(aliases ? { aliases } : {}),
+    getWorkspace: () => ({
+      folder: workspace.folder,
+      currentAliasId: workspace.currentAliasId,
+      busy: workspace.busy,
+      pendingCount: Number(Boolean(workspace.pendingPerm)) + Number(Boolean(workspace.pendingAsk))
+        + workspace.pendingInteractions.size,
+      sessionId: workspace.folder ? sessions.get(workspace.folder)?.sessionId ?? null : null,
+    }),
+    suspendSdk,
+    restoreSdk,
+    readHistoryPage,
+    broadcast,
+    pushSessionList,
+    syncCurrentAlias,
+    pushAliasList,
+    configDir: deps.configDir ?? path.dirname(deps.terminal.privateDir),
+    privateDir: deps.terminal.privateDir,
+    getPort: () => current.port,
+    resolveCli: resolveClaudeExecutable,
+    system: deps.terminal.system,
+    ...(deps.terminal.embedded ? { embedded: deps.terminal.embedded } : {}),
+    ...(deps.terminal.recoverEmbedded ? { recoverEmbedded: deps.terminal.recoverEmbedded } : {}),
+    ...(deps.terminal.recover ? { recover: deps.terminal.recover } : {}),
+    ...(deps.terminal.matchesIdentity ? { matchesIdentity: deps.terminal.matchesIdentity } : {}),
+    ...(deps.terminal.isProcessAlive ? { isProcessAlive: deps.terminal.isProcessAlive } : {}),
+    prepareRecovery: prepareTerminalRecovery,
+  }) : undefined;
+
   /** 工作区上下文：attachHandlers 只接线不持有状态，在线切端口后新 wss 复用同一工作区 */
   const ctx: HandlerCtx = {
     workspace,
@@ -1184,7 +1365,11 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
     applyFastSnapshot,
     persistExecutionSettings,
     restoreWorkspaceIfIdle,
+    ...(terminal ? { terminal } : {}),
   };
+
+  // 必须在开始接受 WS 之前完成：恢复绑定期间 lease 已先建立，任何路径都不会重建 SDK 双写。
+  await terminal?.recover();
 
   /**
    * 在线切端口：先在新端口完成监听+自探测，全部成功后才拆旧服务——切换失败不影响现状。
@@ -1232,8 +1417,14 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
     throw new Error(`端口 ${target}~${Math.min(target + 9, 65535)} 均不可用${lastErr ? `（最后错误: ${lastErr instanceof Error ? lastErr.message : String(lastErr)}）` : ""}`);
   }
 
-  /** 普通 HTTP 请求入口（/config 设置页）；闭包引用 current，切换后新服务仍用同一入口 */
+  /** 普通 HTTP 请求入口（终端 Hook + /config 设置页）；切端口后仍复用同一工作区 */
   const httpHandler: http.RequestListener = (req, res) => {
+    const pathname = new URL(req.url ?? "/", "http://127.0.0.1").pathname;
+    const terminalHooks = terminal?.hookDeps() ?? deps.terminalHooks;
+    if (terminalHooks && pathname.startsWith("/terminal-hook/")) {
+      void handleTerminalHookHttp(req, res, terminalHooks);
+      return;
+    }
     void handleConfigRequest(req, res, {
       config,
       configDir: deps.configDir,
@@ -1253,6 +1444,8 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
       },
       setPort: rebind,
       close: async () => {
+        terminal?.close(); // 关闭 watcher；系统终端进程留给真实退出或重启核对
+        await terminal?.closeEmbedded(); // 内嵌 PTY 随桥接正常退出结束后端与重连计时器
         await closeRunning(current); // 先断开全部视图连接
         await workspace.claude?.close(); // 桥接整体关停才终结会话（视图断开/在线切端口都不杀）
       },
@@ -1332,6 +1525,7 @@ function attachHandlers(wss: WebSocketServer, deps: ServerDeps, instanceId: stri
     applyFastSnapshot,
     persistExecutionSettings,
     restoreWorkspaceIfIdle,
+    terminal,
   } = ctx;
 
   wss.on("connection", (ws: WebSocket, req: http.IncomingMessage) => {
@@ -1370,6 +1564,7 @@ function attachHandlers(wss: WebSocketServer, deps: ServerDeps, instanceId: stri
       if (ws.readyState === WebSocket.OPEN) ws.send(encode(m));
     };
     let pickSeq = 0; // folder.pick 代际号：新请求使旧请求的迟到结果作废（每连接独立）
+    let ownedTerminalLease: string | null = null; // 系统终端不因视图断开而退出，只清除该连接的所有权
     let sawReady = false; // 旧客户端只在首个 ready 前发送无标记的自动完整设置
     let pendingLegacyHello: Extract<ClientMessage, { type: "settings.set" }> | null = null;
     let pendingLegacyTail: ClientMessage[] = []; // 候选后的交错帧：待候选身份判明后按原序释放
@@ -1398,6 +1593,15 @@ function attachHandlers(wss: WebSocketServer, deps: ServerDeps, instanceId: stri
       }
       if (parsed.type === "client.ready") sawReady = true;
       for (const m of messages) {
+      if (terminal?.isActive() && blockedByTerminal(m)) {
+        send({
+          type: "terminal.error",
+          code: "READ_ONLY",
+          message: "终端接管中，当前为只读镜像",
+          ...(terminal.publicState().leaseId ? { leaseId: terminal.publicState().leaseId! } : {}),
+        });
+        continue;
+      }
       switch (m.type) {
         case "auth":
           break; // auth 已在握手完成
@@ -1422,6 +1626,91 @@ function attachHandlers(wss: WebSocketServer, deps: ServerDeps, instanceId: stri
         }
         case "folder.open":
           void handleFolderOpen(send); // 内部自带 try/catch，且只回请求方
+          break;
+        case "terminal.open": {
+          if (!terminal) {
+            send({ type: "terminal.error", ...terminalFailure(new Error("START_FAILED")) });
+            break;
+          }
+          const opening = m.mode === "embedded"
+            ? terminal.openEmbedded(ws)
+            : terminal.open(m.mode).then((state) => ({ state, attachToken: undefined }));
+          const openingLease = terminal.publicState().leaseId;
+          ownedTerminalLease = openingLease; // starting 即归属本连接，避免启动途中无法关闭
+          void opening.then(({ state, attachToken }) => {
+            if (!state.leaseId || !state.mode || !state.backend) throw new Error("START_FAILED");
+            send({
+              type: "terminal.opened", leaseId: state.leaseId, mode: state.mode, backend: state.backend,
+              ...(attachToken ? { attachToken } : {}),
+            });
+          }).catch((error: unknown) => {
+            if (ownedTerminalLease === openingLease) ownedTerminalLease = null;
+            send({ type: "terminal.error", ...terminalFailure(error) });
+          });
+          break;
+        }
+        case "terminal.attach": {
+          if (!terminal) {
+            send({ type: "terminal.error", ...terminalFailure(new Error("NOT_FOUND")), leaseId: m.leaseId });
+            break;
+          }
+          try {
+            const replay = terminal.attach(ws, m.leaseId, m.attachToken, m.afterSeq);
+            ownedTerminalLease = m.leaseId;
+            send({ type: "terminal.attached", leaseId: m.leaseId, replayGap: replay.gap, latestSeq: replay.latestSeq });
+            if (replay.gap) {
+              send({ type: "terminal.error", ...terminalFailure(new Error("OUTPUT_GAP")), leaseId: m.leaseId });
+              void terminal.close(m.leaseId).catch(() => {});
+              break; // 缺口后的 chunks 不能伪装成连续屏幕
+            }
+            for (const chunk of replay.chunks) {
+              send({ type: "terminal.output", leaseId: m.leaseId, seq: chunk.seq, data: chunk.data });
+            }
+          } catch (error) {
+            send({ type: "terminal.error", ...terminalFailure(error), leaseId: m.leaseId });
+          }
+          break;
+        }
+        case "terminal.input": {
+          try {
+            if (!terminal) throw new Error("NOT_FOUND");
+            terminal.write(ws, m.leaseId, m.data);
+          } catch (error) {
+            send({ type: "terminal.error", ...terminalFailure(error), leaseId: m.leaseId });
+          }
+          break;
+        }
+        case "terminal.resize": {
+          try {
+            if (!terminal) throw new Error("NOT_FOUND");
+            terminal.resize(ws, m.leaseId, m.cols, m.rows);
+          } catch (error) {
+            send({ type: "terminal.error", ...terminalFailure(error), leaseId: m.leaseId });
+          }
+          break;
+        }
+        case "terminal.close": {
+          if (ownedTerminalLease !== m.leaseId) {
+            send({ type: "terminal.error", ...terminalFailure(new Error("NOT_OWNER")), leaseId: m.leaseId });
+            break;
+          }
+          if (!terminal) {
+            send({ type: "terminal.error", ...terminalFailure(new Error("NOT_FOUND")), leaseId: m.leaseId });
+            break;
+          }
+          void terminal.close(m.leaseId).catch((error: unknown) => {
+            send({ type: "terminal.error", ...terminalFailure(error), leaseId: m.leaseId });
+          });
+          break;
+        }
+        case "terminal.release":
+          if (!terminal) {
+            send({ type: "terminal.error", ...terminalFailure(new Error("NOT_FOUND")), leaseId: m.leaseId });
+            break;
+          }
+          void terminal.release(m.leaseId).catch((error: unknown) => {
+            send({ type: "terminal.error", ...terminalFailure(error), leaseId: m.leaseId });
+          });
           break;
         case "chat.send": {
           if (!workspace.folder || !workspace.claude) {
@@ -1871,6 +2160,8 @@ function attachHandlers(wss: WebSocketServer, deps: ServerDeps, instanceId: stri
 
     ws.on("close", () => {
       clients.delete(ws); // 视图断开只摘连接：会话随工作区活，桥接进程退出才终结（StartedServer.close）
+      terminal?.disconnect(ws); // 仅 embedded owner 启动 3 秒重连；普通聊天和系统终端不受影响
+      ownedTerminalLease = null; // 系统终端继续运行；不发送停止请求，也不伪造进程退出
     });
   });
 }

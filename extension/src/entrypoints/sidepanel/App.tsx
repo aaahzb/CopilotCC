@@ -4,7 +4,7 @@ import { loadSettings, saveSettings, pushFolderHistory, takePendingQuote, loadRu
 import { decideAttach, composeMessage, deriveAttachKind, isCliSlashCommand, PAGE_RICHNESS_CAPS, type PageSnapshot } from "../../lib/attach-policy";
 import type { PendingUpload } from "../../lib/upload-files";
 import { snapshotActiveTab, snapshotTab } from "../../lib/page-extract";
-import type { ServerMessage, PermissionModeSetting, SessionInfo, AliasInfo, AskRequest, InteractionRequest, InteractionRecord, TimelineItem } from "../../lib/protocol";
+import type { ServerMessage, PermissionModeSetting, SessionInfo, AliasInfo, AskRequest, InteractionRequest, InteractionRecord, TimelineItem, TerminalPublicState } from "../../lib/protocol";
 import type { PairingInfo } from "../../lib/pairing";
 import { TokenGate } from "../../components/TokenGate";
 import { AliasBar } from "../../components/AliasBar";
@@ -17,6 +17,23 @@ import { AskCard } from "../../components/AskCard";
 import { ElicitationCard } from "../../components/ElicitationCard";
 import { UserDialogCard } from "../../components/UserDialogCard";
 import { shouldResetConversation } from "../../lib/conversation-state";
+import {
+  reduceTerminalMirror,
+  toUiMessage,
+  upsertUiMessage,
+  type TerminalMirrorView,
+} from "../../lib/terminal-mirror";
+
+const IDLE_TERMINAL: TerminalPublicState = {
+  leaseId: null,
+  mode: null,
+  phase: "idle",
+  folder: null,
+  initialSessionId: null,
+  currentSessionId: null,
+  backend: null,
+  canManualRelease: false,
+};
 
 /**
  * 别名徽标/芯片色相：id 简单散列取 360 模（弹窗芯片与页面徽标同色，无需调色板）。
@@ -28,30 +45,6 @@ function aliasHue(aliasId: string | null): number {
   let h = 0;
   for (let i = 0; i < aliasId.length; i++) h = (h * 31 + aliasId.charCodeAt(i)) | 0;
   return Math.abs(h) % 360;
-}
-
-/** 历史/实时/快照共用 upsert：工具执行与交互决定各占一行；同类记录再按请求或 toolUseId 合并。 */
-function upsertUiMessage(current: UiMsg[], item: UiMsg): UiMsg[] {
-  const index = current.findIndex((old) => {
-    if (item.interaction) {
-      return old.interaction?.requestId === item.interaction.requestId ||
-        Boolean(item.interaction.toolUseId && old.interaction?.toolUseId === item.interaction.toolUseId);
-    }
-    return Boolean(item.toolUseId && !old.interaction && old.toolUseId === item.toolUseId) || old.id === item.id;
-  });
-  if (index < 0) return [...current, item];
-  const old = current[index]!;
-  const oldFinal = old.toolStatus === "success" || old.toolStatus === "error";
-  const next = [...current];
-  next[index] = {
-    ...old, ...item, id: old.id,
-    interaction: item.interaction ?? old.interaction,
-    toolInput: item.toolInput ?? old.toolInput,
-    toolOutput: item.toolOutput ?? old.toolOutput,
-    toolStatus: oldFinal && (item.toolStatus === "running" || item.toolStatus === "unknown")
-      ? old.toolStatus : item.toolStatus ?? old.toolStatus,
-  };
-  return next;
 }
 
 /** 在途协议项转界面消息；用户附带标记缺失时从实际发送内容推导。 */
@@ -100,6 +93,10 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
   const [askReqs, setAskReqs] = useState<AskRequest[]>([]); // 并发挂起提问；桥接 Map/快照为真源
   const [interactionReqs, setInteractionReqs] = useState<InteractionRequest[]>([]); // MCP/CLI 独立交互；不使用普通权限卡
   const [sessionId, setSessionId] = useState<string | null>(null); // 当前会话 ID（folder.bound/session.list.data 携带或 chat.done 推送）
+  const [terminal, setTerminal] = useState<TerminalPublicState>(IDLE_TERMINAL);
+  const [terminalNotice, setTerminalNotice] = useState<string | null>(null); // 启动后端/回退提示，不作为错误渲染
+  const [terminalError, setTerminalError] = useState(""); // 启动、只读或恢复错误，始终位于折叠详情之外
+  const terminalControlled = terminal.phase !== "idle";
   const [runtime, setRuntime] = useState<RuntimeCache>({}); // CC 回报的实际模型/effort/fast；与请求设置分离并跨重载缓存
   const [forceAttach, setForceAttach] = useState(false); // 本次强制看页面（下一条消息强制附带全文；compact 后自动续一轮）
   const [sessions, setSessions] = useState<SessionInfo[]>([]); // 当前文件夹下的会话列表（切换会话下拉）
@@ -127,6 +124,27 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
   settingsRef.current = settings;
   const runtimeRef = useRef<RuntimeCache>({}); // 长寿命 WS 回调读取最近真值，避免闭包停在首轮空缓存
   runtimeRef.current = runtime;
+  const sessionIdRef = useRef<string | null>(null); // 镜像过滤读取当前会话，不能使用首轮 React 闭包
+  const terminalControlledRef = useRef(false); // WS/交互回调同步检查只读屏障
+  terminalControlledRef.current = terminalControlled;
+  const mirrorRef = useRef<TerminalMirrorView>({ sessionId: null, revision: 0, messages: [], hasLoadedOlder: false });
+
+  /** 同步提交当前会话，供后续镜像帧立即过滤旧会话。 */
+  function commitSessionId(next: string | null): void {
+    sessionIdRef.current = next;
+    setSessionId(next);
+  }
+
+  /** 绑定或历史变化后同步镜像基准；只在切换会话时丢弃旧消息。 */
+  function resetMirrorSession(next: string | null): void {
+    const previous = mirrorRef.current;
+    mirrorRef.current = {
+      sessionId: next,
+      revision: 0,
+      messages: previous.sessionId === next ? previous.messages : [],
+      hasLoadedOlder: previous.sessionId === next ? previous.hasLoadedOlder : false,
+    };
+  }
 
   /** 同步更新 ref、界面和持久缓存；调用方决定是完整替换还是缺字段合并 */
   function commitRuntime(next: RuntimeCache): void {
@@ -187,7 +205,8 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
         prevBoundSidRef.current = m.sessionId;
         setBound(m.path);
         setResumed(m.resumed);
-        setSessionId(m.sessionId);
+        commitSessionId(m.sessionId);
+        resetMirrorSession(m.sessionId); // compact 同会话保留消息；Hook 切会话则清空旧视图并归零 revision
         lastUrlRef.current = null; // 换文件夹/会话后重新附带全文
         // 快照窗口期内不回讨 history：快照按序自带 history（重复回讨会在 chat.sync 后到达，抹掉在途气泡）
         if (m.resumed && !snapshotPhaseRef.current) clientRef.current?.send({ type: "session.history" });
@@ -199,28 +218,27 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
         // 旧分页应答不属于换会话后的界面；最新快照（无 before）仍按原协议整页替换。
         if (m.before !== undefined && historyRequestRef.current !== m.before) break;
         // 回放消息带 sentText/attachKind：重载前后显示行为一致；稳定 ID 供分页与实时记录去重。
-        const items: UiMsg[] = m.messages.map((h) => ({
-          id: h.id ?? crypto.randomUUID(),
-          role: h.role,
-          toolName: h.toolName,
-          text: h.text,
-          sentText: h.sentText,
-          attachKind: h.attachKind,
-          interaction: h.interaction,
-          toolUseId: h.toolUseId,
-          toolStatus: h.toolStatus,
-          toolInput: h.toolInput,
-          toolOutput: h.toolOutput,
-          detail: h.detail,
-        }));
+        const items: UiMsg[] = m.messages.map((h) => toUiMessage(h, crypto.randomUUID()));
         if (m.before !== undefined) {
-          setMessages((current) => {
+          const prepend = (current: UiMsg[]): UiMsg[] => {
             const existing = new Set(current.map((item) => item.id));
             return [...items.filter((item) => !existing.has(item.id)), ...current];
-          });
+          };
+          // 后续镜像 upsert 必须基于已展开的完整分页，而不是把旧页再次覆盖掉。
+          if (mirrorRef.current.sessionId === sessionIdRef.current) {
+            mirrorRef.current = {
+              ...mirrorRef.current,
+              messages: prepend(mirrorRef.current.messages),
+              hasLoadedOlder: true,
+            };
+          }
+          setMessages(prepend);
           historyRequestRef.current = null;
           setLoadingOlder(false);
         } else {
+          if (mirrorRef.current.sessionId === sessionIdRef.current) {
+            mirrorRef.current = { ...mirrorRef.current, messages: items, hasLoadedOlder: false };
+          }
           setMessages(items);
         }
         setHistoryCursor(m.nextCursor ?? null);
@@ -229,9 +247,36 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
       }
       case "session.list.data":
         setSessions(m.sessions);
-        setSessionId(m.currentId);
+        commitSessionId(m.currentId);
         prevBoundSidRef.current = m.currentId;
         break;
+      case "terminal.state":
+        setTerminal(m.state);
+        if (m.state.phase === "idle") {
+          setTerminalError("");
+          setTerminalNotice(null);
+        }
+        break;
+      case "terminal.opened":
+        setTerminalError("");
+        setTerminalNotice(m.backend === "windows-console"
+          ? "未检测到 Windows Terminal，已回退到系统控制台"
+          : "终端已打开，插件进入只读镜像");
+        break;
+      case "terminal.error":
+        setTerminalError(m.message);
+        break;
+      case "session.mirror.data": {
+        const next = reduceTerminalMirror(mirrorRef.current, m, sessionIdRef.current);
+        if (next === mirrorRef.current) break;
+        mirrorRef.current = next;
+        setMessages(next.messages);
+        if (!next.hasLoadedOlder) {
+          setHistoryCursor(m.nextCursor ?? null);
+          setHasOlderHistory(m.hasMore && Boolean(m.nextCursor));
+        }
+        break;
+      }
       case "alias.list.data":
         setAliases(m.aliases);
         setCurrentAliasId(m.currentId);
@@ -385,7 +430,7 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
       case "chat.done": {
         setBusy(false);
         setRequesting(false);
-        setSessionId(m.sessionId);
+        commitSessionId(m.sessionId);
         prevBoundSidRef.current = m.sessionId;
         // chat.done 可只携带 fast 或 effort：逐字段合并，缺字段保留最近真值，不再以 model 存在为前提
         commitRuntime(mergeDoneRuntime(runtimeRef.current, m));
@@ -530,7 +575,7 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
     if (popupTabId === null || popupAliasId === null || aliasSelectTriedRef.current || conn !== "open") return;
     if (aliases.length === 0) return; // 快照未到，等
     aliasSelectTriedRef.current = true;
-    if (currentAliasId !== popupAliasId && aliases.some((a) => a.id === popupAliasId)) {
+    if (currentAliasId !== popupAliasId && aliases.some((a) => a.id === popupAliasId) && !terminalControlledRef.current) {
       clientRef.current?.send({ type: "alias.select", id: popupAliasId, reset: false });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -612,8 +657,22 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
     clientRef.current?.send({ type: "folder.open" });
   }
 
+  /** 先让 background 创建/聚焦真实终端页；窗口失败时聊天 WS 不发送任何 open。 */
+  async function handleOpenEmbeddedTerminal(): Promise<void> {
+    setTerminalError("");
+    setTerminalNotice(null);
+    try {
+      const result = await chrome.runtime.sendMessage({
+        type: "terminal.open-window", aliasId: currentAliasId,
+      }) as { ok?: boolean; error?: string } | undefined;
+      if (!result?.ok) setTerminalError(result?.error ?? "插件终端窗口创建失败，未启动 Claude");
+    } catch {
+      setTerminalError("插件终端窗口创建失败，未启动 Claude");
+    }
+  }
+
   async function handleBind(p: string): Promise<void> {
-    if (!p.trim()) return;
+    if (terminalControlledRef.current || !p.trim()) return;
     await pushFolderHistory(p.trim());
     const stored = await loadSettings();
     const current = settingsRef.current;
@@ -634,7 +693,7 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
 
   async function handleSend(text: string, uploads: PendingUpload[] = []): Promise<void> {
     const s = settingsRef.current;
-    if (!s || !bound || busy) return; // busy 兜底：一轮未完结不再发（发送键已换成停止键，防 Enter 竞态连发）
+    if (!s || !bound || busy || terminalControlledRef.current) return; // 终端独占期间禁止从旧回调绕过只读界面
     let page: PageSnapshot | null = null;
     let attachFull = false;
     let attachNote: string | null = null;
@@ -679,6 +738,7 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
 
   /** 更新执行设置；以最新服务器内存镜像构造快照，fields 限定本次变更，fast-only 走原生接口。 */
   async function applySettings(patch: ExecutionSettingsPatch): Promise<void> {
+    if (terminalControlledRef.current) return;
     const stored = await saveSettings(patch);
     const current = settingsRef.current ?? stored;
     const next = { ...current, ...patch }; // 存储可能留有失败回滚前的 fast，不得覆盖服务器内存镜像
@@ -729,7 +789,11 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
     setSessions([]);
     setAliases([]);
     setCurrentAliasId(null); // 换桥：旧桥别名作废，等新桥 alias.list.data 重建
-    setSessionId(null);
+    commitSessionId(null);
+    resetMirrorSession(null);
+    setTerminal(IDLE_TERMINAL);
+    setTerminalNotice(null);
+    setTerminalError("");
     setDraft("");
     runtimeRef.current = {};
     setRuntime({}); // 新桥的实际生效值未知，连缓存一起清，等 settings.state/chat.done 重建
@@ -793,6 +857,21 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
         onDeleteSession={(id) => clientRef.current?.send({ type: "session.delete", sessionId: id })}
         onOpenFolder={handleOpenFolder}
         openFolderFlash={openFolderFlash}
+        terminal={terminal}
+        terminalNotice={terminalNotice}
+        terminalError={terminalError || null}
+        onOpenSystemTerminal={() => {
+          if (terminalControlledRef.current) return;
+          setTerminalError("");
+          setTerminalNotice(null);
+          clientRef.current?.send({ type: "terminal.open", mode: "system" });
+        }}
+        onOpenEmbeddedTerminal={() => { void handleOpenEmbeddedTerminal(); }}
+        onReleaseTerminal={() => {
+          if (terminal.leaseId && terminal.canManualRelease) {
+            clientRef.current?.send({ type: "terminal.release", leaseId: terminal.leaseId, confirmedClosed: true });
+          }
+        }}
       />
       <MessageList
         messages={messages}
@@ -805,7 +884,9 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
         <PermissionCard
           key={request.requestId}
           request={request}
+          disabled={terminalControlled}
           onRespond={(id, allow, feedback) => {
+            if (terminalControlledRef.current) return;
             clientRef.current?.send({
               type: "permission.response", requestId: id, allow,
               ...(feedback ? { feedback } : {}),
@@ -818,7 +899,9 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
         <AskCard
           key={request.requestId}
           request={request}
+          disabled={terminalControlled}
           onRespond={(id, answers) => {
+            if (terminalControlledRef.current) return;
             clientRef.current?.send({ type: "chat.ask.answer", requestId: id, answers });
             setAskReqs((current) => current.filter((r) => r.requestId !== id)); // 本视图只撤自己的卡；resolved 广播补齐只读结果
           }}
@@ -828,21 +911,30 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
         <UserDialogCard
           key={request.requestId}
           request={request}
-          onRespond={(requestId, response) => clientRef.current?.send({
-            type: "chat.interaction.respond", requestId, response,
-          })}
+          disabled={terminalControlled}
+          onRespond={(requestId, response) => {
+            if (terminalControlledRef.current) return;
+            clientRef.current?.send({
+              type: "chat.interaction.respond", requestId, response,
+            });
+          }}
         />
       ) : (
         <ElicitationCard
           key={request.requestId}
           request={request}
-          onRespond={(requestId, response) => clientRef.current?.send({
-            type: "chat.interaction.respond", requestId, response,
-          })}
+          disabled={terminalControlled}
+          onRespond={(requestId, response) => {
+            if (terminalControlledRef.current) return;
+            clientRef.current?.send({
+              type: "chat.interaction.respond", requestId, response,
+            });
+          }}
         />
       ))}
       <InputBox
         disabled={!bound || conn !== "open"}
+        readOnly={terminalControlled}
         busy={busy}
         attachEnabled={settings.attachEnabled}
         permissionMode={settings.permissionMode}
@@ -865,7 +957,9 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
         onDraftChange={handleDraftChange}
         onComposition={(v) => { composingRef.current = v; }}
         onSend={handleSend}
-        onStop={() => clientRef.current?.send({ type: "chat.abort" })}
+        onStop={() => {
+          if (!terminalControlledRef.current) clientRef.current?.send({ type: "chat.abort" });
+        }}
       />
     </div>
   );

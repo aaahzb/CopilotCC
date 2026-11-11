@@ -10,6 +10,8 @@ const DEFAULT_TA_HEIGHT = 66;
 /** 底部输入区：上方选择权限/模型与 CC 原生 fast，下方选择 effort 并显示 CC 真值；另含上传、发送和真正停止 */
 export function InputBox(props: {
   disabled: boolean;
+  /** 终端独占：禁写但保留草稿，且不把 busy 伪造成 true */
+  readOnly: boolean;
   /** 一轮生成进行中（含思考/工具调用期，不等首字）：发送键变为停止键，Esc 可中止 */
   busy: boolean;
   attachEnabled: boolean;
@@ -56,6 +58,7 @@ export function InputBox(props: {
   const effortStatusRef = useRef<HTMLDivElement>(null);
   const [taHeight, setTaHeight] = useState<number | null>(null); // 拖拽过才受控；null = rows=3 默认外观
   const taRef = useRef<HTMLTextAreaElement>(null);
+  const writeDisabled = props.disabled || props.readOnly; // 未连接/未绑定与终端只读共用禁写判断
 
   /** 消息区底缘拖拽：向上增大输入框、向下缩小；document 级监听，松开即移除。 */
   function startResize(e: React.MouseEvent): void {
@@ -93,7 +96,7 @@ export function InputBox(props: {
 
   /** 合并新文件并整单校验：任一越界整批不加，报原因（友好拦截，协议层还有防线） */
   function addFiles(list: FileList | File[]): void {
-    if (props.disabled) return;
+    if (writeDisabled) return;
     const merged = [...files, ...Array.from(list)];
     const err = validateFiles(merged);
     if (err) {
@@ -105,12 +108,13 @@ export function InputBox(props: {
   }
 
   function removeAt(i: number): void {
+    if (writeDisabled) return;
     setFiles((fs) => fs.filter((_, j) => j !== i));
     setUploadError("");
   }
 
   const submit = async (): Promise<void> => {
-    if (props.disabled || props.busy || (!props.draft.trim() && files.length === 0)) return; // busy 兜底：防 Enter 竞态连发
+    if (writeDisabled || props.busy || (!props.draft.trim() && files.length === 0)) return; // busy 兜底：防 Enter 竞态连发
     // 发送时才把 File 读成 base64：芯片停留期间不占内存
     const uploads = await readFilesAsUploads(files);
     props.onSend(props.draft.trim(), uploads); // 草稿清空由父组件负责（本地即清 + 桥接广播兜底）
@@ -145,7 +149,7 @@ export function InputBox(props: {
     <div
       className={`input-box${dragOver ? " drag-over" : ""}`}
       onDragOver={(e) => {
-        if (e.dataTransfer.types.includes("Files")) {
+        if (!writeDisabled && e.dataTransfer.types.includes("Files")) {
           e.preventDefault(); // 必须阻止默认行为，drop 事件才会触发
           setDragOver(true);
         }
@@ -167,20 +171,20 @@ export function InputBox(props: {
       />
       <div className="toggles">
         <label>
-          <input type="checkbox" checked={props.attachEnabled} onChange={(e) => props.onToggleAttach(e.target.checked)} />
+          <input type="checkbox" checked={props.attachEnabled} disabled={writeDisabled} onChange={(e) => props.onToggleAttach(e.target.checked)} />
           附带网页
         </label>
         <label className={`fast-toggle${props.fastMode ? " on" : ""}`} title={fastTitle}>
-          <input type="checkbox" aria-label="Claude Code 原生 fast" checked={props.fastMode} onChange={(e) => props.onFastModeChange(e.target.checked)} />
+          <input type="checkbox" aria-label="Claude Code 原生 fast" checked={props.fastMode} disabled={writeDisabled} onChange={(e) => props.onFastModeChange(e.target.checked)} />
           fast {props.fastMode ? "on" : "off"}
         </label>
-        <select value={props.permissionMode} title="权限模式" onChange={(e) => props.onModeChange(e.target.value as PermissionModeSetting)}>
+        <select value={props.permissionMode} title="权限模式" disabled={writeDisabled} onChange={(e) => props.onModeChange(e.target.value as PermissionModeSetting)}>
           <option value="auto">auto 自动</option>
           <option value="acceptEdits">acceptEdits</option>
           <option value="plan">plan</option>
           <option value="approve-each">逐条审批</option>
         </select>
-        <select value={props.model} title="模型（自动 = 跟随本机 CLI 配置，· 后为当前实际生效值）" onChange={(e) => props.onModelChange(e.target.value)}>
+        <select value={props.model} title="模型（自动 = 跟随本机 CLI 配置，· 后为当前实际生效值）" disabled={writeDisabled} onChange={(e) => props.onModelChange(e.target.value)}>
           {/* 不显示"默认"伪状态：自动档直接呈现实际生效模型，真值未到（尚未聊过）时如实说明跟随 CLI */}
           <option value="">{props.effectiveModel ? `自动 · ${props.effectiveModel}` : "自动（跟随 CLI 配置）"}</option>
           <option value="fable">fable</option>
@@ -195,7 +199,7 @@ export function InputBox(props: {
           {files.map((f, i) => (
             <span key={`${f.name}-${i}`} className="upload-chip" title={f.name}>
               📁 {f.name}（{formatSize(f.size)}）
-              <button title="移除该文件" onClick={() => removeAt(i)}>×</button>
+              <button title="移除该文件" disabled={writeDisabled} onClick={() => removeAt(i)}>×</button>
             </span>
           ))}
         </div>
@@ -205,15 +209,15 @@ export function InputBox(props: {
         ref={taRef}
         rows={3}
         style={taHeight === null ? undefined : { height: taHeight }}
-        placeholder={props.disabled ? "先绑定文件夹…" : "针对当前网页提问，Enter 发送 / Shift+Enter 换行；可拖入或点 📁 上传文件"}
+        placeholder={props.readOnly ? "终端接管中，草稿已保留；终端退出后恢复输入" : writeDisabled ? "先绑定文件夹…" : "针对当前网页提问，Enter 发送 / Shift+Enter 换行；可拖入或点 📁 上传文件"}
         value={props.draft}
-        disabled={props.disabled}
+        disabled={writeDisabled}
         onChange={(e) => props.onDraftChange(e.target.value)}
         onCompositionStart={() => props.onComposition?.(true)}
         onCompositionEnd={() => props.onComposition?.(false)}
         onKeyDown={(e) => {
           // Esc = 中止本轮生成（对齐 Claude Code CLI 的 ESC）；输入法组合中的 Esc 是取消拼音，不拦截
-          if (e.key === "Escape" && props.busy && !e.nativeEvent.isComposing) {
+          if (e.key === "Escape" && props.busy && !writeDisabled && !e.nativeEvent.isComposing) {
             e.preventDefault();
             props.onStop();
             return;
@@ -236,6 +240,7 @@ export function InputBox(props: {
             aria-label={`当前 ${hint || "自动"}，点击修改 effort`}
             aria-haspopup="listbox"
             aria-expanded={effortOpen}
+            disabled={writeDisabled}
             title={`${modelPending || effortPending ? "当前显示请求值，等待 CC 回报实际模型/effort" : "CC 最近回报的实际模型与推理强度"}；点击修改 effort`}
             onClick={() => setEffortOpen((open) => !open)}
           >{hint || "自动"}</button>
@@ -251,6 +256,7 @@ export function InputBox(props: {
                   role="option"
                   aria-selected={props.effort === value}
                   data-effort={value}
+                  disabled={writeDisabled}
                   onClick={() => {
                     setEffortOpen(false);
                     props.onEffortChange(value);
@@ -270,6 +276,7 @@ export function InputBox(props: {
           type="button"
           className={`force-attach${props.forceAttach ? " on" : ""}`}
           aria-pressed={props.forceAttach}
+          disabled={writeDisabled}
           title={props.forceAttach
             ? "已点亮 ✓：下一条消息强制附带页面全文；再点一次即取消（用后自动失效；本轮若发生 compact 会自动续到下一轮）"
             : "本次强制看页面：下一条消息强制附带页面全文（不受同页去重限制），用后自动失效；本轮若发生 compact 会自动续到下一轮"}
@@ -283,6 +290,7 @@ export function InputBox(props: {
             type="file"
             multiple
             hidden
+            disabled={writeDisabled}
             onChange={(e) => {
               if (e.target.files?.length) addFiles(e.target.files);
               e.target.value = ""; // 重置：同一文件可再次选择
@@ -292,15 +300,15 @@ export function InputBox(props: {
             type="button"
             className="upload-btn"
             title="上传文件（也可直接拖进输入区）：保存到绑定文件夹的 copilotUploads 目录，Claude 用 Read 查看"
-            disabled={props.disabled}
+            disabled={writeDisabled}
             onClick={() => fileInputRef.current?.click()}
           >
             📁
           </button>
           {props.busy ? (
-            <button type="button" className="stop-btn" title="停止本轮生成（输入框聚焦时按 Esc 同效）" onClick={props.onStop}>■ 停止</button>
+            <button type="button" className="stop-btn" title="停止本轮生成（输入框聚焦时按 Esc 同效）" disabled={writeDisabled} onClick={props.onStop}>■ 停止</button>
           ) : (
-            <button disabled={props.disabled || (!props.draft.trim() && files.length === 0)} onClick={() => void submit()}>发送</button>
+            <button disabled={writeDisabled || (!props.draft.trim() && files.length === 0)} onClick={() => void submit()}>发送</button>
           )}
         </span>
       </div>

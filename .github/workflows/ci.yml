@@ -25,6 +25,8 @@ jobs:
             bridge/package-lock.json
             extension/package-lock.json
 
+      - uses: oven-sh/setup-bun@v2
+
       - name: 桥接：依赖 / 类型检查 / 单测 / 预编译件架构审计
         working-directory: bridge
         run: |
@@ -33,6 +35,56 @@ jobs:
           npm test
           # 第三方预编译托盘组件架构审计：win 内嵌件必须 x64（教训见 TODO 2026-10-23：x86_64 托盘混进 arm64 mac 包）
           node scripts/check-arch.mjs node_modules/systray2/traybin/tray_windows_release.exe x64
+
+      - name: Windows：真实 PTY 路线、完整发行布局与项目树外冒烟
+        if: runner.os == 'Windows'
+        working-directory: bridge
+        shell: bash
+        run: |
+          node scripts/run-pty-probe.mjs --route auto --target win --root "$RUNNER_TEMP/ccc-pty-win"
+          node scripts/build-exe.mjs win --pty-route "$RUNNER_TEMP/ccc-pty-win/pty-route.json"
+          node scripts/verify-native-layout.mjs "$GITHUB_WORKSPACE/bridge/dist/ccc-bridge-win-x64" win32 x64
+          bun build scripts/fake-terminal-claude.ts --compile --target=bun-windows-x64 --outfile "$RUNNER_TEMP/ccc-pty-fake-win.exe"
+          mkdir -p "$RUNNER_TEMP/ccc-pty-smoke-win/tmp"
+          cp -R dist/ccc-bridge-win-x64 "$RUNNER_TEMP/ccc-pty-smoke-win/app"
+          cd "$RUNNER_TEMP/ccc-pty-smoke-win"
+          CCC_PTY_SMOKE_CLI="$RUNNER_TEMP/ccc-pty-fake-win.exe" TEMP="$RUNNER_TEMP/ccc-pty-smoke-win/tmp" TMP="$RUNNER_TEMP/ccc-pty-smoke-win/tmp" TMPDIR="$RUNNER_TEMP/ccc-pty-smoke-win/tmp" ./app/ccc-terminal.exe --pty-smoke win32 x64
+
+      - name: Windows：绿色单文件构建、启动器回归与项目树外生命周期验收
+        if: runner.os == 'Windows'
+        working-directory: bridge
+        shell: bash
+        run: |
+          node scripts/run-portable-launcher-tests.mjs
+          node scripts/build-portable-exe.mjs
+          node scripts/verify-portable-exe.mjs --root "$RUNNER_TEMP/ccc-portable-lifecycle-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+
+      - name: macOS：真实 PTY 路线、完整发行布局与项目树外冒烟
+        if: runner.os == 'macOS'
+        working-directory: bridge
+        run: |
+          node scripts/run-pty-probe.mjs --route auto --target darwin --root "$RUNNER_TEMP/ccc-pty-mac"
+          node scripts/build-exe.mjs darwin --pty-route "$RUNNER_TEMP/ccc-pty-mac/pty-route.json"
+          node scripts/verify-native-layout.mjs "$GITHUB_WORKSPACE/bridge/dist/ccc-bridge-darwin-arm64" darwin arm64
+          bun build scripts/fake-terminal-claude.ts --compile --target=bun-darwin-arm64 --outfile "$RUNNER_TEMP/ccc-pty-fake-mac"
+          mkdir -p "$RUNNER_TEMP/ccc-pty-smoke-mac/tmp"
+          cp -R dist/ccc-bridge-darwin-arm64 "$RUNNER_TEMP/ccc-pty-smoke-mac/app"
+          cd "$RUNNER_TEMP/ccc-pty-smoke-mac"
+          CCC_PTY_SMOKE_CLI="$RUNNER_TEMP/ccc-pty-fake-mac" TEMP="$RUNNER_TEMP/ccc-pty-smoke-mac/tmp" TMP="$RUNNER_TEMP/ccc-pty-smoke-mac/tmp" TMPDIR="$RUNNER_TEMP/ccc-pty-smoke-mac/tmp" ./app/ccc-bridge --pty-smoke darwin arm64
+
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'Windows'
+        with:
+          name: pty-route-windows
+          path: ${{ runner.temp }}/ccc-pty-win/pty-route.json
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'macOS'
+        with:
+          name: pty-route-macos
+          path: ${{ runner.temp }}/ccc-pty-mac/pty-route.json
+          if-no-files-found: error
 
       - name: 扩展：依赖 / 类型检查 / 单测 / 构建
         working-directory: extension

@@ -11,6 +11,12 @@ import { startServer } from "./server";
 import { claimInstance, writeRuntime, releaseRuntimeOnExit } from "./runtime";
 import { encodePairing } from "./pairing";
 import { type ServerMessage } from "./protocol";
+import { runTerminalHookHelper } from "./terminal-hook-helper";
+import { runTerminalChild } from "./terminal-child";
+import { SystemTerminalAdapter } from "./system-terminal";
+import { createEmbeddedTerminalAdapter } from "./embedded-terminal";
+import { runPtySmoke } from "./pty-smoke";
+import { terminalChildCommand, terminalNativeDirectory } from "./runtime-entry";
 
 const cmd = process.argv[2] ?? "start";
 
@@ -22,16 +28,25 @@ async function cmdStart(): Promise<void> {
   sessions.load();
   const aliases = new AliasManager(path.join(configDir(), "aliases.json"));
   aliases.load();
+  const systemTerminal = new SystemTerminalAdapter({ childCommand: terminalChildCommand() });
+  const embeddedTerminal = createEmbeddedTerminalAdapter();
   const server = await startServer({
     config,
     sessions,
     aliases,
     workspaceStore: new WorkspaceStore(path.join(configDir(), "workspace.json")), // 重启/升级后恢复 文件夹+别名 绑定
     configDir: configDir(), // 在线改端口后写回 config.json
+    terminal: {
+      privateDir: path.join(configDir(), "terminal"),
+      system: (context) => systemTerminal.start(context),
+      embedded: (context) => embeddedTerminal.start(context),
+      recoverEmbedded: (record) => embeddedTerminal.recover(record),
+      recover: (record) => systemTerminal.recover(record),
+    },
     onPortChanged: (p) => writeRuntime(configDir(), p),
   });
   writeRuntime(configDir(), server.port);
-  releaseRuntimeOnExit(configDir());
+  releaseRuntimeOnExit(configDir(), () => server.close());
   console.log(`[ccc-bridge] 已启动 ws://127.0.0.1:${server.port}/ws`);
   console.log(`[ccc-bridge] 配对串（粘贴到扩展配对框）: ${encodePairing({ h: "127.0.0.1", p: server.port, t: config.token })}`);
   console.log(`[ccc-bridge] 修改端口（浏览器打开）: http://127.0.0.1:${server.port}/config?t=${config.token}`);
@@ -112,7 +127,38 @@ async function cmdSelftest(live: boolean): Promise<void> {
   process.exit(0);
 }
 
-if (cmd === "start") {
+if (cmd === "--pty-smoke") {
+  // 只有这个显式产物探针分支读取隔离假 CLI；普通启动和 WS 永不读取它作为命令。
+  runPtySmoke({
+    expectedPlatform: process.argv[3] ?? "",
+    expectedArch: process.argv[4] ?? "",
+    cliPath: process.env.CCC_PTY_SMOKE_CLI ?? "",
+    executableDir: terminalNativeDirectory(),
+  }).then((result) => {
+    process.stdout.write(`PTY_SMOKE_RESULT:${JSON.stringify(result)}\n`, () => process.exit(0));
+  }).catch((error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`PTY_SMOKE_ERROR:${message.slice(0, 500)}\n`, () => process.exit(1));
+  });
+} else if (cmd === "--terminal-hook") {
+  // 只有显式 command Hook 分支读取 stdin；正常启动绝不进入该路径。
+  runTerminalHookHelper({ stdin: process.stdin, env: process.env }).catch(() => {
+    console.error("command Hook 转发失败");
+    process.exitCode = 1;
+  });
+} else if (cmd === "--terminal-child") {
+  const requestFile = path.resolve(process.argv[3] ?? "");
+  const privateDir = path.resolve(configDir(), "terminal");
+  if (path.dirname(requestFile) !== privateDir) {
+    console.error("私有终端请求路径非法");
+    process.exitCode = 1;
+  } else {
+    runTerminalChild(requestFile).catch(() => {
+      console.error("私有终端包装进程失败");
+      process.exitCode = 1;
+    });
+  }
+} else if (cmd === "start") {
   cmdStart().catch((e) => {
     console.error("启动失败:", e instanceof Error ? e.message : e);
     process.exit(1);

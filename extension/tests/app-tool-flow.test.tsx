@@ -102,6 +102,46 @@ async function emit(ws: FakeWebSocket, message: ServerMessage): Promise<void> {
   await act(async () => ws.emit(message));
 }
 
+const TERMINAL_SID_1 = "11111111-1111-4111-8111-111111111111";
+const TERMINAL_SID_2 = "22222222-2222-4222-8222-222222222222";
+const TERMINAL_LEASE_ID = "33333333-3333-4333-8333-333333333333";
+
+/** 构造当前绑定帧，供终端镜像和只读控件测试使用。 */
+function terminalBound(sessionId: string | null = TERMINAL_SID_1, reset = false): ServerMessage {
+  return { type: "folder.bound", path: "D:\\notes", resumed: true, title: "", sessionId, reset };
+}
+
+/** 构造合法终端公开状态；测试不接触 hook token 或进程身份。 */
+function terminalState(
+  phase: "idle" | "active" | "degraded" = "active",
+  sessionId: string | null = TERMINAL_SID_1,
+): ServerMessage {
+  const idle = phase === "idle";
+  return {
+    type: "terminal.state",
+    state: {
+      leaseId: idle ? null : TERMINAL_LEASE_ID,
+      mode: idle ? null : "system",
+      phase,
+      folder: idle ? null : "D:\\notes",
+      initialSessionId: idle ? null : TERMINAL_SID_1,
+      currentSessionId: idle ? null : sessionId,
+      backend: idle ? null : "windows-terminal",
+      canManualRelease: phase === "degraded",
+      ...(phase === "degraded" ? { message: "无法确认原终端进程身份" } : {}),
+    },
+  };
+}
+
+/** 构造一页只读结构化历史镜像。 */
+function terminalMirror(
+  sessionId: string,
+  revision: number,
+  messages: Extract<ServerMessage, { type: "session.mirror.data" }>["messages"],
+): ServerMessage {
+  return { type: "session.mirror.data", sessionId, revision, messages, hasMore: false };
+}
+
 describe("App 斜杠命令发送", () => {
   it("开启网页附带并存在选中文字时，/compact 仍只发送原始命令且无附带提示", async () => {
     const { host, ws } = await mountApp();
@@ -153,6 +193,168 @@ describe("App 别名栏打开文件夹", () => {
     await emit(ws, { type: "folder.error", message: "无法打开文件管理器: D:\\notes" });
     expect(host.querySelector(".alias-detail")).toBeNull();
     expect(host.querySelector(".message-wrap")?.textContent).toContain("无法打开文件管理器: D:\\notes");
+  });
+});
+
+describe("App 系统终端接管", () => {
+  it("别名主行发送无参数 system open，并显示实际后端", async () => {
+    const { host, ws } = await mountApp();
+    await emit(ws, terminalBound());
+    const button = host.querySelector<HTMLButtonElement>('button[aria-label="在系统终端打开并继续当前会话"]');
+    expect(button?.disabled).toBe(false);
+    await act(async () => button?.click());
+    expect(ws.sent.map((raw) => JSON.parse(raw) as { type: string }).filter((m) => m.type === "terminal.open"))
+      .toEqual([{ type: "terminal.open", mode: "system" }]);
+    await emit(ws, { type: "terminal.opened", leaseId: TERMINAL_LEASE_ID, mode: "system", backend: "windows-console" });
+    expect(host.textContent).toContain("已回退到系统控制台");
+  });
+
+  it("新一次系统终端打开立即清旧错误，成功后只保留成功状态", async () => {
+    const { host, ws } = await mountApp();
+    await emit(ws, terminalBound());
+    await emit(ws, { type: "terminal.error", code: "START_FAILED", message: "上一次启动失败" });
+    expect(host.querySelector(".terminal-error")?.textContent).toContain("上一次启动失败");
+    const button = host.querySelector<HTMLButtonElement>('button[aria-label="在系统终端打开并继续当前会话"]');
+    await act(async () => button?.click());
+    expect(host.querySelector(".terminal-error")).toBeNull();
+    await emit(ws, {
+      type: "terminal.opened", leaseId: TERMINAL_LEASE_ID, mode: "system", backend: "windows-terminal",
+    });
+    expect(host.querySelector(".terminal-error")).toBeNull();
+    expect(host.textContent).toContain("终端已打开，插件进入只读镜像");
+    expect(host.textContent).not.toContain("上一次启动失败");
+  });
+
+  it("terminal.opened 后新到的错误不会被后续 active 状态误清", async () => {
+    const { host, ws } = await mountApp();
+    await emit(ws, {
+      type: "terminal.opened", leaseId: TERMINAL_LEASE_ID, mode: "system", backend: "windows-terminal",
+    });
+    await emit(ws, { type: "terminal.error", code: "HOOK_DEGRADED", message: "新的终端错误" });
+    await emit(ws, terminalState("active"));
+    expect(host.querySelector(".terminal-error")?.textContent).toContain("新的终端错误");
+  });
+
+  it("插件终端只请求 background 开窗；创建失败显示错误且绝不发送 WS open", async () => {
+    const sendMessage = vi.fn()
+      .mockResolvedValueOnce({ ok: true, winId: 88, reused: false })
+      .mockResolvedValueOnce({ ok: false, error: "窗口创建失败" });
+    vi.stubGlobal("chrome", { runtime: { sendMessage } });
+    const { host, ws } = await mountApp();
+    await emit(ws, terminalBound());
+    await emit(ws, { type: "terminal.error", code: "START_FAILED", message: "旧插件启动失败" });
+    const button = host.querySelector<HTMLButtonElement>('button[aria-label="在插件终端打开并继续当前会话"]');
+    expect(button?.disabled).toBe(false);
+    await act(async () => button?.click());
+    expect(host.textContent).not.toContain("旧插件启动失败");
+    await act(async () => button?.click());
+    expect(sendMessage).toHaveBeenCalledTimes(2);
+    expect(sendMessage).toHaveBeenCalledWith({ type: "terminal.open-window", aliasId: null });
+    expect(host.querySelector(".terminal-error")?.textContent).toContain("窗口创建失败");
+    expect(ws.sent.map((raw) => JSON.parse(raw) as { type: string })).not.toContainEqual({
+      type: "terminal.open", mode: "embedded",
+    });
+  });
+
+  it("接管时禁用写操作并保留草稿，idle 后恢复", async () => {
+    const { host, ws } = await mountApp();
+    await emit(ws, terminalBound());
+    await emit(ws, { type: "chat.draft", text: "接管前草稿" });
+    await emit(ws, terminalState("active"));
+    expect(host.textContent).toContain("终端接管中 · 当前为只读镜像 · 终端退出后恢复输入");
+    expect(host.querySelector<HTMLTextAreaElement>("textarea")?.value).toBe("接管前草稿");
+    expect(host.querySelector<HTMLTextAreaElement>("textarea")?.disabled).toBe(true);
+    expect(host.querySelector<HTMLSelectElement>('select[title="权限模式"]')?.disabled).toBe(true);
+    await emit(ws, terminalState("idle"));
+    expect(host.querySelector<HTMLTextAreaElement>("textarea")?.disabled).toBe(false);
+    expect(host.querySelector<HTMLTextAreaElement>("textarea")?.value).toBe("接管前草稿");
+  });
+
+  it("镜像更新同一工具行，旧 revision 和旧 sessionId 不覆盖新会话", async () => {
+    const { host, ws } = await mountApp();
+    await emit(ws, terminalBound(TERMINAL_SID_1));
+    await emit(ws, terminalState("active", TERMINAL_SID_1));
+    const running = {
+      id: "tool-running", role: "tool" as const, text: "读取文件", toolName: "Read", toolUseId: "toolu-terminal",
+      toolStatus: "running" as const, toolInput: "D:\\notes\\a.txt",
+    };
+    await emit(ws, terminalMirror(TERMINAL_SID_1, 1, [running]));
+    await emit(ws, terminalMirror(TERMINAL_SID_1, 2, [{ ...running, toolStatus: "success", toolOutput: "完整输出" }]));
+    expect(host.querySelectorAll(".tool-activity")).toHaveLength(1);
+    expect(host.querySelector(".tool-status")?.textContent).toBe("已完成");
+    await emit(ws, terminalMirror(TERMINAL_SID_1, 1, [{ ...running, text: "旧 revision 不应回退" }]));
+    expect(host.querySelector(".tool-status")?.textContent).toBe("已完成");
+    await emit(ws, terminalBound(TERMINAL_SID_2, true));
+    await emit(ws, terminalMirror(TERMINAL_SID_1, 999, [{ ...running, text: "旧会话工具" }]));
+    expect(host.querySelector(".message-list")?.textContent).not.toContain("旧会话工具");
+  });
+
+  it("degraded 明示不能可靠跟随，terminal.error 在详情外可见", async () => {
+    const { host, ws } = await mountApp();
+    await emit(ws, terminalState("degraded", TERMINAL_SID_1));
+    expect(host.textContent).toContain("不能可靠跟随");
+    await emit(ws, { type: "terminal.error", code: "READ_ONLY", message: "终端接管中", leaseId: TERMINAL_LEASE_ID });
+    expect(host.querySelector(".terminal-error")?.textContent).toContain("终端接管中");
+  });
+
+  it("别名、文件夹、会话和四种交互卡在接管时全部禁写，复制续聊仍可用", async () => {
+    const { host, ws } = await mountApp();
+    await emit(ws, terminalBound());
+    await act(async () => {
+      Array.from(host.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent === "▸ 详情")?.click();
+    });
+    await emit(ws, {
+      type: "permission.request", requestId: "perm-terminal", kind: "permission",
+      tool: "Bash", summary: "执行命令", detail: "{}",
+    });
+    await emit(ws, {
+      type: "chat.ask", requestId: "ask-terminal",
+      questions: [{ question: "继续吗？", header: "确认", options: [{ label: "继续" }], multiSelect: false }],
+    });
+    await emit(ws, {
+      type: "chat.interaction",
+      request: {
+        requestId: "el-terminal", kind: "elicitation",
+        elicitation: {
+          serverName: "docs", message: "填写", mode: "form",
+          fields: [{ name: "name", title: "名称", type: "string", required: true }],
+        },
+      },
+    });
+    await emit(ws, {
+      type: "chat.interaction",
+      request: {
+        requestId: "dialog-terminal", kind: "user_dialog",
+        userDialog: {
+          dialogKind: "refusal_fallback_prompt", originalModel: "opus", fallbackModel: "sonnet",
+        },
+      },
+    });
+    await emit(ws, terminalState("active"));
+    expect(host.querySelector<HTMLSelectElement>('select[title="选择进行中的别名"]')?.disabled).toBe(true);
+    expect(Array.from(host.querySelectorAll<HTMLButtonElement>(".alias-bar-row button")).find((button) => button.textContent === "＋新建")?.disabled).toBe(true);
+    expect(host.querySelector<HTMLInputElement>('.folder-bar input[list="ccc-folder-history"]')?.disabled).toBe(true);
+    expect(Array.from(host.querySelectorAll<HTMLButtonElement>(".folder-bar button")).find((button) => button.textContent === "绑定")?.disabled).toBe(true);
+    expect(host.querySelector<HTMLButtonElement>('button[title="在当前文件夹新建会话"]')?.disabled).toBe(true);
+    expect(host.querySelector<HTMLButtonElement>('button[title="删除当前会话（含本地转录文件）"]')?.disabled).toBe(true);
+    expect(host.querySelector<HTMLButtonElement>(".session-chip")?.disabled).toBe(false);
+    for (const selector of [".permission-card", ".ask-card", ".elicitation-card", ".user-dialog-card"]) {
+      const controls = host.querySelectorAll<HTMLButtonElement | HTMLInputElement>(`${selector} button, ${selector} input`);
+      expect(controls.length).toBeGreaterThan(0);
+      expect(Array.from(controls).every((control) => control.disabled)).toBe(true);
+    }
+  });
+
+  it("身份不明时只有明确确认才发送人工解除，不发送停止或关闭进程请求", async () => {
+    const { host, ws } = await mountApp();
+    await emit(ws, terminalState("degraded"));
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="确认原终端已关闭并解除接管"]')?.click());
+    expect(confirm).toHaveBeenCalledOnce();
+    const frames = ws.sent.map((raw) => JSON.parse(raw) as { type: string });
+    expect(frames).toContainEqual({ type: "terminal.release", leaseId: TERMINAL_LEASE_ID, confirmedClosed: true });
+    expect(frames.some((frame) => frame.type === "terminal.close")).toBe(false);
+    confirm.mockRestore();
   });
 });
 

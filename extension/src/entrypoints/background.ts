@@ -5,12 +5,13 @@
 
 import { PopupRegistry, type PinInfo } from "../lib/popup-registry";
 import { popupUrl } from "../lib/popup-mode";
+import { openTerminalWindow } from "../lib/terminal-window";
 
 /** 弹窗默认尺寸（用户可自己再拖） */
 const POPUP_WIDTH = 460;
 const POPUP_HEIGHT = 720;
 
-/** ccc.* 运行时消息的可选字段集合（结构化校验在分支内做） */
+/** ccc.* 与 terminal.open-window 运行时消息的可选字段集合（结构化校验在分支内做） */
 interface CccMessage {
   type?: string;
   tabId?: number;
@@ -45,15 +46,16 @@ export default defineBackground(() => {
   const registry = new PopupRegistry();
 
   chrome.runtime.onMessage.addListener((raw: CccMessage, _sender, sendResponse) => {
-    // 只认领 ccc.* 消息（return true 会独占异步应答通道，不能误抢别人的消息）
-    if (typeof raw?.type !== "string" || !raw.type.startsWith("ccc.")) return false;
+    // 只认领本扩展协调消息；return true 会独占异步应答通道，不能误抢别人的消息。
+    if (typeof raw?.type !== "string"
+      || (!raw.type.startsWith("ccc.") && raw.type !== "terminal.open-window")) return false;
     void handleMessage(raw).then(sendResponse);
     return true;
   });
 
   /**
    * 弹窗/钉住消息分发。所有分支容错：弹窗主功能不因徽标/窗口 API 失败而挂。
-   * @param m 已确认 type 以 ccc. 开头的消息
+   * @param m 已确认由本扩展处理的协调消息
    * @returns 应答对象（ok 字段表成功与否；open 分支另带 winId/reused）
    */
   async function handleMessage(m: CccMessage): Promise<{ ok: boolean; winId?: number | null; reused?: boolean; error?: string }> {
@@ -79,6 +81,14 @@ export default defineBackground(() => {
         });
         if (win?.id != null) registry.registerPopup(win.id, tabId);
         return { ok: win?.id != null, winId: win?.id ?? null, reused: false };
+      }
+      case "terminal.open-window": {
+        const aliasId = typeof m.aliasId === "string" && m.aliasId ? m.aliasId : null;
+        try {
+          return await openTerminalWindow(aliasId, registry);
+        } catch {
+          return { ok: false, error: "插件终端窗口创建失败，未启动 Claude" };
+        }
       }
       case "ccc.pin.report": {
         const winId = m.winId ?? 0;

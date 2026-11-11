@@ -1,6 +1,6 @@
 #!/bin/bash
 # CopilotCC Bridge · macOS .app 组装 + ad-hoc 预签 + dmg 打包（仅 macOS；release CI 的 macos runner 调用，本地 Mac 也可跑）
-# 输入：bridge/dist/ccc-bridge-darwin-arm64/{ccc-bridge, traybin/tray_darwin_release}（先跑 node scripts/build-exe.mjs darwin）
+# 输入：bridge/dist/ccc-bridge-darwin-arm64/{ccc-bridge,pty/,pty-manifest.json,runtime/?}（先跑带 --pty-route 的 build-exe.mjs darwin）
 # 产物：仓库根 ccc-bridge-darwin-arm64.dmg（CopilotCC Bridge.app + Applications 快捷方式 + 首次使用脚本）
 # 说明：免费分发没有 Apple Developer ID，只能 ad-hoc 签名（codesign -s -）；浏览器下载的隔离标记下
 #       macOS 仍报"已损坏"，用户侧须随 dmg 的「首次使用」脚本跑一次解除隔离（一次性）。
@@ -23,6 +23,11 @@ mkdir -p "$BUNDLE/Contents/MacOS/traybin" "$BUNDLE/Contents/Resources"
 cat "$SRC/ccc-bridge" > "$BUNDLE/Contents/MacOS/ccc-bridge"
 cmp -s "$SRC/ccc-bridge" "$BUNDLE/Contents/MacOS/ccc-bridge"
 chmod +x "$BUNDLE/Contents/MacOS/ccc-bridge"
+# PTY 与可执行文件保持相同相对布局；helper 路线还会有 runtime/node。
+cp -R "$SRC/pty" "$BUNDLE/Contents/MacOS/pty"
+cp "$SRC/pty-manifest.json" "$BUNDLE/Contents/MacOS/pty-manifest.json"
+if [ -d "$SRC/runtime" ]; then cp -R "$SRC/runtime" "$BUNDLE/Contents/MacOS/runtime"; fi
+node "$ROOT/scripts/verify-native-layout.mjs" "$BUNDLE/Contents/MacOS" darwin arm64
 
 # 2. Info.plist（LSUIElement：菜单栏常驻程序，不占 Dock）
 cat > "$BUNDLE/Contents/Info.plist" <<PLIST
@@ -65,11 +70,24 @@ echo "$SMOKE" | grep -q '"type":"ready"' || { echo "✘ 托盘助手冒烟失败
 # 此时未签名没关系：CI 编译产物无隔离标记，本机同架构直接可执行
 "$BUNDLE/Contents/MacOS/ccc-bridge" --smoke darwin arm64
 
-# 4. ad-hoc 预签：先内层二进制后整包；签完立即校验——失败让 CI 红，不出坏包
-codesign --force -s - "$BUNDLE/Contents/MacOS/traybin/tray_darwin_release"
-codesign --force -s - "$BUNDLE/Contents/MacOS/ccc-bridge"
-codesign --force -s - "$BUNDLE"
-codesign --verify --deep --strict --verbose=1 "$BUNDLE"
+# 4. ad-hoc 预签：脚本逐项先签 .node/spawn-helper/Node/托盘，再签主程序和整包并深校验。
+node "$ROOT/scripts/sign-mac-app.mjs" "$BUNDLE"
+
+# 4.5 在临时目录复制完整 .app 后做真实 PTY 行为冒烟；不是 exec/架构探针的替代品。
+if [ -z "${CCC_PTY_SMOKE_CLI:-}" ] || [ ! -x "${CCC_PTY_SMOKE_CLI:-}" ]; then
+  echo "✘ 必须用 CCC_PTY_SMOKE_CLI 指定可执行的 darwin-arm64 隔离假 CLI"
+  exit 1
+fi
+SMOKE_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/ccc-mac-app-smoke.XXXXXX")"
+trap 'rm -rf "$SMOKE_ROOT"' EXIT
+ditto "$BUNDLE" "$SMOKE_ROOT/$APP"
+node "$ROOT/scripts/verify-native-layout.mjs" "$SMOKE_ROOT/$APP/Contents/MacOS" darwin arm64
+(
+  cd "$SMOKE_ROOT"
+  CCC_PTY_SMOKE_CLI="$CCC_PTY_SMOKE_CLI" "$SMOKE_ROOT/$APP/Contents/MacOS/ccc-bridge" --pty-smoke darwin arm64
+)
+rm -rf "$SMOKE_ROOT"
+trap - EXIT
 
 # 5. dmg 舞台：app + Applications 快捷方式 + 首次使用脚本（解除隔离/修复/启动一体化）
 mkdir -p "$STAGE"
