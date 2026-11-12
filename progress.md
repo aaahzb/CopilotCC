@@ -241,3 +241,11 @@
 - 对应 CI #48 run `43173448220` 状态 `completed`、结论 `success`，SHA 与上述提交一致。Ubuntu job `131031961412`、Windows job `131031961431`、macOS job `131031961213` 全部成功。Windows 的真实 PTY、完整发行/项目树外 smoke、绿色单文件、生命周期和扩展步骤均为 `success`。
 - macOS 的共同测试、真实 PTY、完整发行布局与项目树外 smoke 先成功；新增“真实 `.app` 签名、签名后项目树外 PTY 与 DMG”步骤从 07:12:49 运行到 07:17:09，结论 `success`，随后 artifact 与扩展依赖/typecheck/测试/build 也全部成功。脚本使用 `set -euo pipefail`，该步骤成功要求签名函数、整包深校验、外部 PTY smoke 和 hdiutil 全部退出 0；没有以本地 dry-run 替代 Runner 门禁。
 - 当前环境无 GitHub CLI 或 API 登录令牌，原始日志 API 返回 403，Web 原始日志下载返回 404/登录要求，因此这里只记录可公开读取的 run/job/step 状态与脚本非零即失败语义，不声称已读取原始日志正文，也不摘录未取得的 `PTY_SMOKE_RESULT`。未创建 tag、未重发 Release；macOS 实机 GUI、真实 API 中转和 Bun 直路线仍未验收。
+
+## 2026-11-12 Release #38 artifact 汇总修复
+
+- 用户明确反馈 CD 仍未解决并提供原始日志 ZIP。日志隔离复制、路径校验、UTF-8 编码识别和解压已完成；首次 ZIP 校验脚本转义错误未执行解压，已记录并换法，不把它误记为 CD 错误。
+- 原始证据确认 run `43177539200` / `v2026.11.12.2` / `c59c36d`。三平台构建和 artifact 上传成功，macOS 真实 codesign、深校验、签名后 PTY 六项行为和 DMG 成功；唯一决定性失败在 publish 汇总下载 0 个 artifact 后 `ls assets/` 退出 2，Release 未创建。
+- 对照固定 Action SHA 的源码，多行 pattern 只构造一个 Minimatch。新增 `release-workflow.test.ts` 后先取得 `[undefined]` 对三个预期固定名称的准确 RED；将下载改为 `bridge-win`、`bridge-mac`、`extension` 三个独立命名步骤后，聚焦 1/1 和 Bun YAML 解析通过，缺任一资产会直接失败。
+- 完整本地验证：bridge 40 文件 438/438（含启动器 8/8）、bridge typecheck，extension 24 文件 180/180、extension typecheck 和 production build 均退出 0；构建只有既有大 chunk 警告。TODO、计划、发现和开发文档已同步。
+- 当前待最终 diff/敏感信息扫描、提交推送和新 SHA 普通 CI 跟踪。不创建 tag、不重发 Release；普通 CI 只能验证新增测试与三平台回归，不能宣称新的 publish 已经真实执行成功。

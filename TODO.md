@@ -107,6 +107,14 @@
 - [x] `88f805d14b6d568b2d5a557b7cda46da6df924a9` 已以用户本人身份提交并推送 `main`，无共同作者或 AI 尾注。CI #48 run `43173448220` 三平台全绿；macOS job `131031961213` 的真实 `.app` 签名、签名后外部 PTY 与 DMG 步骤成功，artifact 与扩展步骤也成功。未登录环境的原始日志接口返回 403/404，以上云端结论按 GitHub API 的 run/job/step 状态记录，不声称已读取日志正文。
 - [ ] 不创建 tag、不重发 Release；macOS 实机 Terminal.app、真实窗口、GUI 产品交互与真实 API 中转仍未验收，Bun 直路线仍不宣称通过。
 
+## Release #38 artifact 汇总修复（2026-11-12，本地修复完成）
+
+- [x] 直接读取用户提供的 `logs_116921597043.zip`：run `43177539200`、tag `v2026.11.12.2`、SHA `c59c36d82c615f198e6a859ba53bbe91c5c74be1`。macOS codesign 深校验、签名后完整复制包 PTY 六项行为与 DMG 均成功，Windows 和扩展构建及五个 artifact 上传也成功。
+- [x] 真正失败位于 publish：`download-artifact@v4` 找到 5 个 artifact，却把多行 `bridge-*\nextension` 作为单个 Minimatch，下载 0 个；随后 `ls assets/` 报目录不存在并退出 2，`gh release create` 未执行。该结论来自原始日志和该 Action 固定 SHA 的源码，不再以普通 CI 成功替代 CD 证据。
+- [x] 新工作流回归先取得准确 RED（仅有多行 pattern、没有三个固定 name）；改为分别按 `bridge-win`、`bridge-mac`、`extension` 下载到同一 `assets/`，缺任一名称直接失败，也不纳入两个 PTY 探针报告。实现后聚焦 1/1 与 YAML 解析通过。
+- [x] 完整本地回归：bridge 40 文件 438/438（含启动器 8/8）、extension 24 文件 180/180，两端 typecheck 与扩展 production build 通过，仅有既有大 chunk 警告。
+- [ ] 新配置尚未由 tag Release 实际执行；本轮不创建 tag、不重发 Release，普通 CI 结果不能冒充 CD publish 端到端通过。
+
 ## 别名主行打开当前文件夹（2026-10-31，已完成）
 
 - [x] 真实根因：`openInFileManager` 用 `windowsHide:true` 启动 `explorer.exe`，桥接虽返回 `folder.opened`，Windows Shell 却报告新窗口 `Visible=false`。只将该项改为 `false` 的对照实验中，目标窗口变为 `Visible=true`；不是扩展未发请求，也不是运行了旧桥接。

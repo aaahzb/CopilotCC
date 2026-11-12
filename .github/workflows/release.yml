@@ -178,12 +178,21 @@ jobs:
             LINK=""
           fi
           printf '%s\n\n## 本次变更（%s）\n\n%s%s\n' "$HEADER" "$RANGE" "$LOG" "$LINK" > release-notes.md
+      # 固定按名称下载：v4 的 pattern 是单个 Minimatch，不拆多行；缺任一资产会直接失败。
+      # 探针报告只保留为 workflow 验收证据，不混入用户下载的 Release 资产。
       - uses: actions/download-artifact@v4
         with:
-          # 探针报告只保留为 workflow 验收证据，不混入用户下载的 Release 资产。
-          pattern: |
-            bridge-*
-            extension
+          name: bridge-win
+          path: assets
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: bridge-mac
+          path: assets
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: extension
           path: assets
           merge-multiple: true
       - name: 列出待发布资产（日志可见，防止再出现静默缺包）

@@ -180,3 +180,11 @@
 - `88f805d` 对应 CI #48 run `43173448220` 已三平台全绿。macOS job `131031961213` 的新增真实 `.app` 签名、签名后项目树外 PTY 与 DMG 步骤结论为 `success`，且后续 artifact 和扩展步骤也成功。这一步包含真实 codesign、整包 `--verify --deep --strict`、`ditto` 后外部 PTY 与 hdiutil；`set -euo pipefail` 使任一失败都不能得到成功步骤结论。
 - Ubuntu job `131031961412` 与 Windows job `131031961431` 同样成功，Windows 的真实 PTY、绿色单文件、生命周期与扩展步骤均成功。这把普通 CI 的证据覆盖从平面 PTY 扩展到与 Release 相同的 Bundle 签名/外部 smoke/DMG 门禁。
 - 原始日志需要 GitHub 登录，当前未登录 API/Web 分别返回 403/404；因此记录明确限定为 GitHub API 的 run/job/step 结论和脚本退出语义，未声称读取日志正文或取得新的运行时字符串。没有创建 tag 或 Release，Runner 成功也不替代 macOS 实机 GUI、真实 API 中转及 Bun 直路线验收。
+
+## 2026-11-12 Release #38 原始日志与 artifact 汇总发现
+
+- 用户提供的 ZIP 已复制到批准验证根目录下的 `cd-logs-20261112-01`，按不可信数据隔离。首次安全校验脚本因反斜杠双重转义报 Node SyntaxError，`&&` 后续没有执行；改用字符码表达反斜杠后，62 个 ZIP 条目通过路径安全检查，正文由 `file` 判定为 UTF-8 BOM。下载内容仅作数据读取。
+- 日志对应 run `43177539200`、tag `v2026.11.12.2`、SHA `c59c36d82c615f198e6a859ba53bbe91c5c74be1`。macOS 的内层/主程序/整包签名、`codesign --verify --deep --strict`、签名后完整复制包 PTY 和 DMG 均有成功正文；PTY 六项行为全 true、backend 为 node-helper。Bun 直路线仍先 initial-size 超时后回退，这不构成 publish 失败。
+- Windows `CopilotCC.exe`、macOS DMG、扩展 zip 及两个 PTY route 共五个 artifact 均成功上传。publish 的下载 Action 找到 5 个，但日志显示 `Filtering artifacts by pattern 'bridge-*\nextension'` 和 `Total of 0 artifact(s) downloaded`，随后 `ls: cannot access 'assets/'`、退出 2。`gh release create` 没有执行。
+- 固定下载 Action SHA `d3f86a106a0bac45b974a628896c90dbdf5c8093` 的源码把整个 `inputs.pattern` 传给一次 `new Minimatch(inputs.pattern)`，没有换行拆分，因此根因不是 artifact 名错误或上传缺失，而是 Release 的多行 glob 写法与该 Action 的实际单模式语义不匹配。
+- 修复不再依赖 glob：三个固定公开 artifact 名分别下载并合并到 assets，缺任一名称由 Action 直接失败。工作流回归先因旧步骤没有 name 而 RED，修复后 GREEN；完整 bridge 438/438（含启动器 8/8）、extension 180/180、两端 typecheck/build 和 YAML 解析通过。未打 tag，故不能声称新 CD publish 已实际通过。

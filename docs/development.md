@@ -224,6 +224,10 @@ Release #37（run `43164913706`）随后暴露了平面 PTY 测试未覆盖的 `
 
 `88f805d14b6d568b2d5a557b7cda46da6df924a9` 对应 CI #48（run `43173448220`）已三平台全绿。macOS job `131031961213` 的真实 PTY/平面发行 smoke、真实 `.app` 签名、签名后项目树外 PTY、DMG、artifact 与扩展步骤均为 `success`；Ubuntu job `131031961412` 和 Windows job `131031961431` 也成功，Windows 绿色单文件及生命周期门禁通过。原始日志在当前未登录环境返回 403/404，因此这里记录的是 GitHub API 的 run/job/step 结论及脚本非零即失败语义，不声称已读取日志正文。未打 tag、未重发 Release，macOS 实机 GUI、真实 API 中转和 Bun 直路线仍未验收。
 
+随后用户提供的 Release run `43177539200`（tag `v2026.11.12.2`，SHA `c59c36d`）原始日志证明上述签名修复在 CD 中确实成功：整包 codesign 深校验通过，签名后完整复制包的 PTY 六项行为全 true，DMG 和三类公开资产上传也成功。真正失败发生在 publish 汇总：`actions/download-artifact@v4` 的多行 `pattern: "bridge-*\nextension"` 被该 Action 固定 SHA 的源码交给单个 `Minimatch`，不会按换行拆分，因此找到 5 个 artifact 却下载 0 个，随后 `ls assets/` 退出 2，Release 创建步骤未执行。
+
+publish 现改为分别按 `bridge-win`、`bridge-mac`、`extension` 三个固定名称下载到同一 `assets/`，任一缺失会直接失败，两个 PTY route 报告仍仅保留为内部证据。新增工作流回归先 RED 后 GREEN；完整 bridge 40 文件 438/438（含启动器 8/8）、extension 24 文件 180/180，两端 typecheck、扩展 production build 和 release YAML 解析通过。本次未创建 tag 或重发 Release，因此新 publish 配置仍需后续真实 tag 运行才能记为 CD 端到端通过，普通 CI 成功不能代替该证据。
+
 ## 许可证
 
 [MIT](../LICENSE)

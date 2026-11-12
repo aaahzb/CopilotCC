@@ -94,6 +94,14 @@
 - [x] 本地证据：聚焦 45/45、bridge 39 文件 437/437、启动器 8/8、extension 24 文件 180/180，两端 typecheck、扩展 build、脚本语法、CI YAML 与 `git diff --check` 通过。项目树外 Windows 真实 PTY 选择 `bun-node-pty`，六项行为、双隔离、发行布局及签名修改后的发行 smoke 均通过。
 - [x] `88f805d14b6d568b2d5a557b7cda46da6df924a9` 已以用户本人身份提交推送；CI #48 run `43173448220` 三平台全绿。macOS job `131031961213` 的真实 `.app` 签名、签名后外部 PTY 与 DMG 步骤成功，后续 artifact/扩展也成功。不创建 tag 或 Release，不宣称 macOS 实机已验收；未登录环境无法下载原始日志，云端结论按 API 的 run/job/step 状态记录。
 
+## 阶段 J：Release #38 artifact 汇总修复（2026-11-12）
+
+- [x] 隔离校验并解压用户提供的 CD 原始日志，正文确认是 UTF-8 BOM；解压条目不执行。首轮 ZIP 安全校验因 Bash/JS 反斜杠双重转义发生 SyntaxError，未解压；改用 `String.fromCharCode(92)` 后检查 62 个条目安全并完成解压。
+- [x] 确认 run `43177539200` / `v2026.11.12.2` / `c59c36d`：macOS 签名、签名后 PTY 与 DMG 成功，三类公开资产及两个 PTY 报告上传成功；publish 的多行 pattern 被单个 Minimatch 处理，5 个 artifact 中下载 0 个，`ls assets/` 退出 2。
+- [x] 新增 `bridge/tests/release-workflow.test.ts` 先 RED，再把 publish 改为按 `bridge-win`、`bridge-mac`、`extension` 三个固定名称分别下载；缺任一名称直接失败，探针报告仍不进入 Release。
+- [x] 聚焦 1/1、bridge 40 文件 438/438（含启动器 8/8）、extension 24 文件 180/180，两端 typecheck、扩展 build 与 release YAML 解析通过。
+- [ ] 提交推送后跟踪新 SHA 的普通 CI；不创建 tag、不重发 Release，CD publish 的真实端到端结论必须留给后续经授权的 tag。
+
 ## 当前阻塞
 
 1. 无首次修改授权阻塞：用户已选择创建 `feature/dual-terminal` 并授权按计划修改已有文件。
