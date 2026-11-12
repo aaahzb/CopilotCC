@@ -216,3 +216,11 @@
 - 根因是旧测试只创建 `node-pty/package.json`、`LICENSE` 和 `node-addon-api` 最小包，而 Darwin 生产逻辑按真实包结构要求 helper 存在。先只向该用例注入 `platform:"darwin", arch:"arm64"`，Windows 本地得到有效 RED：同一 `ENOENT`，该文件 1 失败、2 通过；再只补 `spawn-helper` 测试文件，生产文件未改，未允许缺失原生文件被静默忽略。
 - 补夹具后聚焦 `pty-probe-dependencies.test.ts` 与 `native-layout.test.ts` 两文件 11/11，bridge typecheck 通过。最新完整回归为 bridge 39 文件 432/432、启动器 8/8、extension 24 文件 180/180，两端 typecheck 和扩展 production build 通过，只有既有大 chunk 警告。
 - 当前待提交范围只有上述测试夹具与五份同步文档；根目录 zip、JPG、`venv/` 保持未跟踪。提交推送后必须读取新 SHA 对应的新 CI，不能继续沿用 #45；重点核实 macOS 共同测试、至少一条真实 PTY 路线六项行为、发行执行位、项目树外 smoke 和扩展步骤。即便全绿，macOS 实机 Terminal.app、真实窗口、签名和产品交互仍未验收，不打 tag、不发布 Release。
+
+## 2026-11-12 CI #46 三平台全绿
+
+- 夹具修复及文档以 `1ee42d0d1f54db49ad7f22ef7b005b86c02af36b`（`修复 macOS PTY 暂存测试夹具`）提交并推送，Author/Committer 均为 `aaahzb <aaahzb123@gmail.com>`，提交正文为空，无共同作者或 AI 尾注。推送时已核对该代码提交与 `origin/main` 一致，根目录 zip、JPG、`venv/` 仍未跟踪。
+- 对应 CI #46 run `43153732333` 状态 `completed`、结论 `success`，SHA 与上述提交一致。Ubuntu job `130968713460`、macOS job `130968713695`、Windows job `130968713736` 全部成功；Windows 真实 PTY、完整发行布局、项目树外 smoke、绿色单文件、启动器、项目树外生命周期和扩展步骤均为 `success`。
+- macOS 共同测试 37 文件通过、2 跳过，428 项通过、4 跳过。真实 PTY 探针的 `auto` 最终选择 `node-helper`，`initialSize`、`inputEcho`、`continuousTicks`、`chinese`、`resize`、`exitCode7` 全 true，`isolatedCwd` / `isolatedNative` 全 true。Bun 路线仍报告 `initial-size_TIMEOUT`，随后由 auto 回退，不能宣称两条路线都通过。
+- macOS 后续实际执行 `build-exe.mjs darwin --pty-route ...`、`verify-native-layout.mjs ... darwin arm64` 和项目树外 `./app/ccc-bridge --pty-smoke darwin arm64`，步骤成功；外部 smoke 的六项行为也全 true，`backend=node-helper`。artifact 与扩展依赖/typecheck/180 项测试/production build 均成功，项目日志仍明确 Node 22.23.4。
+- 这已完成当前三平台 CI 与 macOS Runner 原生证据闭环，但不替代 macOS 实机 Terminal.app、真实窗口、签名和产品交互验收，也不构成真实 API 中转验收。未打 tag、未发布 Release。

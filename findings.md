@@ -159,3 +159,10 @@
 - 唯一失败堆栈为 `ensureDarwinSpawnHelperExecutable()` → `stagePtyDependencies()` → “auto 回退复用完整暂存”用例，`chmod .../prebuilds/darwin-arm64/spawn-helper` 报 `ENOENT`。真实 `node-pty` Darwin 包必须有该文件；旧测试的最小包夹具没有它。生产代码应继续拒绝缺失原生文件，正确修复是补夹具而不是跳过 chmod。
 - 在 Windows 先只给旧用例注入 Darwin arm64，复现同一 `ENOENT`，证明测试能捕获 #45 的夹具缺陷；再添加最小 `spawn-helper` 文件，聚焦两文件 11/11。该 RED→GREEN 验证的是暂存测试准备与复用逻辑，不冒充 macOS 权限位或原生执行证据。
 - 最新完整本地回归为 bridge 432/432、启动器 8/8、extension 180/180，两端 typecheck/build 通过。本次生产实现不变；下一轮 macOS Runner 仍需独立证明共同测试、真实 PTY 六项行为、发行布局及执行位、项目树外 smoke 和扩展后续步骤，实机产品验收边界不变。
+
+## 2026-11-12 CI #46 原生验证结果
+
+- `1ee42d0d1f54db49ad7f22ef7b005b86c02af36b` 对应 CI #46 run `43153732333`，总结论 `success`；Ubuntu、macOS、Windows 三 job 全绿，且 Windows 的平台原生、绿色单文件、生命周期和扩展步骤全部成功。这证明 #45 的夹具 ENOENT 已消失，也使执行位修复首次真正进入 macOS 原生验证。
+- macOS 共同测试为 428 通过、4 跳过。探针报告显示 Bun 路线在 `initial-size_TIMEOUT` 失败，`auto` 回退后选择 `node-helper`；helper 的初始尺寸、输入、连续 tick、中文、resize、exit 7 和双隔离全 true。因此结论是受支持的 auto/helper 路线通过，不是 Bun 与 helper 两路线都通过。
+- 同一 macOS 步骤还成功执行发行构建、Darwin arm64 布局校验和项目树外真实 smoke；外部 `PTY_SMOKE_RESULT` 六项行为全 true、`backend=node-helper`，扩展后续步骤也成功。这把“探针暂存可用”与“发行副本可执行且项目树外可用”分开验证，未以共同单测替代原生证据。
+- CI 全绿仍不等于 macOS 实机产品验收：Terminal.app、真实窗口、签名、GUI 环境及产品交互没有在本轮 Runner 中验收；真实 API 中转也未调用。未打 tag、未发布 Release。

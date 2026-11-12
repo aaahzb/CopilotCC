@@ -2,7 +2,7 @@
 
 日期：2026-11-10
 执行方式：Inline Execution
-状态：Windows 绿色单文件、真实 Claude Code CLI 2.1.316 双终端、完整假 CLI、生命周期、双终端交互缺陷修复及最终静态检查均已完成；单文件真实大小 51.6 MiB，公开 CI/Release 已接为仅发布 `CopilotCC.exe`。CI #44 已定位 Darwin `spawn-helper` 发布权限为 `0644`，`34aab03` 的执行位修复对应 CI #45：Ubuntu、Windows 成功，macOS 因测试夹具缺 helper 而未进入原生验证。该夹具已在本地完成 RED→GREEN 和完整回归，待提交推送后取得新 SHA 的三平台 CI；macOS 实机与真实 API 中转仍未验收。本轮已获提交并推送 `main` 授权，不包括 tag 或 Release。
+状态：Windows 绿色单文件、真实 Claude Code CLI 2.1.316 双终端、完整假 CLI、生命周期、双终端交互缺陷修复及最终静态检查均已完成；单文件真实大小 51.6 MiB，公开 CI/Release 已接为仅发布 `CopilotCC.exe`。CI #44 定位 Darwin `spawn-helper` 发布权限为 `0644`，`34aab03` 对应 CI #45 暴露测试夹具缺 helper；`1ee42d0` 的夹具修复对应 CI #46 已三平台全绿，macOS `node-helper` 六项真实 PTY 行为、发行布局和项目树外 smoke 均通过。Bun 直路线仍在 initial-size 超时后由 auto 回退，不宣称两路线均通过。macOS 实机与真实 API 中转仍未验收；本轮提交推送授权不包括 tag 或 Release。
 
 ## 目标
 
@@ -81,13 +81,14 @@
 - [x] 根因是旧“完整暂存可复用”用例只创建最小依赖包，生产 Darwin 分支按真实包结构对 `prebuilds/darwin-arm64/spawn-helper` 执行 chmod，因此报 `ENOENT`；这不是原生 `posix_spawnp` 的复现。
 - [x] 严格 RED→GREEN：先只给该用例显式注入 Darwin arm64，在 Windows 得到同一 `ENOENT`；再仅补最小 helper 夹具，不修改或放宽生产校验。聚焦两文件 11/11、bridge typecheck 通过。
 - [x] 最新完整回归：bridge 39 文件 432/432、启动器 8/8、extension 24 文件 180/180，两端 typecheck 与扩展 build 通过，仅有既有大 chunk 警告。本次范围只有测试夹具和同步文档。
-- [ ] 按已获授权提交推送夹具修复并跟踪新 SHA 的三平台 CI；必须另行取得 macOS 至少一条 PTY 路线六项行为、发行执行位与项目树外 smoke 证据。未获 tag/Release 授权，macOS 实机产品仍未验收。
+- [x] `1ee42d0d1f54db49ad7f22ef7b005b86c02af36b` 已提交推送，对应 CI #46 run `43153732333` 三平台全绿。macOS `auto` 在 Bun `initial-size_TIMEOUT` 后回退到 `node-helper`，六项真实 PTY 行为、双隔离、发行构建、arm64 布局校验、项目树外 smoke 与扩展步骤均通过；外部 smoke 六项全 true、`backend=node-helper`。不宣称 Bun/helper 两路线均通过。
+- [ ] 未获 tag/Release 授权；macOS 实机 Terminal.app、真实窗口、签名、GUI 产品交互与真实 API 中转仍未验收。
 
 ## 当前阻塞
 
 1. 无首次修改授权阻塞：用户已选择创建 `feature/dual-terminal` 并授权按计划修改已有文件。
-2. 阶段 E～G 已完成提交推送；阶段 H 沿用本轮完整修复、补回归、同步文档、提交推送并跟踪三平台 CI 的明确授权。提交只能使用用户本人身份，不含共同作者或 AI 署名，不延伸到 tag/Release。
-3. 阶段 A～F 及真实 Windows 验收均已完成。CI #44 定位 Darwin helper 缺执行位；`34aab03` 对应 CI #45 尚未越过 macOS 共同测试，因此执行位实现尚无 macOS 原生通过证据。阶段 H 本地夹具修复与完整回归通过，新 SHA 的三平台 Runner 仍待取得，macOS 实机仍无证据。
+2. 阶段 E～H 已完成提交推送，提交只使用用户本人身份，不含共同作者或 AI 署名；当前文档同步仍属本轮授权，不延伸到 tag/Release。
+3. 阶段 A～F 及真实 Windows 验收均已完成。`1ee42d0` 对应 CI #46 已提供三平台全绿及 macOS helper 原生/发行/项目树外证据；剩余边界是 Bun 直路线 initial-size 超时、macOS 实机与真实 API 中转未验收，不能把 auto/helper 成功写成两路线或实机全部通过。
 4. 曾误写项目外文件 `D:\SVN_Cursor\bridge\tests\terminal-child.test.ts`；正确项目内文件已建立，项目外误写文件仍保留，删除前必须另获用户确认。
 5. `README.md`、`docs/guide.md`、`docs/development.md`、`TODO.md` 已完成双终端更新；本轮同步 CI #45、测试夹具根因、RED→GREEN 与最新完整本地证据，继续区分云端自动测试和 macOS 实机产品验收。
 6. 阶段 C 最终证据：单 exe 54,134,272 bytes（约 51.6 MiB），SHA-256 `9a32c30310efdf9b4b6eda17387a34a1687264e72269972494b99820f0995598`。真实 CLI `portable-real-cli-dual-terminal-20261111-02`、完整假 CLI `portable-embedded-green-20261111-04`、生命周期 `portable-lifecycle-20261111-06` 均退出码 0；生命周期 15 项全 true，进度截图人工确认非黑帧，源/副本哈希一致，所有最终 cleanup remaining/errors 双空。完整 bridge 422/422、extension 173/173 和两端 typecheck/build 通过；最终聚焦 6 文件 46/46、启动器 8/8、原生布局/SHA-256、CI/Release YAML 与 20 个 shell 段语法通过。

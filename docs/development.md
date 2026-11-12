@@ -214,6 +214,8 @@ extension/              # Chrome MV3 扩展（WXT + React）
 
 该夹具修复先只注入 Darwin arm64，在 Windows 复现同一 `ENOENT` RED，再仅补最小 helper 文件，不放宽生产缺失文件校验。聚焦两文件 11/11；最新完整 bridge 432/432、启动器 8/8、extension 180/180、两端 typecheck 和扩展 production build 均通过，仅有既有大 chunk 警告。新提交的 macOS Runner 必须重新证明共同测试、至少一条 PTY 路线六项行为、发行执行位与项目树外 smoke；即使 CI 全绿，macOS 实机 Terminal.app、真实窗口、签名及产品交互仍未验收，仍未打 tag 或发布 Release。
 
+`1ee42d0d1f54db49ad7f22ef7b005b86c02af36b` 对应 CI #46（run `43153732333`）已 `completed / success`，Ubuntu、macOS、Windows 全部成功。macOS 共同测试 428 通过、4 跳过；`auto` 在 Bun 路线 `initial-size_TIMEOUT` 后回退并选择 `node-helper`，初始尺寸、输入、连续 tick、中文、resize、exit 7 与 CWD/原生依赖双隔离全 true，因此不能宣称 Bun 与 helper 两路线都通过。随后 Darwin 发行构建、arm64 布局校验、项目树外真实 smoke 和扩展步骤均成功，外部 smoke 六项行为也全 true、`backend=node-helper`。这构成 macOS Runner 原生与发行证据，不替代 macOS 实机 Terminal.app、真实窗口、签名、GUI 产品交互或真实 API 中转验收；未打 tag、未发布 Release。
+
 ## 许可证
 
 [MIT](../LICENSE)
