@@ -99,6 +99,111 @@ export async function verifyNativeLayout(outDir, expectedPlatform, expectedArch,
   }
 }
 
+/**
+ * 校验 macOS .app 的代码/资源分离、manifest 完整性和未签名原生文件哈希。
+ * @param {string} appPath 待校验的 .app 绝对路径。
+ * @param {{platform?:string,stat?:(file:string)=>{mode:number}}} [host] 可注入的 Darwin 宿主参数。
+ * @returns {Promise<{backend:"bun-node-pty"|"node-helper",nativeFiles:string[]}>} 后端与待签内层代码相对路径。
+ * @throws {Error} 非代码文件位于 MacOS、文件缺失/额外、摘要或执行位不符时抛 NATIVE_LAYOUT。
+ */
+export async function verifyMacAppLayout(appPath, host = {}) {
+  try {
+    if (!path.isAbsolute(appPath)) throw new Error("app path must be absolute");
+    const contents = path.join(appPath, "Contents");
+    const macos = path.join(contents, "MacOS");
+    const resources = path.join(contents, "Resources");
+    const actualCode = walkFiles(macos).map((file) => slash(path.relative(macos, file))).sort();
+    const supportedCode = new Set([
+      "ccc-bridge", "pty.node", "spawn-helper", "node", "traybin/tray_darwin_release",
+    ]);
+    // codesign 会把 MacOS 下的任意数据或自定义嵌套层级当成子组件，必须在签名前拒绝。
+    for (const relative of actualCode) {
+      if (!supportedCode.has(relative)) {
+        throw new Error(`non-code file in Contents/MacOS or unsupported nested code: ${relative}`);
+      }
+    }
+
+    const manifestPath = path.join(resources, "pty-manifest.json");
+    if (!fs.lstatSync(manifestPath).isFile() || fs.lstatSync(manifestPath).isSymbolicLink()) {
+      throw new Error("pty-manifest.json must be a regular file in Resources");
+    }
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+    if (manifest.schemaVersion !== 1 || !["bun-node-pty", "node-helper"].includes(manifest.backend)
+      || manifest.target !== "darwin" || manifest.platform !== "darwin" || manifest.arch !== "arm64"
+      || !Array.isArray(manifest.files)) throw new Error("invalid macOS app manifest");
+    const helperBackend = manifest.backend === "node-helper";
+    if (helperBackend ? manifest.nodeMajor !== 22 : manifest.nodeMajor !== null) {
+      throw new Error("manifest Node runtime mismatch");
+    }
+
+    const moved = new Map([
+      ["pty/node_modules/node-pty/prebuilds/darwin-arm64/pty.node", "pty.node"],
+      ["pty/node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper", "spawn-helper"],
+      ...(helperBackend ? [["runtime/node", "node"]] : []),
+    ]);
+    const required = [
+      "pty/package.json",
+      "pty/node_modules/node-pty/package.json",
+      "pty/node_modules/node-pty/lib/index.js",
+      "pty/node_modules/node-pty/lib/utils.js",
+      "pty/node_modules/node-pty/lib/unixTerminal.js",
+      "pty/node_modules/node-addon-api/package.json",
+      "pty/node_modules/node-pty/prebuilds/darwin-arm64/pty.node",
+      "pty/node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper",
+      ...(helperBackend ? ["pty/helper.cjs", "runtime/node"] : []),
+    ];
+    const seen = new Set();
+    for (const entry of manifest.files) {
+      if (!entry || typeof entry.path !== "string" || !/^[a-f0-9]{64}$/.test(entry.sha256)
+        || !Number.isSafeInteger(entry.size) || entry.size < 0 || seen.has(entry.path)) {
+        throw new Error("invalid or duplicate file entry");
+      }
+      seen.add(entry.path);
+      if (path.posix.isAbsolute(entry.path) || entry.path.split("/").includes("..")
+        || entry.path.includes("\\") || (!moved.has(entry.path) && !entry.path.startsWith("pty/"))) {
+        throw new Error(`unsafe or unexpected path: ${entry.path}`);
+      }
+      const file = moved.has(entry.path)
+        ? path.join(macos, moved.get(entry.path))
+        : path.join(resources, ...entry.path.split("/"));
+      const stat = fs.lstatSync(file);
+      if (stat.isSymbolicLink() || !stat.isFile()) throw new Error(`not a regular file: ${entry.path}`);
+      if (stat.size !== entry.size || hashFile(file) !== entry.sha256) {
+        throw new Error(`hash mismatch: ${entry.path}`);
+      }
+    }
+    for (const requiredPath of required) if (!seen.has(requiredPath)) {
+      throw new Error(`required file absent: ${requiredPath}`);
+    }
+
+    const actualResources = [
+      ...walkFiles(path.join(resources, "pty")), ...walkFiles(path.join(resources, "runtime")),
+    ].map((file) => slash(path.relative(resources, file))).sort();
+    const expectedResources = [...seen].filter((entry) => !moved.has(entry)).sort();
+    if (JSON.stringify(actualResources) !== JSON.stringify(expectedResources)) {
+      throw new Error("unlisted or missing resource files");
+    }
+    const nativeFiles = [
+      "pty.node", "spawn-helper", ...(helperBackend ? ["node"] : []), "traybin/tray_darwin_release",
+    ];
+    const expectedCode = ["ccc-bridge", ...nativeFiles].sort();
+    if (JSON.stringify(actualCode) !== JSON.stringify(expectedCode)) {
+      throw new Error("unlisted or missing code files");
+    }
+    if ((host.platform ?? process.platform) === "darwin") {
+      for (const relative of ["ccc-bridge", "spawn-helper", ...(helperBackend ? ["node"] : []),
+        "traybin/tray_darwin_release"]) {
+        const mode = (host.stat ?? fs.statSync)(path.join(macos, ...relative.split("/"))).mode;
+        if ((mode & 0o111) === 0) throw new Error(`${relative} is not executable`);
+      }
+    }
+    return { backend: manifest.backend, nativeFiles };
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`NATIVE_LAYOUT: ${detail}`);
+  }
+}
+
 const invokedPath = process.argv[1] ? pathToFileURL(path.resolve(process.argv[1])).href : "";
 if (invokedPath === import.meta.url) {
   const outDir = process.argv[2];

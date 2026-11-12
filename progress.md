@@ -224,3 +224,13 @@
 - macOS 共同测试 37 文件通过、2 跳过，428 项通过、4 跳过。真实 PTY 探针的 `auto` 最终选择 `node-helper`，`initialSize`、`inputEcho`、`continuousTicks`、`chinese`、`resize`、`exitCode7` 全 true，`isolatedCwd` / `isolatedNative` 全 true。Bun 路线仍报告 `initial-size_TIMEOUT`，随后由 auto 回退，不能宣称两条路线都通过。
 - macOS 后续实际执行 `build-exe.mjs darwin --pty-route ...`、`verify-native-layout.mjs ... darwin arm64` 和项目树外 `./app/ccc-bridge --pty-smoke darwin arm64`，步骤成功；外部 smoke 的六项行为也全 true，`backend=node-helper`。artifact 与扩展依赖/typecheck/180 项测试/production build 均成功，项目日志仍明确 Node 22.23.4。
 - 这已完成当前三平台 CI 与 macOS Runner 原生证据闭环，但不替代 macOS 实机 Terminal.app、真实窗口、签名和产品交互验收，也不构成真实 API 中转验收。未打 tag、未发布 Release。
+
+## 2026-11-12 Release #37 macOS Bundle 签名修复（本地完成，云端待验）
+
+- Release run `43164913706` / macOS job `131004800910` 的完整顺序表明，内层原生文件、托盘与主程序签名后，外层 `.app` 因 `Contents/MacOS/pty/node_modules/node-addon-api/node_addon_api.gyp` 报 `code object is not signed at all`，随后 `CODESIGN_FAILED`，publish 未执行。根因是任意 JS/JSON/`.gyp` 数据层级进入代码位置，不靠 `--deep`、跳过校验或单删 `.gyp` 处理。
+- 首轮新回归取得 4 项准确 RED：Resources manifest 仍解析到 MacOS、Darwin 加载器无 `.app` 原生回退、旧非代码 Bundle 被错误接受、helper Node 指到 Resources/runtime。真实 `packagePty()` → `stageMacPty()` → 签名计划测试随后因 staging 模块不存在再取得 1 项 RED；实现后三个聚焦文件 45/45。
+- 新布局只把 `pty.node`、`spawn-helper`、按路线需要的 Node、主程序和托盘放在 `Contents/MacOS`，JS/JSON/`.gyp`/manifest 放入 `Contents/Resources`。`stage-mac-pty.mjs` 从真实平面发行产物 staging；`verifyMacAppLayout()` 在签名前校验白名单、manifest、资源集合、符号链接、原始哈希和 Darwin 执行位，签名按内层→主程序→整包顺序并深校验。签名后完整 `ditto` 副本改用 `codesign --verify --deep --strict`，不再拿签名前的 Mach-O 哈希二次比较。
+- Darwin 发行加载器优先保持 node-pty 原平面逻辑，仅在原加载失败且确认位于 `Contents/Resources` 时回退到 `Contents/MacOS/pty.node`，并返回同目录供 `spawn-helper` 使用。运行时从 Resources 读取 manifest/helper 脚本，helper Node 指向 MacOS；平面 Windows/Darwin 行为保持。
+- 完整本地回归：bridge 39 文件 437/437、启动器 8/8、extension 24 文件 180/180，两端 typecheck、扩展 production build、相关 Node/shell 语法、CI YAML 和 `git diff --check` 通过；仅有既有大 chunk 警告。普通 macOS CI 已加入与 Release 相同的真实签名、签名后项目树外 PTY 和 DMG 门禁。
+- Windows 复验首次因默认运行时已是 Node `v25.8.1` 被 `PROBE_NODE 必须指向 Node 22` 拒绝，未进入 PTY，不记作行为失败；改用已核验 Node `22.23.4` 和新的 `pty-probe-02` 后，`release37-signing-fix-win-01` 选择 `bun-node-pty`，六项行为及双隔离全 true。随后双 exe 构建、完整布局/SHA-256 校验和项目树外发行 smoke 成功，外部六项行为全 true、`backend=bun-node-pty`。
+- 当前尚未提交推送；新 SHA 的 macOS 真实 codesign、签名后外部 PTY、DMG 与三平台 CI 仍待读取。不得把 dry-run、VM 加载器或 Windows 结果冒充 macOS 原生签名证据；不打 tag、不重发 Release，macOS 实机/GUI/真实 API 中转及 Bun 直路线仍未验收。

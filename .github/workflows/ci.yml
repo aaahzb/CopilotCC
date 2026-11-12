@@ -72,6 +72,12 @@ jobs:
           cd "$RUNNER_TEMP/ccc-pty-smoke-mac"
           CCC_PTY_SMOKE_CLI="$RUNNER_TEMP/ccc-pty-fake-mac" TEMP="$RUNNER_TEMP/ccc-pty-smoke-mac/tmp" TMP="$RUNNER_TEMP/ccc-pty-smoke-mac/tmp" TMPDIR="$RUNNER_TEMP/ccc-pty-smoke-mac/tmp" ./app/ccc-bridge --pty-smoke darwin arm64
 
+      - name: macOS：真实 .app 签名、签名后项目树外 PTY 与 DMG
+        if: runner.os == 'macOS'
+        env:
+          CCC_PTY_SMOKE_CLI: ${{ runner.temp }}/ccc-pty-fake-mac
+        run: bash bridge/scripts/build-mac-app.sh
+
       - uses: actions/upload-artifact@v4
         if: runner.os == 'Windows'
         with:

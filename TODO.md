@@ -96,6 +96,16 @@
 - [x] `1ee42d0d1f54db49ad7f22ef7b005b86c02af36b` 已提交并推送，对应 CI #46 run `43153732333` 三平台全绿。macOS 共同测试 428 通过、4 跳过；`auto` 在 Bun `initial-size_TIMEOUT` 后回退并选择 `node-helper`，真实 PTY 六项行为与双隔离全 true，发行构建、arm64 布局校验、项目树外 smoke、artifact 和扩展后续步骤均成功。外部 smoke 六项也全 true、`backend=node-helper`。
 - [ ] CI 证据不替代 macOS 实机 Terminal.app、真实窗口、签名、GUI 产品交互或真实 API 中转验收；Bun 直路线仍有 initial-size 超时，不宣称两路线均通过。不打 tag、不发布 Release。
 
+## Release #37 macOS Bundle 签名修复（2026-11-12，已获完整修复与云端复验授权）
+
+- [x] 读取 Release run `43164913706` / macOS job `131004800910`：内层 `pty.node`、`spawn-helper`、Node、托盘与主程序均已执行签名，失败发生在随后外层 `.app` 签名；`In subcomponent: .../node-addon-api/node_addon_api.gyp` 后退出 `CODESIGN_FAILED: exit 1`，publish 未执行。
+- [x] 根因定位为新增 `Contents/MacOS/pty/node_modules` 把 `.gyp`、JS、JSON 等非代码文件带入代码签名区。Apple TN2206 与 Code Signing Tasks 明确要求代码位置不得放任意数据；普通 CI 未运行整包 codesign，因此 CI #46/#47 全绿不能覆盖该 Release 环节。
+- [x] 运行时链路已核对：`.app` 当前从 `Contents/MacOS` 读取 manifest、Node 和 helper；node-pty 的 `native.dir` 同时决定 `spawn-helper` 路径。安装脚本还包含 chmod、签名校验和失败重签，修复必须同步这些路径，不能只加 `--deep` 或删除单个 `.gyp`。
+- [x] 严格 RED→GREEN：首轮固定旧 Bundle 非代码布局拒绝、`.app` Resources 路径解析、Darwin 发行加载器与 helper Node 路径，取得 4 项准确失败；真实 staging 测试再因模块不存在取得 1 项 RED。实现后聚焦 45/45。
+- [x] 完整本地 bridge 39 文件 437/437、启动器 8/8、extension 24 文件 180/180，两端 typecheck、扩展 production build、Node/shell 语法、CI YAML 和 `git diff --check` 通过；普通 macOS CI 已增加真实 `.app` codesign、签名后项目树外 PTY smoke 与 DMG 构建门禁。
+- [x] 项目树外 Windows 复验 `release37-signing-fix-win-01`：显式使用已核验 Node 22.23.4，`auto` 选择 `bun-node-pty`，六项行为与 CWD/原生依赖双隔离全 true；完整发行布局、SHA-256 和外部 `ccc-terminal.exe --pty-smoke` 也通过，外部六项行为全 true。
+- [ ] 以用户本人身份提交并推送 `main`，读取新 SHA 对应三平台 CI；macOS 真实 codesign、签名后外部 PTY 与 DMG 仍待 Runner 证据。不创建 tag、不重发 Release；macOS 实机 Terminal.app、真实窗口、GUI 产品交互与真实 API 中转仍未验收。
+
 ## 别名主行打开当前文件夹（2026-10-31，已完成）
 
 - [x] 真实根因：`openInFileManager` 用 `windowsHide:true` 启动 `explorer.exe`，桥接虽返回 `folder.opened`，Windows Shell 却报告新窗口 `Visible=false`。只将该项改为 `false` 的对照实验中，目标窗口变为 `Visible=true`；不是扩展未发请求，也不是运行了旧桥接。

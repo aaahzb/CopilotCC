@@ -84,6 +84,16 @@
 - [x] `1ee42d0d1f54db49ad7f22ef7b005b86c02af36b` 已提交推送，对应 CI #46 run `43153732333` 三平台全绿。macOS `auto` 在 Bun `initial-size_TIMEOUT` 后回退到 `node-helper`，六项真实 PTY 行为、双隔离、发行构建、arm64 布局校验、项目树外 smoke 与扩展步骤均通过；外部 smoke 六项全 true、`backend=node-helper`。不宣称 Bun/helper 两路线均通过。
 - [ ] 未获 tag/Release 授权；macOS 实机 Terminal.app、真实窗口、签名、GUI 产品交互与真实 API 中转仍未验收。
 
+## 阶段 I：Release #37 macOS Bundle 签名修复（2026-11-12）
+
+- [x] 定位 run `43164913706` 失败在外层 `.app` 签名，不在 PTY smoke、内层 helper 权限或证书发现；publish 为 skipped。
+- [x] 对照上一成功布局与 Apple TN2206 / Code Signing Tasks，确认 `Contents/MacOS/pty/node_modules` 的非代码文件层级不受支持；`node_addon_api.gyp` 是 codesign 报出的子组件，不采用 `--deep`、单文件删除或跳过校验掩盖。
+- [x] 追踪 `runtime-entry.ts`、`pty-backend.ts`、`node-pty-helper.ts`、`bun-pty-backend.ts` 与 node-pty `utils.js` / `unixTerminal.js`，确认 Resources 迁移必须同时保持 pty.node/spawn-helper 同目录，并同步 Node、manifest 与安装脚本路径。
+- [x] 新回归先 RED：首轮 4 项准确失败，分别覆盖旧 MacOS 非代码布局未拒绝、manifest 仍解析到 MacOS、Darwin 加载器无代码区回退、helper 使用错误 Node；真实 staging 用例随后因模块不存在再取得 1 项 RED。
+- [x] 最小实现代码/资源分离及完整布局哈希校验；保留平面发行目录兼容性。build/sign/install/CI 已同步，普通 macOS CI 将真实执行 codesign、签名后外部 PTY smoke 和 DMG。
+- [x] 本地证据：聚焦 45/45、bridge 39 文件 437/437、启动器 8/8、extension 24 文件 180/180，两端 typecheck、扩展 build、脚本语法、CI YAML 与 `git diff --check` 通过。项目树外 Windows 真实 PTY 选择 `bun-node-pty`，六项行为、双隔离、发行布局及签名修改后的发行 smoke 均通过。
+- [ ] 以用户本人身份提交推送 `main`，跟踪新 SHA 的三平台 CI；macOS 真实 codesign 仍待新 Runner 日志，不创建 tag 或 Release，不宣称 macOS 实机已验收。
+
 ## 当前阻塞
 
 1. 无首次修改授权阻塞：用户已选择创建 `feature/dual-terminal` 并授权按计划修改已有文件。
@@ -105,6 +115,7 @@
 | CI #43 第二次 macOS 的 helper 回退重复复制 `node-pty/LICENSE`，报 `EEXIST` | 1 | 两路线统一暂存；完整结果用完成标记复用，无标记半成品明确拒绝，补 RED→GREEN 与真实 Windows PTY 回归 |
 | CI #44 macOS 两路线均报 `posix_spawnp failed` | 1 | 官方 Darwin `spawn-helper` 发布权限为 `0644`；暂存与发行副本恢复 `0755`，完成标记与布局校验纳入门禁，三项回归先 RED 后 GREEN |
 | CI #45 macOS 的暂存复用用例缺 Darwin helper 夹具，chmod 报 `ENOENT` | 1 | 先显式注入 Darwin arm64 在 Windows 复现，再只补最小 `spawn-helper` 测试文件；生产缺失文件校验不变，聚焦 11/11 与完整回归通过 |
+| Release #37 修复后的首次 Windows 复验使用默认 Node 25，被 `PROBE_NODE 必须指向 Node 22` 拒绝 | 1 | 未进入 PTY，不记作行为失败；显式使用已核验 Node 22.23.4 并换用新探针目录后，六项行为、双隔离、发行布局与外部 smoke 全通过 |
 | 启动器独立复验误用仓库根目录脚本路径 | 1 | 首次仅 `MODULE_NOT_FOUND`、未执行测试；改用实际 `bridge/scripts/run-portable-launcher-tests.mjs` 后 8/8 |
 | Task 5 四个新模块不存在，RED 为 4 个 suite 失败 | 1 | 按计划补最小实现，聚焦测试转为 15/15 |
 | `TerminalBackend` 从 `terminal-lease` 误导入，typecheck 失败 | 1 | 改从 `protocol` 导入，typecheck 与全套测试通过 |

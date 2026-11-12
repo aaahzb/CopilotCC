@@ -70,8 +70,13 @@ export function validatePtySpawnOptions(value: unknown): asserts value is PtySpa
  */
 export function createPtyBackend(kind: PtyBackend["kind"], executableDir: string): PtyBackend {
   if (kind === "bun-node-pty") return new BunPtyBackend({ executableDir });
+  const appResources = path.basename(executableDir) === "Resources"
+    && path.basename(path.dirname(executableDir)) === "Contents";
   return new NodePtyBackend({
-    nodePath: path.join(executableDir, "runtime", process.platform === "win32" ? "node.exe" : "node"),
+    // .app 的 Mach-O Node 位于代码区，helper.cjs 与其 JS 依赖位于 Resources。
+    nodePath: appResources
+      ? path.join(path.dirname(executableDir), "MacOS", "node")
+      : path.join(executableDir, "runtime", process.platform === "win32" ? "node.exe" : "node"),
     helperPath: path.join(executableDir, "pty", "helper.cjs"),
   });
 }

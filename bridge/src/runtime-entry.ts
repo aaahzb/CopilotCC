@@ -58,7 +58,14 @@ export function terminalNativeDirectory(
 ): string {
   if (entry && path.resolve(entry).endsWith(".ts")) return path.resolve("dist/native-dev");
   const portable = resolvePortableRuntimeDirectory(portableValue, configRoot);
-  return portable ?? path.dirname(path.resolve(executable));
+  if (portable) return portable;
+  const executableDir = path.dirname(path.resolve(executable));
+  const resources = path.resolve(executableDir, "..", "Resources");
+  // 标准 .app 将 JS 与 manifest 放在 Resources；平面发行目录仍读取 exe 旁文件。
+  if (path.basename(executableDir) === "MacOS"
+    && path.basename(path.dirname(executableDir)) === "Contents"
+    && fs.existsSync(path.join(resources, "pty-manifest.json"))) return resources;
+  return executableDir;
 }
 
 /**

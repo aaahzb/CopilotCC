@@ -1,19 +1,7 @@
 import { spawnSync } from "node:child_process";
-import * as fs from "node:fs";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
-
-/** 递归列出普通文件。 @param root 根目录。 @returns 绝对路径列表。 */
-function walkFiles(root) {
-  if (!fs.existsSync(root)) return [];
-  const result = [];
-  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
-    const full = path.join(root, entry.name);
-    if (entry.isDirectory()) result.push(...walkFiles(full));
-    else if (entry.isFile()) result.push(full);
-  }
-  return result;
-}
+import { verifyMacAppLayout } from "./verify-native-layout.mjs";
 
 /** 为日志生成不含秘密的固定命令文本。 @param args codesign 参数。 @returns 可比较命令。 */
 function displayCommand(args) {
@@ -29,13 +17,8 @@ function displayCommand(args) {
 export async function runMacPackaging(options) {
   const macos = path.join(options.appPath, "Contents", "MacOS");
   const main = path.join(macos, "ccc-bridge");
-  const nativeNames = new Set(["spawn-helper", "node", "tray_darwin_release"]);
-  const nativeFiles = walkFiles(macos).filter((file) => file !== main
-    && (file.endsWith(".node") || nativeNames.has(path.basename(file))));
-  nativeFiles.sort((a, b) => b.split(path.sep).length - a.split(path.sep).length || a.localeCompare(b));
-  if (!nativeFiles.some((file) => file.endsWith(".node")) || !fs.existsSync(main)) {
-    throw new Error("NATIVE_LAYOUT: macOS signing needs pty.node and ccc-bridge");
-  }
+  const layout = await verifyMacAppLayout(options.appPath);
+  const nativeFiles = layout.nativeFiles.map((file) => path.join(macos, ...file.split("/")));
   const sign = options.codesign ?? ((args) => {
     const result = spawnSync("codesign", args, { stdio: "inherit" });
     if (result.error || result.status !== 0) throw new Error(`CODESIGN_FAILED: exit ${result.status ?? "unknown"}`);

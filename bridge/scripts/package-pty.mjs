@@ -39,6 +39,30 @@ const WINDOWS_LONG_PATH_FALLBACK = String.raw`
 })();
 `;
 
+// .app 的 JS 在 Resources，pty.node 与 spawn-helper 则共同位于代码区 MacOS。
+const DARWIN_APP_NATIVE_FALLBACK = String.raw`
+// CCC_DARWIN_APP_NATIVE_FALLBACK
+(function () {
+    if (process.platform !== "darwin") return;
+    var path = require("path");
+    var originalLoadNativeModule = exports.loadNativeModule;
+    exports.loadNativeModule = function (name) {
+        try {
+            return originalLoadNativeModule.call(exports, name);
+        } catch (error) {
+            if (name !== "pty") throw error;
+            var resources = path.resolve(__dirname, "..", "..", "..", "..");
+            var contents = path.resolve(resources, "..");
+            if (path.basename(resources) !== "Resources" || path.basename(contents) !== "Contents") {
+                throw error;
+            }
+            var nativeDir = path.join(contents, "MacOS");
+            return { dir: nativeDir, module: require(path.join(nativeDir, "pty.node")) };
+        }
+    };
+})();
+`;
+
 /**
  * 给发行副本的 node-pty 原生加载器追加 Windows 长路径回退。
  * @param {string} packageRoot 已复制的 node-pty 包目录。
@@ -52,6 +76,21 @@ function patchWindowsLongPathLoader(packageRoot) {
     throw new Error("NATIVE_LAYOUT: unexpected node-pty utils.js");
   }
   fs.writeFileSync(utilsPath, `${source.trimEnd()}\n\n${WINDOWS_LONG_PATH_FALLBACK}\n`, "utf8");
+}
+
+/**
+ * 给 Darwin 发行副本追加标准 .app 原生加载回退，平面目录仍优先走 node-pty 原逻辑。
+ * @param {string} packageRoot 已复制的 node-pty 包目录。
+ * @returns {void} 原文件结构不符合 pinned node-pty 版本时直接失败。
+ */
+function patchDarwinAppLoader(packageRoot) {
+  const utilsPath = path.join(packageRoot, "lib", "utils.js");
+  const source = fs.readFileSync(utilsPath, "utf8");
+  if (!source.includes("exports.loadNativeModule = loadNativeModule;")
+    || source.includes("CCC_DARWIN_APP_NATIVE_FALLBACK")) {
+    throw new Error("NATIVE_LAYOUT: unexpected node-pty utils.js");
+  }
+  fs.writeFileSync(utilsPath, `${source.trimEnd()}\n\n${DARWIN_APP_NATIVE_FALLBACK}\n`, "utf8");
 }
 
 /** 将路径统一为 manifest 使用的 POSIX 分隔符。 @param value 原生路径。 @returns 斜杠路径。 */
@@ -163,6 +202,7 @@ export async function packagePty(options) {
       target.prebuild,
       options.chmod ?? fs.chmodSync,
     );
+    patchDarwinAppLoader(destination);
   }
   // node-pty 声明的运行时依赖也随包携带，不能依赖项目或用户机器的 node_modules。
   const addonApiRoot = path.join(bridgeRoot, "node_modules", "node-addon-api");

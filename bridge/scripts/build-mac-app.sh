@@ -14,7 +14,7 @@ BUNDLE="$ROOT/dist/$APP"
 STAGE="$ROOT/dist/dmg-stage"
 VER="$(node -p "require('$ROOT/package.json').version")"
 
-# 1. 组装 .app 骨架：主程序放 Contents/MacOS；traybin/ 目录留给第 3.5 步现场编译的托盘助手（tray.ts 按 exe 旁 traybin/ 解析，零改动兼容）
+# 1. 组装 .app 骨架：主程序与 Mach-O 放 Contents/MacOS；JS/manifest 放 Contents/Resources。
 rm -rf "$BUNDLE" "$STAGE"
 mkdir -p "$BUNDLE/Contents/MacOS/traybin" "$BUNDLE/Contents/Resources"
 # Bun 编译的 Mach-O 若含稀疏区，cp/clonefile 可能保留稀疏布局；hdiutil -srcfolder 按已分配块估算
@@ -23,11 +23,8 @@ mkdir -p "$BUNDLE/Contents/MacOS/traybin" "$BUNDLE/Contents/Resources"
 cat "$SRC/ccc-bridge" > "$BUNDLE/Contents/MacOS/ccc-bridge"
 cmp -s "$SRC/ccc-bridge" "$BUNDLE/Contents/MacOS/ccc-bridge"
 chmod +x "$BUNDLE/Contents/MacOS/ccc-bridge"
-# PTY 与可执行文件保持相同相对布局；helper 路线还会有 runtime/node。
-cp -R "$SRC/pty" "$BUNDLE/Contents/MacOS/pty"
-cp "$SRC/pty-manifest.json" "$BUNDLE/Contents/MacOS/pty-manifest.json"
-if [ -d "$SRC/runtime" ]; then cp -R "$SRC/runtime" "$BUNDLE/Contents/MacOS/runtime"; fi
-node "$ROOT/scripts/verify-native-layout.mjs" "$BUNDLE/Contents/MacOS" darwin arm64
+# 先校验平面发行清单，再移动 pty.node/spawn-helper、复制 helper Node，并把非代码文件留在 Resources。
+node "$ROOT/scripts/stage-mac-pty.mjs" "$SRC" "$BUNDLE"
 
 # 2. Info.plist（LSUIElement：菜单栏常驻程序，不占 Dock）
 cat > "$BUNDLE/Contents/Info.plist" <<PLIST
@@ -81,7 +78,7 @@ fi
 SMOKE_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/ccc-mac-app-smoke.XXXXXX")"
 trap 'rm -rf "$SMOKE_ROOT"' EXIT
 ditto "$BUNDLE" "$SMOKE_ROOT/$APP"
-node "$ROOT/scripts/verify-native-layout.mjs" "$SMOKE_ROOT/$APP/Contents/MacOS" darwin arm64
+codesign --verify --deep --strict "$SMOKE_ROOT/$APP"
 (
   cd "$SMOKE_ROOT"
   CCC_PTY_SMOKE_CLI="$CCC_PTY_SMOKE_CLI" "$SMOKE_ROOT/$APP/Contents/MacOS/ccc-bridge" --pty-smoke darwin arm64

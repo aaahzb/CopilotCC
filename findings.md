@@ -166,3 +166,11 @@
 - macOS 共同测试为 428 通过、4 跳过。探针报告显示 Bun 路线在 `initial-size_TIMEOUT` 失败，`auto` 回退后选择 `node-helper`；helper 的初始尺寸、输入、连续 tick、中文、resize、exit 7 和双隔离全 true。因此结论是受支持的 auto/helper 路线通过，不是 Bun 与 helper 两路线都通过。
 - 同一 macOS 步骤还成功执行发行构建、Darwin arm64 布局校验和项目树外真实 smoke；外部 `PTY_SMOKE_RESULT` 六项行为全 true、`backend=node-helper`，扩展后续步骤也成功。这把“探针暂存可用”与“发行副本可执行且项目树外可用”分开验证，未以共同单测替代原生证据。
 - CI 全绿仍不等于 macOS 实机产品验收：Terminal.app、真实窗口、签名、GUI 环境及产品交互没有在本轮 Runner 中验收；真实 API 中转也未调用。未打 tag、未发布 Release。
+
+## 2026-11-12 Release #37 Bundle 布局与签名发现
+
+- Apple 的 Bundle 代码位置与资源位置必须分离。`Contents/MacOS/pty/node_modules` 虽让平面文件查找方便，却把 `.gyp`、JS、JSON 等任意数据带入代码区；Release #37 到外层 codesign 才报 `node_addon_api.gyp` 子组件未签名。此前只递归挑选 Mach-O 签名并不能使其余嵌套数据合法，普通 CI 的平面 PTY 通过也无法覆盖整包签名。
+- 生产修复由同一 staging 函数把平面发行包转换成标准 `.app`，避免 shell 构建与测试夹具各自拼布局。原生 Mach-O 显式移到 MacOS，非代码资源留在 Resources；manifest 仍记录平面来源路径，Bundle 校验器显式映射 moved 文件。签名前可校验未签名哈希，签名后 Mach-O 字节会改变，完整副本只能以 codesign 深校验及真实 PTY smoke 验收。
+- node-pty 的 `loadNativeModule()` 返回 `{dir,module}`，Unix 终端用 `dir + '/spawn-helper'`。因此 `.app` 回退不能只 require MacOS 的 `pty.node`，还必须返回 MacOS 作为 `dir`；同时 helper 后端使用 `Contents/MacOS/node` 和 `Contents/Resources/pty/helper.cjs`。平面目录首先执行原 node-pty 加载逻辑，保持 Windows 与既有 Darwin 平面发行兼容。
+- 首轮 4 项 RED 与 staging 模块缺失的第二轮 RED 均来自生产缺口；不是测试完成后补写。聚焦 45/45、bridge 437/437、启动器 8/8、extension 180/180 和类型/构建检查通过后，Windows 项目树外真实 PTY 与发行 smoke 也再次通过。默认 Node 25 的首次探针在运行时门禁被拒绝，改用 Node 22.23.4 才形成有效结果。
+- 本地 dry-run 与 VM 加载器只证明布局决策和 JS 路径，不证明 macOS codesign。普通 macOS CI 现已接入真实 `.app` 签名、签名后外部 PTY 和 DMG，但只有新提交的 Runner 日志能判定 Release #37 根因是否闭环；tag、Release、macOS 实机 GUI 和真实 API 中转不在本轮已完成范围。

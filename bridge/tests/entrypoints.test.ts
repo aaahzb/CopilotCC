@@ -89,6 +89,22 @@ describe("生产入口依赖装配", () => {
     }
   });
 
+  it("macOS .app 从 Resources 读取原生清单，平面目录保持原行为", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ccc-mac-app-entry-"));
+    try {
+      const executable = path.join(root, "CopilotCC Bridge.app", "Contents", "MacOS", "ccc-bridge");
+      const resources = path.join(path.dirname(executable), "..", "Resources");
+      fs.mkdirSync(resources, { recursive: true });
+      fs.writeFileSync(path.join(resources, "pty-manifest.json"), "{}\n", "utf8");
+
+      expect(terminalNativeDirectory("", executable)).toBe(path.resolve(resources));
+      expect(terminalNativeDirectory("C:/dist/ccc-bridge.exe", "C:/dist/ccc-bridge.exe"))
+        .toBe(path.resolve("C:/dist"));
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("开发态使用项目 native-dev，编译态使用桥接 exe 旁目录", () => {
     expect(terminalNativeDirectory("D:/repo/bridge/src/index.ts", "C:/node/node.exe"))
       .toBe(path.resolve("dist/native-dev"));

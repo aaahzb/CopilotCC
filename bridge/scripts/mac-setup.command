@@ -25,7 +25,8 @@ fi
 
 echo "==> 解除下载隔离标记…"
 xattr -cr "$DST" || die "解除隔离失败：$DST"
-chmod +x "$DST/Contents/MacOS/ccc-bridge" "$DST/Contents/MacOS/traybin/tray_darwin_release" 2>/dev/null
+chmod +x "$DST/Contents/MacOS/ccc-bridge" "$DST/Contents/MacOS/spawn-helper" "$DST/Contents/MacOS/traybin/tray_darwin_release" 2>/dev/null
+if [ -f "$DST/Contents/MacOS/node" ]; then chmod +x "$DST/Contents/MacOS/node"; fi
 
 echo "==> 校验签名…"
 if codesign --verify --deep --strict "$DST" 2>/dev/null; then

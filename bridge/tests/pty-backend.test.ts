@@ -225,4 +225,14 @@ describe("createPtyBackend", () => {
     expect(createPtyBackend("bun-node-pty", "C:/native").kind).toBe("bun-node-pty");
     expect(createPtyBackend("node-helper", "C:/native").kind).toBe("node-helper");
   });
+
+  it("macOS .app 的 helper 使用代码区 Node 和 Resources 中的脚本", () => {
+    const resources = path.resolve("/Applications/CopilotCC Bridge.app/Contents/Resources");
+    const backend = createPtyBackend("node-helper", resources) as unknown as {
+      options: { nodePath: string; helperPath: string };
+    };
+
+    expect(backend.options.nodePath).toBe(path.resolve(resources, "..", "MacOS", "node"));
+    expect(backend.options.helperPath).toBe(path.join(resources, "pty", "helper.cjs"));
+  });
 });

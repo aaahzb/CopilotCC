@@ -216,6 +216,12 @@ extension/              # Chrome MV3 扩展（WXT + React）
 
 `1ee42d0d1f54db49ad7f22ef7b005b86c02af36b` 对应 CI #46（run `43153732333`）已 `completed / success`，Ubuntu、macOS、Windows 全部成功。macOS 共同测试 428 通过、4 跳过；`auto` 在 Bun 路线 `initial-size_TIMEOUT` 后回退并选择 `node-helper`，初始尺寸、输入、连续 tick、中文、resize、exit 7 与 CWD/原生依赖双隔离全 true，因此不能宣称 Bun 与 helper 两路线都通过。随后 Darwin 发行构建、arm64 布局校验、项目树外真实 smoke 和扩展步骤均成功，外部 smoke 六项行为也全 true、`backend=node-helper`。这构成 macOS Runner 原生与发行证据，不替代 macOS 实机 Terminal.app、真实窗口、签名、GUI 产品交互或真实 API 中转验收；未打 tag、未发布 Release。
 
+Release #37（run `43164913706`）随后暴露了平面 PTY 测试未覆盖的 `.app` 整包签名问题：`Contents/MacOS/pty/node_modules` 中的 `node_addon_api.gyp` 被 codesign 当作未签名子组件。修复不是追加 `--deep` 或跳过校验，而是由 `stage-mac-pty.mjs` 统一生成代码/资源分离布局：Mach-O 位于 `Contents/MacOS`，JS、JSON、`.gyp` 与 manifest 位于 `Contents/Resources`。签名前校验白名单、manifest、原始哈希和 Darwin 执行位，依次签内层、主程序、整包；签名后的完整副本使用 `codesign --verify --deep --strict` 与真实 PTY smoke，不再重复比较会随签名变化的 Mach-O 原始哈希。
+
+运行时同步区分 Resources 与 MacOS：manifest/helper 脚本从 Resources 读取，helper Node 和 `spawn-helper` 从 MacOS 获取；Darwin 发行加载器保留平面优先逻辑，仅在确认的 `.app` Resources 中回退加载 MacOS 的 `pty.node`，并保持 `native.dir` 与 helper 同目录。普通 macOS CI 已新增真实 `.app` 签名、签名后项目树外 PTY 与 DMG 门禁，避免到 tag Release 才发现同类问题。
+
+本地修复先后取得 4 项路径/布局 RED 和 1 项 staging 模块缺失 RED；最终聚焦 45/45、bridge 437/437、启动器 8/8、extension 180/180，两端 typecheck、扩展 build、脚本语法、YAML 和 diff 检查通过。Windows 使用 Node 22.23.4 的项目树外真实 PTY 仍选择 `bun-node-pty`，六项行为、双隔离、完整布局及发行 smoke 全通过。新提交的 macOS 真实 codesign/外部 PTY/DMG 与三平台 CI 仍待 Runner 验证；当前未打 tag、未重发 Release，macOS 实机 GUI、真实 API 中转和 Bun 直路线仍未验收。
+
 ## 许可证
 
 [MIT](../LICENSE)
