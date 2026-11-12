@@ -113,6 +113,7 @@
 - [x] 真正失败位于 publish：`download-artifact@v4` 找到 5 个 artifact，却把多行 `bridge-*\nextension` 作为单个 Minimatch，下载 0 个；随后 `ls assets/` 报目录不存在并退出 2，`gh release create` 未执行。该结论来自原始日志和该 Action 固定 SHA 的源码，不再以普通 CI 成功替代 CD 证据。
 - [x] 新工作流回归先取得准确 RED（仅有多行 pattern、没有三个固定 name）；改为分别按 `bridge-win`、`bridge-mac`、`extension` 下载到同一 `assets/`，缺任一名称直接失败，也不纳入两个 PTY 探针报告。实现后聚焦 1/1 与 YAML 解析通过。
 - [x] 完整本地回归：bridge 40 文件 438/438（含启动器 8/8）、extension 24 文件 180/180，两端 typecheck 与扩展 production build 通过，仅有既有大 chunk 警告。
+- [x] `1fb226bafc7ac8ee33b94a65f8579cbeb8958304` 已提交推送，对应 CI #50 run `43181108593` 三平台成功；macOS job `131057021655` 的真实签名、签名后 PTY 与 DMG 门禁再次成功。云端结论按公开 API 的 run/job/step 状态记录，未读取本轮原始日志。
 - [ ] 新配置尚未由 tag Release 实际执行；本轮不创建 tag、不重发 Release，普通 CI 结果不能冒充 CD publish 端到端通过。
 
 ## 别名主行打开当前文件夹（2026-10-31，已完成）

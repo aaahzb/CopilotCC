@@ -226,7 +226,7 @@ Release #37（run `43164913706`）随后暴露了平面 PTY 测试未覆盖的 `
 
 随后用户提供的 Release run `43177539200`（tag `v2026.11.12.2`，SHA `c59c36d`）原始日志证明上述签名修复在 CD 中确实成功：整包 codesign 深校验通过，签名后完整复制包的 PTY 六项行为全 true，DMG 和三类公开资产上传也成功。真正失败发生在 publish 汇总：`actions/download-artifact@v4` 的多行 `pattern: "bridge-*\nextension"` 被该 Action 固定 SHA 的源码交给单个 `Minimatch`，不会按换行拆分，因此找到 5 个 artifact 却下载 0 个，随后 `ls assets/` 退出 2，Release 创建步骤未执行。
 
-publish 现改为分别按 `bridge-win`、`bridge-mac`、`extension` 三个固定名称下载到同一 `assets/`，任一缺失会直接失败，两个 PTY route 报告仍仅保留为内部证据。新增工作流回归先 RED 后 GREEN；完整 bridge 40 文件 438/438（含启动器 8/8）、extension 24 文件 180/180，两端 typecheck、扩展 production build 和 release YAML 解析通过。本次未创建 tag 或重发 Release，因此新 publish 配置仍需后续真实 tag 运行才能记为 CD 端到端通过，普通 CI 成功不能代替该证据。
+publish 现改为分别按 `bridge-win`、`bridge-mac`、`extension` 三个固定名称下载到同一 `assets/`，任一缺失会直接失败，两个 PTY route 报告仍仅保留为内部证据。新增工作流回归先 RED 后 GREEN；完整 bridge 40 文件 438/438（含启动器 8/8）、extension 24 文件 180/180，两端 typecheck、扩展 production build 和 release YAML 解析通过。修复提交 `1fb226bafc7ac8ee33b94a65f8579cbeb8958304` 对应 CI #50（run `43181108593`）三平台成功，macOS job `131057021655` 的真实签名、签名后 PTY 与 DMG 步骤也成功。本次未创建 tag 或重发 Release，因此新 publish 配置仍需后续真实 tag 运行才能记为 CD 端到端通过，普通 CI 成功不能代替该证据。
 
 ## 许可证
 

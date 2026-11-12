@@ -100,7 +100,9 @@
 - [x] 确认 run `43177539200` / `v2026.11.12.2` / `c59c36d`：macOS 签名、签名后 PTY 与 DMG 成功，三类公开资产及两个 PTY 报告上传成功；publish 的多行 pattern 被单个 Minimatch 处理，5 个 artifact 中下载 0 个，`ls assets/` 退出 2。
 - [x] 新增 `bridge/tests/release-workflow.test.ts` 先 RED，再把 publish 改为按 `bridge-win`、`bridge-mac`、`extension` 三个固定名称分别下载；缺任一名称直接失败，探针报告仍不进入 Release。
 - [x] 聚焦 1/1、bridge 40 文件 438/438（含启动器 8/8）、extension 24 文件 180/180，两端 typecheck、扩展 build 与 release YAML 解析通过。
-- [ ] 提交推送后跟踪新 SHA 的普通 CI；不创建 tag、不重发 Release，CD publish 的真实端到端结论必须留给后续经授权的 tag。
+- [x] 修复以 `1fb226bafc7ac8ee33b94a65f8579cbeb8958304`（`修复 Release 产物汇总下载`）提交并推送，Author/Committer 均为用户本人、无尾注。推送成功后的第一次 `ls-remote` 漏带既定 SSH 443 配置而报 Host key verification failed；补回配置后确认远端 main 与本地 SHA 一致，并非推送失败。对应 CI #50 run `43181108593` 已启动。
+- [x] CI #50 run `43181108593` 已 `completed / success`：Ubuntu job `131057021665`、Windows job `131057021484`、macOS job `131057021655` 全部成功；macOS 真实 `.app` 签名、签名后项目树外 PTY 与 DMG 步骤再次成功。
+- [ ] 不创建 tag、不重发 Release，CD publish 的真实端到端结论必须留给后续经授权的 tag。
 
 ## 当前阻塞
 

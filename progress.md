@@ -248,4 +248,6 @@
 - 原始证据确认 run `43177539200` / `v2026.11.12.2` / `c59c36d`。三平台构建和 artifact 上传成功，macOS 真实 codesign、深校验、签名后 PTY 六项行为和 DMG 成功；唯一决定性失败在 publish 汇总下载 0 个 artifact 后 `ls assets/` 退出 2，Release 未创建。
 - 对照固定 Action SHA 的源码，多行 pattern 只构造一个 Minimatch。新增 `release-workflow.test.ts` 后先取得 `[undefined]` 对三个预期固定名称的准确 RED；将下载改为 `bridge-win`、`bridge-mac`、`extension` 三个独立命名步骤后，聚焦 1/1 和 Bun YAML 解析通过，缺任一资产会直接失败。
 - 完整本地验证：bridge 40 文件 438/438（含启动器 8/8）、bridge typecheck，extension 24 文件 180/180、extension typecheck 和 production build 均退出 0；构建只有既有大 chunk 警告。TODO、计划、发现和开发文档已同步。
-- 当前待最终 diff/敏感信息扫描、提交推送和新 SHA 普通 CI 跟踪。不创建 tag、不重发 Release；普通 CI 只能验证新增测试与三平台回归，不能宣称新的 publish 已经真实执行成功。
+- 修复与文档已以 `1fb226bafc7ac8ee33b94a65f8579cbeb8958304`（`修复 Release 产物汇总下载`）提交并推送，Author/Committer 均为 `aaahzb <aaahzb123@gmail.com>`，正文为空，无共同作者或 AI 尾注。推送命令实际成功；随后的独立 `ls-remote` 因漏带 `-c core.sshCommand="ssh -p 443"` 报 Host key verification failed，补回既定配置后已确认远端 main 为同一 SHA。根目录 zip、JPG、`venv/` 保持未跟踪。
+- CI #50 run `43181108593` 状态 `completed`、结论 `success`，SHA 与 `1fb226b` 一致。Ubuntu job `131057021665`、Windows job `131057021484`、macOS job `131057021655` 全部成功；macOS 的真实 PTY/发行 smoke、真实 `.app` 签名、签名后项目树外 PTY 与 DMG、扩展步骤均为 `success`。该结论按公开 API 的 run/job/step 状态记录，未声称读取本轮原始日志。
+- 不创建 tag、不重发 Release；普通 CI 只能验证新增测试与三平台回归，不能宣称新的 publish 已经真实执行成功。
