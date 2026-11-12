@@ -78,6 +78,15 @@
 - [x] 新实现下 Windows 真实 PTY 选择 `bun-node-pty`，初始尺寸、输入响应、连续 tick、中文、resize、exit 7 六项行为及 CWD/原生依赖双隔离全部通过。完整回归为 bridge 39 文件 429/429、启动器 8/8、extension 24 文件 180/180，两端 typecheck 与扩展 production build 通过。
 - [ ] 按已获授权提交并推送本轮探针修复后，读取新 SHA 对应的三平台 CI，重点确认 macOS helper 真正越过暂存并进入原生行为验证。macOS Terminal.app、真实窗口、签名和产品交互仍需实机验收；不打 tag、不发布 Release。
 
+## GitHub Actions #44 与 Darwin 执行位修复（2026-11-12，本地修复完成）
+
+- [x] `e4f1a75570c26a387b4b7620065879fa5bce3b8b`（`修复 macOS PTY 回退重复暂存`）已提交并推送，对应 CI #44 run `43146771064`：Ubuntu、Windows 成功；macOS 共同测试 425 通过、4 跳过，且不再出现 `EEXIST`，证明回退已真正进入原生 spawn。
+- [x] macOS 两路线随后给出一致原生错误：Bun 在 `stage=spawn` 报 `posix_spawnp failed`，helper 在 `stage=spawn-helper` 报 `SPAWN_FAILED: posix_spawnp failed`。官方 `node-pty@1.1.0` tarball 的 Darwin arm64/x64 `spawn-helper` 均为 `0644`，而文件架构正确；恢复目标副本为 `0755` 是本次修复，不改全局缓存。
+- [x] 项目 CI 明确使用 Node 22，日志为 `node: v22.23.4`。`actions/checkout@v4` / `actions/setup-node@v4` 被强制以 Node 24 运行只是 Action 自身警告，不是项目或 PTY child 升级，也不能解释发布文件缺执行位。
+- [x] 三项回归先取得准确 RED（3 失败、8 通过）：探针暂存未 chmod、发行复制未 chmod、macOS 主机校验接受 `0644`。新增共享权限修复后，暂存在完成标记前恢复执行位，`packagePty()` 修复发行副本，`verifyNativeLayout()` 在 Darwin 主机拒绝无执行位文件；同一聚焦测试转为 11/11。
+- [x] 完整本地回归：bridge 39 文件 432/432、启动器 8/8、extension 24 文件 180/180，两端 typecheck 与扩展 production build 通过，仅有既有大 chunk 警告。项目树外 Windows 真实 PTY 仍选择 `bun-node-pty`，六项行为及 CWD/原生依赖隔离全部通过。
+- [ ] 按已获授权提交并推送执行位修复后，跟踪新 SHA 的三平台 CI，重点确认 macOS 真实 PTY、发行布局、项目树外 smoke 和扩展后续步骤。Windows 回归不能替代 macOS 原生证据；macOS Terminal.app、真实窗口、签名和产品交互仍需实机验收。不打 tag、不发布 Release。
+
 ## 别名主行打开当前文件夹（2026-10-31，已完成）
 
 - [x] 真实根因：`openInFileManager` 用 `windowsHide:true` 启动 `explorer.exe`，桥接虽返回 `folder.opened`，Windows Shell 却报告新窗口 `Visible=false`。只将该项改为 `false` 的对照实验中，目标窗口变为 `Visible=true`；不是扩展未发请求，也不是运行了旧桥接。

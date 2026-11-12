@@ -45,6 +45,27 @@ describe("PTY 探针依赖暂存", () => {
       .toBe("node-pty first route\n");
   });
 
+  it("Darwin 暂存恢复目标 spawn-helper 执行位后才写完成标记", () => {
+    const f = fixture();
+    const sourceHelper = path.join(
+      f.bridgeRoot, "node_modules", "node-pty", "prebuilds", "darwin-arm64", "spawn-helper",
+    );
+    fs.mkdirSync(path.dirname(sourceHelper), { recursive: true });
+    fs.writeFileSync(sourceHelper, "mach-o fixture\n", "utf8");
+    const calls: Array<{ file: string; mode: number }> = [];
+
+    stagePtyDependencies(f.bridgeRoot, f.modules, {
+      platform: "darwin",
+      arch: "arm64",
+      chmod: (file: string, mode: number) => { calls.push({ file, mode }); },
+    });
+
+    expect(calls).toEqual([{
+      file: path.join(f.modules, "node-pty", "prebuilds", "darwin-arm64", "spawn-helper"),
+      mode: 0o755,
+    }]);
+  });
+
   it("没有完成标记的半成品仍明确拒绝，不能静默复用", () => {
     const f = fixture();
     const partial = path.join(f.modules, "node-pty");

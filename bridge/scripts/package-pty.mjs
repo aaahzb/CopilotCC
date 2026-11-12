@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+import { ensureDarwinSpawnHelperExecutable } from "./pty-native-permissions.mjs";
 
 const bridgeRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const TARGETS = {
@@ -123,7 +124,8 @@ export function readSuccessfulPtyRoute(reportPath, target) {
 /**
  * 把经真实行为探针选择的 PTY 路线打包到发行目录。
  * @param {{target:"win"|"darwin",backend:"bun-node-pty"|"node-helper",outDir:string,nodeRuntime:string|null,
- * readNodeMajor?:(nodePath:string)=>number,buildHelper?:(helperPath:string)=>void}} options 打包参数。
+ * readNodeMajor?:(nodePath:string)=>number,buildHelper?:(helperPath:string)=>void,
+ * chmod?:(file:string,mode:number)=>void}} options 打包参数。
  * @returns {Promise<Record<string,unknown>>} 已写入的 manifest。
  * @throws 目标、运行时、原生文件或 helper 构建不合法时失败。
  */
@@ -153,7 +155,15 @@ export async function packagePty(options) {
       return parts.length === 1 || parts[1] === target.prebuild;
     },
   });
-  if (options.target === "win") patchWindowsLongPathLoader(destination);
+  if (options.target === "win") {
+    patchWindowsLongPathLoader(destination);
+  } else {
+    ensureDarwinSpawnHelperExecutable(
+      destination,
+      target.prebuild,
+      options.chmod ?? fs.chmodSync,
+    );
+  }
   // node-pty 声明的运行时依赖也随包携带，不能依赖项目或用户机器的 node_modules。
   const addonApiRoot = path.join(bridgeRoot, "node_modules", "node-addon-api");
   if (!fs.existsSync(path.join(addonApiRoot, "package.json"))) {

@@ -2,7 +2,7 @@
 
 日期：2026-11-10
 执行方式：Inline Execution
-状态：Windows 绿色单文件、真实 Claude Code CLI 2.1.316 双终端、完整假 CLI、生命周期、双终端交互缺陷修复及最终静态检查均已完成；单文件真实大小 51.6 MiB，公开 CI/Release 已接为仅发布 `CopilotCC.exe`。GitHub Actions #42 已实际运行并暴露跨平台测试准备缺陷，六文件修复及本地完整回归已完成；修复后的三平台云端复验、macOS 实机与真实 API 中转仍未验收。本轮已获提交并推送 `main` 授权，不包括 tag 或 Release。
+状态：Windows 绿色单文件、真实 Claude Code CLI 2.1.316 双终端、完整假 CLI、生命周期、双终端交互缺陷修复及最终静态检查均已完成；单文件真实大小 51.6 MiB，公开 CI/Release 已接为仅发布 `CopilotCC.exe`。CI #42/#43 的跨平台测试与回退暂存修复已提交；CI #44 进一步定位到 Darwin `spawn-helper` 发布权限为 `0644`，本轮执行位修复和本地完整回归已完成。新提交的三平台云端复验、macOS 实机与真实 API 中转仍未验收。本轮已获提交并推送 `main` 授权，不包括 tag 或 Release。
 
 ## 目标
 
@@ -65,15 +65,23 @@
 - [x] 严格 RED→GREEN：新回归先因 `pty-probe-dependencies.mjs` 不存在失败，实现完成标记复用与半成品明确拒绝后 2/2；两个脚本语法和 bridge typecheck 通过。
 - [x] 跨目标负探针确认 helper 已越过依赖复制，不再出现 `EEXIST` / `PTY_PROBE_DEPENDENCIES_INCOMPLETE`；Darwin 二进制在 Windows 无法执行仍是预期失败，不作为 macOS 原生证据。Windows 真实 PTY 六项行为及双隔离通过。
 - [x] 完整本地回归：bridge 39 文件 429/429、启动器 8/8、extension 24 文件 180/180，两端 typecheck 与扩展 production build 通过。
-- [ ] 按已获授权只提交探针修复、回归与本轮文档，核对用户本人身份并推送 `main`；跟踪新 SHA 的三平台真实 CI，重点读取 macOS helper 的真实阶段。未获 tag/Release 授权，macOS 实机产品仍未验收。
+- [x] 已提交并推送 `e4f1a75570c26a387b4b7620065879fa5bce3b8b`，跟踪 CI #44 run `43146771064`：Ubuntu、Windows 成功；macOS 共同测试 425 通过、4 跳过，回退已进入真实 spawn，未再出现 `EEXIST`。
+
+## 阶段 G：CI #44 Darwin spawn-helper 执行位修复（2026-11-12）
+
+- [x] 读取 macOS 两路线真实错误：Bun `stage=spawn` / `posix_spawnp failed`，helper `stage=spawn-helper` / `SPAWN_FAILED: posix_spawnp failed`；核对官方 tarball 的 Darwin arm64/x64 helper 均为 `0644`，Mach-O 架构正确。
+- [x] 区分项目 Node 22.23.4 与 checkout/setup-node Action 自身的 Node 24 警告；不通过升级 Node 掩盖权限缺陷。
+- [x] 三项回归先 RED（3 失败、8 通过），再实现共享 `0755` 修复：探针在完成标记前修复目标副本，发行打包复用同一函数，Darwin host 布局校验拒绝无执行位 helper；聚焦转为 11/11，四个脚本语法检查通过。
+- [x] 完整本地回归：bridge 39 文件 432/432、启动器 8/8、extension 24 文件 180/180，两端 typecheck 与扩展 build 通过；项目树外 Windows 真实 PTY 六项行为和双隔离通过。
+- [ ] 按已获授权只提交执行位实现、回归与本轮文档，核对用户本人身份并推送 `main`；跟踪新 SHA 的三平台真实 CI，重点读取 macOS 原生行为、发行布局、项目树外 smoke 和扩展步骤。未获 tag/Release 授权，macOS 实机产品仍未验收。
 
 ## 当前阻塞
 
 1. 无首次修改授权阻塞：用户已选择创建 `feature/dual-terminal` 并授权按计划修改已有文件。
-2. 阶段 E 已完成提交推送；阶段 F 已获修复、补回归、同步必要文档、提交推送并跟踪三平台 CI 的明确授权。提交只能使用用户本人身份，不含共同作者或 AI 署名，不延伸到 tag/Release。
-3. 阶段 A～E 及真实 Windows 验收均已完成。CI #43 第二次尝试中 Ubuntu、Windows 完整通过，macOS 共同单测已转绿但真实 PTY 回退被重复复制阻断；阶段 F 本地修复与完整回归通过，新 SHA 的三平台 Runner、尤其 macOS helper 原生行为仍待取得，macOS 实机仍无证据。
+2. 阶段 E、F 已完成提交推送；阶段 G 已获执行位修复、补回归、同步必要文档、提交推送并跟踪三平台 CI 的明确授权。提交只能使用用户本人身份，不含共同作者或 AI 署名，不延伸到 tag/Release。
+3. 阶段 A～F 及真实 Windows 验收均已完成。CI #44 证明重复暂存已消失，并确定下一层根因为 Darwin `spawn-helper` 缺执行位；阶段 G 本地修复与完整回归通过，新 SHA 的三平台 Runner 仍待取得，macOS 实机仍无证据。
 4. 曾误写项目外文件 `D:\SVN_Cursor\bridge\tests\terminal-child.test.ts`；正确项目内文件已建立，项目外误写文件仍保留，删除前必须另获用户确认。
-5. `README.md`、`docs/guide.md`、`docs/development.md`、`TODO.md` 已完成双终端更新；本轮同步 CI #43 两次尝试、回退根因、RED→GREEN 与本地/真实 Windows 证据，继续区分云端自动测试、跨目标负探针和 macOS 实机产品验收。
+5. `README.md`、`docs/guide.md`、`docs/development.md`、`TODO.md` 已完成双终端更新；本轮同步 CI #44、Node 版本边界、执行位根因、RED→GREEN 与本地/真实 Windows 证据，继续区分云端自动测试和 macOS 实机产品验收。
 6. 阶段 C 最终证据：单 exe 54,134,272 bytes（约 51.6 MiB），SHA-256 `9a32c30310efdf9b4b6eda17387a34a1687264e72269972494b99820f0995598`。真实 CLI `portable-real-cli-dual-terminal-20261111-02`、完整假 CLI `portable-embedded-green-20261111-04`、生命周期 `portable-lifecycle-20261111-06` 均退出码 0；生命周期 15 项全 true，进度截图人工确认非黑帧，源/副本哈希一致，所有最终 cleanup remaining/errors 双空。完整 bridge 422/422、extension 173/173 和两端 typecheck/build 通过；最终聚焦 6 文件 46/46、启动器 8/8、原生布局/SHA-256、CI/Release YAML 与 20 个 shell 段语法通过。
 
 ## 遇到的错误
@@ -86,6 +94,8 @@
 | 并行最终复验的扩展命令继承 `bridge` CWD，误跑桥接且缺少 build script | 1 | 不记作扩展失败；改用 `npm --prefix D:/.../extension` 明确目录，扩展 typecheck、180/180 和 production build 均通过 |
 | CI #43 第一次 macOS 尝试因 hosted arm64 容量未获 Runner | 1 | 核实 `steps=[]` 与容量 annotation，不作为测试失败；仅重跑失败项 |
 | CI #43 第二次 macOS 的 helper 回退重复复制 `node-pty/LICENSE`，报 `EEXIST` | 1 | 两路线统一暂存；完整结果用完成标记复用，无标记半成品明确拒绝，补 RED→GREEN 与真实 Windows PTY 回归 |
+| CI #44 macOS 两路线均报 `posix_spawnp failed` | 1 | 官方 Darwin `spawn-helper` 发布权限为 `0644`；暂存与发行副本恢复 `0755`，完成标记与布局校验纳入门禁，三项回归先 RED 后 GREEN |
+| 启动器独立复验误用仓库根目录脚本路径 | 1 | 首次仅 `MODULE_NOT_FOUND`、未执行测试；改用实际 `bridge/scripts/run-portable-launcher-tests.mjs` 后 8/8 |
 | Task 5 四个新模块不存在，RED 为 4 个 suite 失败 | 1 | 按计划补最小实现，聚焦测试转为 15/15 |
 | `TerminalBackend` 从 `terminal-lease` 误导入，typecheck 失败 | 1 | 改从 `protocol` 导入，typecheck 与全套测试通过 |
 | `terminal-child.test.ts` 首次写到项目外错误根路径 | 1 | 已在正确项目路径重建；误写文件未擅自删除，等待用户确认清理 |

@@ -143,3 +143,12 @@
 - 修复把复制准备抽成 `stagePtyDependencies()`：仅在 `node-pty` 与 `node-addon-api` 均复制成功后写完成标记，后续路线据此复用；没有标记却存在同名目录时明确报 `PTY_PROBE_DEPENDENCIES_INCOMPLETE`，避免把中断留下的半成品当完整结果。没有放宽一次性根目录、真实 PTY 行为或项目树外隔离断言。
 - 新回归先因暂存模块不存在 RED，实现后 2/2。跨目标负探针仍因 Windows 无法执行 Darwin 二进制而失败，但 helper 已越过准备阶段，证明复制冲突消失而非 macOS 原生通过。Windows 真实 PTY 重新取得 `bun-node-pty` 六项行为全 true、双隔离 true；探针内运行时字符串是编译程序报告，不能误写为 child 使用的 Node 22 版本。
 - 修复后完整本地证据为 bridge 39 文件 429/429、启动器 8/8、extension 24 文件 180/180，两端 typecheck 与扩展 production build 通过。macOS helper 的原生行为、发行布局、项目树外 smoke 和扩展后续步骤仍须由新 SHA 的 Runner 证明；macOS 实机 Terminal.app、真实窗口、签名及产品交互仍未验收。
+
+## 2026-11-12 CI #44 与 Darwin 执行位发现
+
+- `e4f1a75` 对应 CI #44 run `43146771064`。Ubuntu、Windows 成功；macOS 共同测试 425 通过、4 跳过，随后 Bun 与 helper 分别在 `spawn` / `spawn-helper` 阶段报 `posix_spawnp failed`。日志已无 `EEXIST`，所以这不是旧复制冲突的重复，而是回退真正执行后暴露的共同原生问题。
+- `node-pty` 的 Darwin 原生加载分两层：`pty.node` 是原生模块，Unix spawn 还执行同预编译目录的 `spawn-helper`。模块能加载不能证明 helper 能执行；`pty.cc` 对 helper 启动失败统一抛 `posix_spawnp failed`，与两条路线日志吻合。
+- 官方 `node-pty@1.1.0` tarball 直接列出 `prebuilds/darwin-arm64/spawn-helper` 和 `darwin-x64/spawn-helper` 均为 `0644`，本机 arm64 文件又是正确 Mach-O，排除架构混用。修复只把暂存/发行副本恢复为 `0755`，不修改全局缓存或第三方源文件。
+- GitHub 日志同时明确 `node-version: 22`、`node: v22.23.4`。Node 24 警告指 `actions/checkout@v4` 和 `actions/setup-node@v4` 自身原目标 Node 20 被强制升级，不改变项目测试或 PTY child 的 Node 22，不能用来掩盖确定性的权限缺陷。
+- 三项测试先分别证明旧实现没有暂存 chmod、没有发行 chmod、没有拒绝 `0644`，共 3 失败、8 通过。共享 `ensureDarwinSpawnHelperExecutable()` 统一目标路径和 `0755`；暂存必须先成功再写完成标记，发行打包使用同一函数，`verifyNativeLayout()` 仅在 Darwin host 校验 Darwin 布局的执行位，避免把 Windows `stat` 当 POSIX 证据。测试注入只提供确定性调用/mode，不冒充 macOS 原生执行。
+- 聚焦 11/11、bridge 432/432、启动器 8/8、extension 180/180、两端 typecheck/build 和 Windows 真实 PTY 均已通过。新 macOS CI 仍需独立证明至少一条路线六项行为、发行布局及执行位、项目树外 smoke 和扩展后续步骤；即便全绿，也不等于 macOS 实机产品验收。

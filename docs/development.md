@@ -74,7 +74,7 @@ cd extension && npm i && npm run build
 # 协议单一来源是 shared/protocol.ts，两端复制件由脚本同步（改协议只改它）
 node scripts/sync-protocol.mjs
 
-cd bridge && npm test                  # 桥接 38 个测试文件，427 个单测
+cd bridge && npm test                  # 桥接 39 个测试文件，432 个单测
 cd bridge && npm run typecheck         # 桥接严格类型检查
 cd bridge && npm run selftest          # 离线：握手 + 绑定流程，不调 API
 cd bridge && npm run selftest:live     # 端到端：向真实 claude 发一条消息（走本机中转配置）
@@ -204,7 +204,11 @@ extension/              # Chrome MV3 扩展（WXT + React）
 
 2026-11-12 的跨平台测试修复保持生产行为不变：通用绝对路径夹具使用 `path.resolve(...)`，Windows 专用语义继续显式使用 `path.win32` / `platform: "win32"`，不放宽生产 `path.isAbsolute()` 校验；服务端测试通过可选 `ServerDeps.terminal.resolveCli` 注入确定性假 CLI，生产缺省仍调用真实 `resolveClaudeExecutable()`。两项注入值断言先 RED 后 GREEN，原失败五文件 36/36、bridge 427/427、启动器 8/8、extension 180/180、两端 typecheck 和扩展 production build 均已在本机通过。修复后的三平台结果必须由新提交对应的真实 Runner 证明；本地 Windows 全绿不能替代 POSIX CI，macOS CI 也不能替代 Terminal.app、原生 PTY、签名、Hook 跟随及退出/恢复实机验收。Release 仍未触发或发布。
 
-上述修复由 `1123bea` 推送后触发 CI #43（run `43067186158`）。第一次 macOS 尝试因托管容量未获 Runner，`steps=[]`，不是测试失败；仅重跑失败项后，Ubuntu、Windows 完整通过，macOS 共同单测 423 通过、4 跳过。macOS 随后暴露独立的 PTY 探针准备缺陷：`auto` 的 Bun 与 helper 回退共享 `pty/node_modules`，却各自拒绝覆盖复制，helper 在 `node-pty/LICENSE` 处被 `EEXIST` 阻断。现由 `stagePtyDependencies()` 在两个依赖包全部复制后写完成标记，后续路线复用完整结果；无标记的同名目录明确报 `PTY_PROBE_DEPENDENCIES_INCOMPLETE`。新回归先 RED 后 2/2，跨目标负探针只证明复制冲突消失；Windows 真实 PTY 六项行为和双隔离通过，完整 bridge 429/429、启动器 8/8、extension 180/180 及两端 typecheck/build 通过。新 SHA 的三平台 CI，尤其 macOS helper 的真实原生行为，仍是独立门禁；CI 通过也不替代 macOS 实机产品验收。
+上述修复由 `1123bea` 推送后触发 CI #43（run `43067186158`）。第一次 macOS 尝试因托管容量未获 Runner，`steps=[]`，不是测试失败；仅重跑失败项后，Ubuntu、Windows 完整通过，macOS 共同单测 423 通过、4 跳过。macOS 随后暴露独立的 PTY 探针准备缺陷：`auto` 的 Bun 与 helper 回退共享 `pty/node_modules`，却各自拒绝覆盖复制，helper 在 `node-pty/LICENSE` 处被 `EEXIST` 阻断。现由 `stagePtyDependencies()` 在两个依赖包全部复制后写完成标记，后续路线复用完整结果；无标记的同名目录明确报 `PTY_PROBE_DEPENDENCIES_INCOMPLETE`。新回归先 RED 后 2/2，跨目标负探针只证明复制冲突消失；Windows 真实 PTY 六项行为和双隔离通过，完整 bridge 429/429、启动器 8/8、extension 180/180 及两端 typecheck/build 通过。
+
+`e4f1a75` 对应 CI #44（run `43146771064`）：Ubuntu、Windows 成功，macOS 共同测试 425 通过、4 跳过，且 `EEXIST` 已消失。Bun 与 helper 随后分别在 `spawn` / `spawn-helper` 阶段报 `posix_spawnp failed`。官方 `node-pty@1.1.0` tarball 的 Darwin arm64/x64 `spawn-helper` 都是 `0644`，因此暂存和发行复制都必须显式把目标副本恢复为 `0755`；`pty-native-permissions.mjs` 统一该操作，完成标记只在修复成功后写入，`verify-native-layout.mjs` 在 Darwin 主机额外拒绝无执行位的发行副本。测试的 `chmod` / `stat` 注入只验证逻辑，不冒充 macOS 原生执行。
+
+三项权限回归先以 3 失败、8 通过取得 RED，实现后聚焦 11/11；完整 bridge 432/432、启动器 8/8、extension 180/180、两端 typecheck/build 和项目树外 Windows 真实 PTY 均通过。CI 中的 Node 24 警告只属于 checkout/setup-node Action 自身，项目与 PTY child 仍使用 Node 22.23.4。新 SHA 的 macOS Runner 必须另行证明真实 PTY、发行布局、项目树外 smoke 和扩展步骤；CI 通过也不替代 macOS 实机 Terminal.app、真实窗口、签名及产品交互验收。仍未打 tag 或发布 Release。
 
 ## 许可证
 

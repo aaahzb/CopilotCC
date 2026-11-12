@@ -66,6 +66,37 @@ describe("原生 PTY 发行布局", () => {
     await expect(verifyNativeLayout(outDir, "win32", "x64")).rejects.toThrow("NATIVE_LAYOUT");
   });
 
+  it("macOS 打包显式恢复发行副本的 spawn-helper 执行位", async () => {
+    const outDir = path.join(tempDir(), "dist");
+    fs.mkdirSync(outDir);
+    const calls: Array<{ file: string; mode: number }> = [];
+
+    await packagePty({
+      target: "darwin", backend: "bun-node-pty", outDir, nodeRuntime: null,
+      chmod: (file: string, mode: number) => { calls.push({ file, mode }); },
+    });
+
+    expect(calls).toEqual([{
+      file: path.join(
+        outDir, "pty", "node_modules", "node-pty", "prebuilds", "darwin-arm64", "spawn-helper",
+      ),
+      mode: 0o755,
+    }]);
+  });
+
+  it("macOS 主机发行校验拒绝无执行位的 spawn-helper", async () => {
+    const outDir = path.join(tempDir(), "dist");
+    fs.mkdirSync(outDir);
+    await packagePty({ target: "darwin", backend: "bun-node-pty", outDir, nodeRuntime: null });
+    let mode = 0o644;
+    const host = { platform: "darwin", stat: () => ({ mode }) };
+
+    await expect(verifyNativeLayout(outDir, "darwin", "arm64", host))
+      .rejects.toThrow("spawn-helper is not executable");
+    mode = 0o755;
+    await expect(verifyNativeLayout(outDir, "darwin", "arm64", host)).resolves.toBe(true);
+  });
+
   it("已登记 native 文件哈希被篡改时拒绝发行", async () => {
     const outDir = path.join(tempDir(), "dist");
     fs.mkdirSync(outDir);

@@ -199,3 +199,12 @@
 - 项目外跨目标负探针 `ci43-auto-fallback-after-01` 中，两个 Darwin 编译程序在 Windows 均按预期不能原生执行，但 helper 已越过依赖暂存，`dependencyCollisionFixed=true`、`nativeBehaviorPassed=false`，无 `EEXIST` 或 `PTY_PROBE_DEPENDENCIES_INCOMPLETE`。该结果只支持准备阶段修复。
 - 项目外 Windows 真实探针 `ci43-win-after-01` 选择 `bun-node-pty`，`initialSize`、`inputEcho`、`continuousTicks`、`chinese`、`resize`、`exitCode7` 全 true，`isolatedCwd` / `isolatedNative` 全 true。child 使用已核验的 Node 22.23.4；探针报告的运行时字符串属于编译程序，不混作 child 版本。
 - 完整本地回归已通过：bridge 39 文件 429/429、启动器 8/8、bridge typecheck；extension 24 文件 180/180、typecheck、production build，只有既有大 chunk 警告。本轮待提交范围仅探针实现、两项新文件及同步文档，根目录 zip、JPG、`venv/` 保持未跟踪；新 SHA 的三平台 CI 仍待取得，不打 tag、不发布 Release。
+
+## 2026-11-12 CI #44 与 Darwin spawn-helper 执行位修复
+
+- 已提交并推送 `e4f1a75570c26a387b4b7620065879fa5bce3b8b`（`修复 macOS PTY 回退重复暂存`）。CI #44 run `43146771064` 的 Ubuntu job `130946307873`、Windows job `130946308407` 成功，macOS job `130946308234` 失败；macOS 共同测试 37 文件通过、2 跳过，425 项通过、4 跳过。
+- macOS 日志不再出现 `EEXIST`：Bun 路线已到 `stage=spawn` 并报 `posix_spawnp failed`，helper 回退也到 `stage=spawn-helper` 并报 `SPAWN_FAILED: posix_spawnp failed`。这证明上一提交解决了重复暂存，同时暴露两条路线共同的原生启动问题。
+- 直接核验官方 `node-pty@1.1.0` tarball：Darwin arm64/x64 的 `spawn-helper` 都是 `-rw-r--r--`（0644）；本机对应文件为正确 arm64 Mach-O，`pty.node` 可加载不代表辅助程序可执行。上游相关记录为 `microsoft/node-pty#850`。项目 CI 使用 Node 22.23.4；checkout/setup-node 的 Node 24 警告只属于 Action 自身运行时。
+- 三项新回归先 RED：Darwin 暂存 `chmod` 调用为空、macOS 发行复制 `chmod` 调用为空、模拟 Darwin host 的 `0644` 布局被错误接受，共 3 失败、8 通过。新增 `pty-native-permissions.mjs`，暂存在完成标记前修复目标副本，发行打包复用同一函数，布局校验在 Darwin host 要求任一执行位；同命令转为 2 文件 11/11，四个 `.mjs` 的 `node --check` 通过。
+- 完整回归为 bridge 39 文件 432/432、启动器 8/8、extension 24 文件 180/180，两端 typecheck 和扩展 production build 通过，只有既有大 chunk 警告。启动器独立命令首次误指仓库根目录、因模块不存在未执行；改用实际 `bridge/scripts/run-portable-launcher-tests.mjs` 后 8/8，不记作产品测试失败。
+- 项目外 Windows 真实探针 `darwin-permission-fix-win-20261112-01` 由 Node 22.23.4 启动，选择 `bun-node-pty`，初始尺寸、输入、连续 tick、中文、resize、exit 7 与双隔离全 true。该结果只证明 Darwin 分支未破坏 Windows；新提交的 macOS Runner 仍是必需证据，实机 Terminal.app、窗口、签名和产品交互未验收，不打 tag、不发布 Release。

@@ -27,14 +27,15 @@ function hashFile(file) {
 }
 
 /**
- * 逐项校验发行 PTY 清单、必需原生文件、完整文件集合和 SHA-256。
+ * 逐项校验发行 PTY 清单、必需原生文件、完整文件集合、SHA-256 和 Darwin 执行位。
  * @param {string} outDir 含 pty-manifest.json 的发行目录。
  * @param {string} [expectedPlatform] 可选目标平台；缺省读取 manifest。
  * @param {string} [expectedArch] 可选目标架构；缺省读取 manifest。
+ * @param {{platform?:string,stat?:(file:string)=>{mode:number}}} [host] 可注入的校验宿主参数。
  * @returns {Promise<boolean>} 全部一致时返回 true。
- * @throws {Error} 任意缺失、额外文件、目标不符或摘要不符时抛 NATIVE_LAYOUT。
+ * @throws {Error} 任意缺失、额外文件、目标、摘要或必需执行位不符时抛 NATIVE_LAYOUT。
  */
-export async function verifyNativeLayout(outDir, expectedPlatform, expectedArch) {
+export async function verifyNativeLayout(outDir, expectedPlatform, expectedArch, host = {}) {
   try {
     const manifest = JSON.parse(fs.readFileSync(path.join(outDir, "pty-manifest.json"), "utf8"));
     if (manifest.schemaVersion !== 1 || !["bun-node-pty", "node-helper"].includes(manifest.backend)
@@ -83,6 +84,14 @@ export async function verifyNativeLayout(outDir, expectedPlatform, expectedArch)
       .map((file) => slash(path.relative(outDir, file))).sort();
     const declared = [...seen].sort();
     if (JSON.stringify(actual) !== JSON.stringify(declared)) throw new Error("unlisted or missing packaged files");
+    // 只有 Darwin 主机的 mode 位可信；跨平台复制布局不能拿 Windows stat 冒充 macOS 校验。
+    if (manifest.platform === "darwin" && (host.platform ?? process.platform) === "darwin") {
+      const helper = path.join(
+        outDir, "pty", "node_modules", "node-pty", "prebuilds", prebuild, "spawn-helper",
+      );
+      const mode = (host.stat ?? fs.statSync)(helper).mode;
+      if ((mode & 0o111) === 0) throw new Error("spawn-helper is not executable");
+    }
     return true;
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
