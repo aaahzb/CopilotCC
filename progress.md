@@ -188,3 +188,14 @@
 - TDD 证据：先在系统/内嵌测试断言运行时收到 fixture 的临时假 CLI；首次误在 `extension` 目录执行为“无测试文件”，不记作 RED。改在 `bridge` 目录得到有效 RED：2 项失败、18 项通过，实际值是本机真实 Claude 路径。为 `ServerDeps.terminal` 增加可选 `resolveCli` 后同命令 20/20，生产缺省 `resolveClaudeExecutable` 不变。
 - 修复后原失败五文件 36/36；完整 bridge 38 文件 427/427、C# 启动器 8/8、bridge typecheck 通过；extension 24 文件 180/180、typecheck、production build 通过，只有既有大 chunk 警告。文档同步前代码 diff 为 6 文件、18 行新增、9 行删除，`git diff --check` 通过。
 - 用户已授权提交相关修复及必要文档并推送 `main`，提交身份只使用用户本人且不添加共同作者；下一步是审核最终 diff、提交、推送并读取新 run 的三平台结果。旧 #42 不是修复后证据，macOS 实机产品功能仍未验收，不打 tag、不发布 Release。
+
+## 2026-11-12 CI #43 复验与 PTY 回退修复
+
+- 已提交并推送 `1123bea6273d8e7d54b9eed63a13d4ec9163be7a`（`修复跨平台终端测试环境依赖`）；Author/Committer 均为 `aaahzb <aaahzb123@gmail.com>`，提交无正文、共同作者或 AI 署名。
+- CI #43 run `43067186158` 第一次 macOS job `130685167802` 因 hosted arm64 容量未获 Runner，`steps=[]`，结论为 `cancelled`；Ubuntu job `130685168302` 与 Windows job `130685168279` 不受 `fail-fast:false` 下的 macOS 取消影响。随后仅重跑失败项，HTTP 201，未改代码或触发 Release。
+- 第二次 macOS job `130695437524` 的共同单测 423 通过、4 跳过，随后真实 PTY 准备失败；Ubuntu job `130695437570` 与 Windows job `130695438899` 完整成功。Windows 的共同测试、真实 PTY、完整发行布局、项目树外 smoke、绿色单文件构建、启动器、项目树外生命周期及扩展测试/构建均逐项核实为 `success`。
+- macOS 日志显示 Bun 路线先在 `spawn` 阶段报告 `posix_spawnp failed`，helper 回退随后重复复制共享依赖，在 `pty/node_modules/node-pty/LICENSE` 处以 `ERR_FS_CP_EEXIST` 失败。根因是两路线共用目标却各自拒绝覆盖复制；helper 当时未进入原生 PTY 行为验证。
+- 新增 `bridge/scripts/pty-probe-dependencies.mjs` 和 `bridge/tests/pty-probe-dependencies.test.ts`，`run-pty-probe.mjs` 两路线统一调用暂存函数。完整结果以完成标记复用，无标记半成品明确拒绝。新测试先因模块不存在 RED，实现后 2/2；相关 `.mjs` `node --check` 与 bridge typecheck 通过。
+- 项目外跨目标负探针 `ci43-auto-fallback-after-01` 中，两个 Darwin 编译程序在 Windows 均按预期不能原生执行，但 helper 已越过依赖暂存，`dependencyCollisionFixed=true`、`nativeBehaviorPassed=false`，无 `EEXIST` 或 `PTY_PROBE_DEPENDENCIES_INCOMPLETE`。该结果只支持准备阶段修复。
+- 项目外 Windows 真实探针 `ci43-win-after-01` 选择 `bun-node-pty`，`initialSize`、`inputEcho`、`continuousTicks`、`chinese`、`resize`、`exitCode7` 全 true，`isolatedCwd` / `isolatedNative` 全 true。child 使用已核验的 Node 22.23.4；探针报告的运行时字符串属于编译程序，不混作 child 版本。
+- 完整本地回归已通过：bridge 39 文件 429/429、启动器 8/8、bridge typecheck；extension 24 文件 180/180、typecheck、production build，只有既有大 chunk 警告。本轮待提交范围仅探针实现、两项新文件及同步文档，根目录 zip、JPG、`venv/` 保持未跟踪；新 SHA 的三平台 CI 仍待取得，不打 tag、不发布 Release。

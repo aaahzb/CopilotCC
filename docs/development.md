@@ -204,6 +204,8 @@ extension/              # Chrome MV3 扩展（WXT + React）
 
 2026-11-12 的跨平台测试修复保持生产行为不变：通用绝对路径夹具使用 `path.resolve(...)`，Windows 专用语义继续显式使用 `path.win32` / `platform: "win32"`，不放宽生产 `path.isAbsolute()` 校验；服务端测试通过可选 `ServerDeps.terminal.resolveCli` 注入确定性假 CLI，生产缺省仍调用真实 `resolveClaudeExecutable()`。两项注入值断言先 RED 后 GREEN，原失败五文件 36/36、bridge 427/427、启动器 8/8、extension 180/180、两端 typecheck 和扩展 production build 均已在本机通过。修复后的三平台结果必须由新提交对应的真实 Runner 证明；本地 Windows 全绿不能替代 POSIX CI，macOS CI 也不能替代 Terminal.app、原生 PTY、签名、Hook 跟随及退出/恢复实机验收。Release 仍未触发或发布。
 
+上述修复由 `1123bea` 推送后触发 CI #43（run `43067186158`）。第一次 macOS 尝试因托管容量未获 Runner，`steps=[]`，不是测试失败；仅重跑失败项后，Ubuntu、Windows 完整通过，macOS 共同单测 423 通过、4 跳过。macOS 随后暴露独立的 PTY 探针准备缺陷：`auto` 的 Bun 与 helper 回退共享 `pty/node_modules`，却各自拒绝覆盖复制，helper 在 `node-pty/LICENSE` 处被 `EEXIST` 阻断。现由 `stagePtyDependencies()` 在两个依赖包全部复制后写完成标记，后续路线复用完整结果；无标记的同名目录明确报 `PTY_PROBE_DEPENDENCIES_INCOMPLETE`。新回归先 RED 后 2/2，跨目标负探针只证明复制冲突消失；Windows 真实 PTY 六项行为和双隔离通过，完整 bridge 429/429、启动器 8/8、extension 180/180 及两端 typecheck/build 通过。新 SHA 的三平台 CI，尤其 macOS helper 的真实原生行为，仍是独立门禁；CI 通过也不替代 macOS 实机产品验收。
+
 ## 许可证
 
 [MIT](../LICENSE)

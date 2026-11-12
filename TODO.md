@@ -67,7 +67,16 @@
 - [x] 其中 12 项是通用夹具使用 `C:/work` 等 Windows 路径，POSIX 的 `path.isAbsolute()` 合法拒绝；通用夹具改用 `path.resolve(...)`，保留生产绝对路径校验、相对路径负测试和 Windows 长路径专项。
 - [x] 另外 13 项是 WS 测试只注入假终端运行时、未注入 CLI 路径，真实 CLI 解析在假运行时之前返回 `CLI_NOT_FOUND`；`ServerDeps.terminal.resolveCli` 增加可选测试注入点，生产缺省仍为 `resolveClaudeExecutable`。两个新增注入值断言先在本机 RED（2 项失败、18 项通过），最小实现后 20/20 通过。
 - [x] 本地回归：原失败五文件 36/36，bridge 38 文件 427/427、启动器 8/8，extension 24 文件 180/180；两端 typecheck 与扩展 production build 均通过，仅有既有大 chunk 警告。
-- [ ] 已获提交并推送 `main` 授权；推送后必须读取新提交对应的三平台真实 run，不能把旧 #42 或本地 Windows 结果当作 POSIX 已通过。macOS 实机产品功能仍未验收，不打 tag、不发布 Release。
+- [x] 六文件修复已以用户本人身份提交并推送 `main`：`1123bea`（`修复跨平台终端测试环境依赖`），无共同作者或 AI 署名。其真实结果为 CI #43，不能沿用旧 #42 或本地 Windows 结果代替 POSIX 证据。
+
+## GitHub Actions #43 与 PTY 回退修复（2026-11-12，本地修复完成）
+
+- [x] CI #43（run `43067186158`，提交 `1123bea`）第一次 macOS 尝试因托管容量未获 Runner，`runner_id=0`、`steps=[]`，结论是 `cancelled` 而非测试失败；仅重跑失败项，未改代码或触发 Release。
+- [x] 第二次尝试中 Ubuntu、Windows 完整通过；Windows 的共同测试、真实 PTY、完整发行布局、项目树外 smoke、绿色单文件、启动器、项目树外生命周期及扩展步骤均为 `success`。macOS 共同单测 423 通过、4 跳过，证明 #42 的测试准备修复已在 POSIX 生效。
+- [x] macOS 随后在真实 PTY 准备阶段失败：Bun 路线报告 `posix_spawnp failed` 后，`auto` 回退 helper 又向同一 `pty/node_modules` 复制依赖，被 `node-pty/LICENSE` 的 `EEXIST` 阻断。该 Bun 错误不是最终原生路线结论，helper 当时尚未进入真实 PTY 行为验证。
+- [x] 新增 `stagePtyDependencies()`：两个包完整复制后才写完成标记，回退复用完整结果；无标记的同名目录明确报 `PTY_PROBE_DEPENDENCIES_INCOMPLETE`，不静默接续半成品。聚焦回归先因模块不存在 RED，实现后 2/2；跨目标负探针只证明回退不再发生复制冲突，不证明 macOS 原生行为。
+- [x] 新实现下 Windows 真实 PTY 选择 `bun-node-pty`，初始尺寸、输入响应、连续 tick、中文、resize、exit 7 六项行为及 CWD/原生依赖双隔离全部通过。完整回归为 bridge 39 文件 429/429、启动器 8/8、extension 24 文件 180/180，两端 typecheck 与扩展 production build 通过。
+- [ ] 按已获授权提交并推送本轮探针修复后，读取新 SHA 对应的三平台 CI，重点确认 macOS helper 真正越过暂存并进入原生行为验证。macOS Terminal.app、真实窗口、签名和产品交互仍需实机验收；不打 tag、不发布 Release。
 
 ## 别名主行打开当前文件夹（2026-10-31，已完成）
 

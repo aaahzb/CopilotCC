@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+import { stagePtyDependencies } from "./pty-probe-dependencies.mjs";
 
 const bridgeRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const projectRoot = path.resolve(bridgeRoot, "..");
@@ -104,14 +105,7 @@ function runBun(options) {
   }
 
   const modules = path.join(options.root, "pty", "node_modules");
-  fs.mkdirSync(modules, { recursive: true });
-  for (const name of ["node-pty", "node-addon-api"]) {
-    fs.cpSync(path.join(bridgeRoot, "node_modules", name), path.join(modules, name), {
-      recursive: true,
-      force: false,
-      errorOnExist: true,
-    });
-  }
+  stagePtyDependencies(bridgeRoot, modules);
   fs.writeFileSync(path.join(options.root, "pty", "package.json"), '{"private":true}\n', "utf8");
   const child = path.join(options.root, "pty-probe-child.cjs");
   fs.copyFileSync(path.join(bridgeRoot, "scripts", "pty-probe-child.cjs"), child);
@@ -182,14 +176,7 @@ function runHelper(options) {
   }
 
   const modules = path.join(ptyDir, "node_modules");
-  fs.mkdirSync(modules, { recursive: true });
-  for (const name of ["node-pty", "node-addon-api"]) {
-    fs.cpSync(path.join(bridgeRoot, "node_modules", name), path.join(modules, name), {
-      recursive: true,
-      force: false,
-      errorOnExist: true,
-    });
-  }
+  stagePtyDependencies(bridgeRoot, modules);
   fs.writeFileSync(path.join(ptyDir, "package.json"), '{"private":true}\n', "utf8");
   const child = path.join(options.root, "pty-probe-child.cjs");
   fs.copyFileSync(path.join(bridgeRoot, "scripts", "pty-probe-child.cjs"), child);

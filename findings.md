@@ -134,3 +134,12 @@
 - 两个新增断言不仅检查 fixture 配置，还检查 system context 和实际 PTY spawn 收到的 `cliPath` / `file`。实现前二者都拿到本机真实 Claude 路径，证明测试能捕获原缺口；实现后同命令 20/20。通用路径夹具改用宿主 `path.resolve(...)`，但相对 cwd 负测试、平台不匹配负测试及 Windows 长路径/dlopen 语义均保留。
 - 日志中的开发 Origin 放行、普通 stderr 和故意 `boom-测试异常` 均有对应预期场景，不应按关键词当作失败根因。有效统计来自完整日志：Ubuntu/macOS 各 5 文件、25 失败、398 通过、4 跳过；共同测试步骤失败使后续真实 PTY、发行布局和项目树外 smoke 没有运行，旧 #42 不能作为这些后续步骤的新证据。
 - 本地修复证据为原失败五文件 36/36、bridge 427/427、启动器 8/8、extension 180/180，两端 typecheck 与扩展 build 通过。该证据只支持提交修复，不支持宣称 POSIX 已转绿；必须等待新提交的 Runner。即便 macOS CI 通过，也不等于 Terminal.app、原生 PTY、签名和真实窗口产品验收。
+
+## 2026-11-12 CI #43 与 PTY 回退发现
+
+- 六文件修复已提交为 `1123bea` 并推送；CI #43 run `43067186158` 第一次 macOS 尝试没有获得 hosted Runner，`runner_id=0`、`runner_name=""`、`steps=[]`，约 15 分钟后因容量取消。这不是测试失败；`rerun-failed-jobs` 只重跑未成功项。
+- 第二次 macOS 共同单测为 36 文件通过、2 跳过，423 项通过、4 跳过，说明 #42 的 12+13 测试准备修复已在 POSIX 生效。Ubuntu、Windows 完整通过；Windows 的真实 PTY、完整发行布局、项目树外 smoke、绿色单文件、启动器、项目树外生命周期及扩展步骤均明确为 `success`。
+- macOS 的新失败发生在共同单测之后。`auto` 先试 `bun-node-pty`，其运行时报告 `PTY_PROBE_ERROR` 的 `spawn` / `posix_spawnp failed`；helper 回退本应继续，但两条路线都向同一 `pty/node_modules` 执行 `cpSync(...,{force:false,errorOnExist:true})`，因此在第二次复制 `node-pty/LICENSE` 时以 `ERR_FS_CP_EEXIST` 终止。此时不能把 Bun 的首次错误当作最终原生路线结论。
+- 修复把复制准备抽成 `stagePtyDependencies()`：仅在 `node-pty` 与 `node-addon-api` 均复制成功后写完成标记，后续路线据此复用；没有标记却存在同名目录时明确报 `PTY_PROBE_DEPENDENCIES_INCOMPLETE`，避免把中断留下的半成品当完整结果。没有放宽一次性根目录、真实 PTY 行为或项目树外隔离断言。
+- 新回归先因暂存模块不存在 RED，实现后 2/2。跨目标负探针仍因 Windows 无法执行 Darwin 二进制而失败，但 helper 已越过准备阶段，证明复制冲突消失而非 macOS 原生通过。Windows 真实 PTY 重新取得 `bun-node-pty` 六项行为全 true、双隔离 true；探针内运行时字符串是编译程序报告，不能误写为 child 使用的 Node 22 版本。
+- 修复后完整本地证据为 bridge 39 文件 429/429、启动器 8/8、extension 24 文件 180/180，两端 typecheck 与扩展 production build 通过。macOS helper 的原生行为、发行布局、项目树外 smoke 和扩展后续步骤仍须由新 SHA 的 Runner 证明；macOS 实机 Terminal.app、真实窗口、签名及产品交互仍未验收。

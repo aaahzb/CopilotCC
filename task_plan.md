@@ -56,15 +56,24 @@
 - [x] 获取完整 Ubuntu/macOS 失败日志并分类：5 文件、25 项失败；12 项 Windows 路径夹具不适用于 POSIX，13 项假运行时测试在入口被真实 CLI 解析的 `CLI_NOT_FOUND` 阻断，Windows CI 通过。
 - [x] 严格 RED→GREEN：新增系统/内嵌运行时实际收到注入 CLI 的断言，本机先 2 项失败、18 项通过；可选 `resolveCli` 注入点后 20/20，生产默认解析不变。
 - [x] 通用路径夹具改用 `path.resolve(...)`，不放宽生产绝对路径校验；原失败五文件 36/36，bridge 427/427、启动器 8/8、extension 180/180，两端 typecheck 与扩展 build 通过。
-- [ ] 按已获授权仅提交相关修复和文档、核对用户本人身份并推送 `main`；跟踪新提交的三平台真实 CI。未获 tag/Release 授权，macOS 实机产品仍未验收。
+- [x] 六文件修复及文档已提交并推送 `main`：`1123bea`（`修复跨平台终端测试环境依赖`），Author/Committer 均为用户本人，无共同作者或 AI 署名；真实结果为 CI #43。
+
+## 阶段 F：CI #43 macOS PTY 回退修复（2026-11-12）
+
+- [x] 区分 CI #43（run `43067186158`）两次 macOS 尝试：第一次因托管容量未获 Runner，`steps=[]`、结论 `cancelled`；仅重跑失败项。第二次共同单测 423 通过、4 跳过，随后在真实 PTY 准备阶段失败；Ubuntu、Windows 完整通过，Windows 原生、便携、生命周期及扩展后续步骤均为 `success`。
+- [x] 根因定位为 `auto` 的 Bun 与 helper 路线共享 `pty/node_modules`，却各自执行拒绝覆盖的复制；Bun 首次报告 `posix_spawnp failed` 后，helper 在 `node-pty/LICENSE` 处被 `EEXIST` 阻断，尚未进入原生行为验证。
+- [x] 严格 RED→GREEN：新回归先因 `pty-probe-dependencies.mjs` 不存在失败，实现完成标记复用与半成品明确拒绝后 2/2；两个脚本语法和 bridge typecheck 通过。
+- [x] 跨目标负探针确认 helper 已越过依赖复制，不再出现 `EEXIST` / `PTY_PROBE_DEPENDENCIES_INCOMPLETE`；Darwin 二进制在 Windows 无法执行仍是预期失败，不作为 macOS 原生证据。Windows 真实 PTY 六项行为及双隔离通过。
+- [x] 完整本地回归：bridge 39 文件 429/429、启动器 8/8、extension 24 文件 180/180，两端 typecheck 与扩展 production build 通过。
+- [ ] 按已获授权只提交探针修复、回归与本轮文档，核对用户本人身份并推送 `main`；跟踪新 SHA 的三平台真实 CI，重点读取 macOS helper 的真实阶段。未获 tag/Release 授权，macOS 实机产品仍未验收。
 
 ## 当前阻塞
 
 1. 无首次修改授权阻塞：用户已选择创建 `feature/dual-terminal` 并授权按计划修改已有文件。
-2. 阶段 E 已获提交修复及必要文档、推送 `main` 的明确授权；提交只能使用用户本人身份，不含共同作者或 AI 署名，不延伸到 tag/Release。
-3. 阶段 A Task 1～8、阶段 B Task 1～7 和后续真实 Windows 验收均已完成。CI #42（提交 `d4ce58f`）已真实触发：Windows 通过，Ubuntu/macOS 在共同测试步骤各失败 25 项，后续平台步骤未执行；六文件修复后的本地回归通过，但新提交对应的三平台 Runner 结果仍待取得，macOS 实机仍无证据。
+2. 阶段 E 已完成提交推送；阶段 F 已获修复、补回归、同步必要文档、提交推送并跟踪三平台 CI 的明确授权。提交只能使用用户本人身份，不含共同作者或 AI 署名，不延伸到 tag/Release。
+3. 阶段 A～E 及真实 Windows 验收均已完成。CI #43 第二次尝试中 Ubuntu、Windows 完整通过，macOS 共同单测已转绿但真实 PTY 回退被重复复制阻断；阶段 F 本地修复与完整回归通过，新 SHA 的三平台 Runner、尤其 macOS helper 原生行为仍待取得，macOS 实机仍无证据。
 4. 曾误写项目外文件 `D:\SVN_Cursor\bridge\tests\terminal-child.test.ts`；正确项目内文件已建立，项目外误写文件仍保留，删除前必须另获用户确认。
-5. `README.md`、`docs/guide.md`、`docs/development.md`、`TODO.md` 已完成双终端更新；本次同步 CI #42 的真实失败分类、修复和本地证据，继续区分云端自动测试与 macOS 实机产品验收。
+5. `README.md`、`docs/guide.md`、`docs/development.md`、`TODO.md` 已完成双终端更新；本轮同步 CI #43 两次尝试、回退根因、RED→GREEN 与本地/真实 Windows 证据，继续区分云端自动测试、跨目标负探针和 macOS 实机产品验收。
 6. 阶段 C 最终证据：单 exe 54,134,272 bytes（约 51.6 MiB），SHA-256 `9a32c30310efdf9b4b6eda17387a34a1687264e72269972494b99820f0995598`。真实 CLI `portable-real-cli-dual-terminal-20261111-02`、完整假 CLI `portable-embedded-green-20261111-04`、生命周期 `portable-lifecycle-20261111-06` 均退出码 0；生命周期 15 项全 true，进度截图人工确认非黑帧，源/副本哈希一致，所有最终 cleanup remaining/errors 双空。完整 bridge 422/422、extension 173/173 和两端 typecheck/build 通过；最终聚焦 6 文件 46/46、启动器 8/8、原生布局/SHA-256、CI/Release YAML 与 20 个 shell 段语法通过。
 
 ## 遇到的错误
@@ -75,6 +84,8 @@
 | CI #42 两个 WS 套件未注入 CLI 路径，假运行时之前即返回 `CLI_NOT_FOUND` | 13 项 | 增加可选 `resolveCli` 测试注入点并断言实际收到注入值；生产默认解析不变 |
 | 首次 RED 命令在 `extension` 目录执行，未找到目标测试 | 1 | 不作为测试证据；改在 `bridge` 目录运行，得到有效 2 项 RED，随后同命令转 20/20 |
 | 并行最终复验的扩展命令继承 `bridge` CWD，误跑桥接且缺少 build script | 1 | 不记作扩展失败；改用 `npm --prefix D:/.../extension` 明确目录，扩展 typecheck、180/180 和 production build 均通过 |
+| CI #43 第一次 macOS 尝试因 hosted arm64 容量未获 Runner | 1 | 核实 `steps=[]` 与容量 annotation，不作为测试失败；仅重跑失败项 |
+| CI #43 第二次 macOS 的 helper 回退重复复制 `node-pty/LICENSE`，报 `EEXIST` | 1 | 两路线统一暂存；完整结果用完成标记复用，无标记半成品明确拒绝，补 RED→GREEN 与真实 Windows PTY 回归 |
 | Task 5 四个新模块不存在，RED 为 4 个 suite 失败 | 1 | 按计划补最小实现，聚焦测试转为 15/15 |
 | `TerminalBackend` 从 `terminal-lease` 误导入，typecheck 失败 | 1 | 改从 `protocol` 导入，typecheck 与全套测试通过 |
 | `terminal-child.test.ts` 首次写到项目外错误根路径 | 1 | 已在正确项目路径重建；误写文件未擅自删除，等待用户确认清理 |
