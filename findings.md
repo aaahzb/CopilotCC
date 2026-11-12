@@ -173,4 +173,10 @@
 - 生产修复由同一 staging 函数把平面发行包转换成标准 `.app`，避免 shell 构建与测试夹具各自拼布局。原生 Mach-O 显式移到 MacOS，非代码资源留在 Resources；manifest 仍记录平面来源路径，Bundle 校验器显式映射 moved 文件。签名前可校验未签名哈希，签名后 Mach-O 字节会改变，完整副本只能以 codesign 深校验及真实 PTY smoke 验收。
 - node-pty 的 `loadNativeModule()` 返回 `{dir,module}`，Unix 终端用 `dir + '/spawn-helper'`。因此 `.app` 回退不能只 require MacOS 的 `pty.node`，还必须返回 MacOS 作为 `dir`；同时 helper 后端使用 `Contents/MacOS/node` 和 `Contents/Resources/pty/helper.cjs`。平面目录首先执行原 node-pty 加载逻辑，保持 Windows 与既有 Darwin 平面发行兼容。
 - 首轮 4 项 RED 与 staging 模块缺失的第二轮 RED 均来自生产缺口；不是测试完成后补写。聚焦 45/45、bridge 437/437、启动器 8/8、extension 180/180 和类型/构建检查通过后，Windows 项目树外真实 PTY 与发行 smoke 也再次通过。默认 Node 25 的首次探针在运行时门禁被拒绝，改用 Node 22.23.4 才形成有效结果。
-- 本地 dry-run 与 VM 加载器只证明布局决策和 JS 路径，不证明 macOS codesign。普通 macOS CI 现已接入真实 `.app` 签名、签名后外部 PTY 和 DMG，但只有新提交的 Runner 日志能判定 Release #37 根因是否闭环；tag、Release、macOS 实机 GUI 和真实 API 中转不在本轮已完成范围。
+- 本地 dry-run 与 VM 加载器只证明布局决策和 JS 路径，不证明 macOS codesign。普通 macOS CI 现已接入真实 `.app` 签名、签名后外部 PTY 和 DMG，只有新提交的 Runner 真实执行结果能判定 Release #37 根因是否闭环；tag、Release、macOS 实机 GUI 和真实 API 中转不在本轮已完成范围。
+
+## 2026-11-12 CI #48 云端结果与证据边界
+
+- `88f805d` 对应 CI #48 run `43173448220` 已三平台全绿。macOS job `131031961213` 的新增真实 `.app` 签名、签名后项目树外 PTY 与 DMG 步骤结论为 `success`，且后续 artifact 和扩展步骤也成功。这一步包含真实 codesign、整包 `--verify --deep --strict`、`ditto` 后外部 PTY 与 hdiutil；`set -euo pipefail` 使任一失败都不能得到成功步骤结论。
+- Ubuntu job `131031961412` 与 Windows job `131031961431` 同样成功，Windows 的真实 PTY、绿色单文件、生命周期与扩展步骤均成功。这把普通 CI 的证据覆盖从平面 PTY 扩展到与 Release 相同的 Bundle 签名/外部 smoke/DMG 门禁。
+- 原始日志需要 GitHub 登录，当前未登录 API/Web 分别返回 403/404；因此记录明确限定为 GitHub API 的 run/job/step 结论和脚本退出语义，未声称读取日志正文或取得新的运行时字符串。没有创建 tag 或 Release，Runner 成功也不替代 macOS 实机 GUI、真实 API 中转及 Bun 直路线验收。

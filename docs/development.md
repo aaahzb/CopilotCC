@@ -220,7 +220,9 @@ Release #37（run `43164913706`）随后暴露了平面 PTY 测试未覆盖的 `
 
 运行时同步区分 Resources 与 MacOS：manifest/helper 脚本从 Resources 读取，helper Node 和 `spawn-helper` 从 MacOS 获取；Darwin 发行加载器保留平面优先逻辑，仅在确认的 `.app` Resources 中回退加载 MacOS 的 `pty.node`，并保持 `native.dir` 与 helper 同目录。普通 macOS CI 已新增真实 `.app` 签名、签名后项目树外 PTY 与 DMG 门禁，避免到 tag Release 才发现同类问题。
 
-本地修复先后取得 4 项路径/布局 RED 和 1 项 staging 模块缺失 RED；最终聚焦 45/45、bridge 437/437、启动器 8/8、extension 180/180，两端 typecheck、扩展 build、脚本语法、YAML 和 diff 检查通过。Windows 使用 Node 22.23.4 的项目树外真实 PTY 仍选择 `bun-node-pty`，六项行为、双隔离、完整布局及发行 smoke 全通过。新提交的 macOS 真实 codesign/外部 PTY/DMG 与三平台 CI 仍待 Runner 验证；当前未打 tag、未重发 Release，macOS 实机 GUI、真实 API 中转和 Bun 直路线仍未验收。
+本地修复先后取得 4 项路径/布局 RED 和 1 项 staging 模块缺失 RED；最终聚焦 45/45、bridge 437/437、启动器 8/8、extension 180/180，两端 typecheck、扩展 build、脚本语法、YAML 和 diff 检查通过。Windows 使用 Node 22.23.4 的项目树外真实 PTY 仍选择 `bun-node-pty`，六项行为、双隔离、完整布局及发行 smoke 全通过。
+
+`88f805d14b6d568b2d5a557b7cda46da6df924a9` 对应 CI #48（run `43173448220`）已三平台全绿。macOS job `131031961213` 的真实 PTY/平面发行 smoke、真实 `.app` 签名、签名后项目树外 PTY、DMG、artifact 与扩展步骤均为 `success`；Ubuntu job `131031961412` 和 Windows job `131031961431` 也成功，Windows 绿色单文件及生命周期门禁通过。原始日志在当前未登录环境返回 403/404，因此这里记录的是 GitHub API 的 run/job/step 结论及脚本非零即失败语义，不声称已读取日志正文。未打 tag、未重发 Release，macOS 实机 GUI、真实 API 中转和 Bun 直路线仍未验收。
 
 ## 许可证
 

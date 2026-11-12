@@ -234,3 +234,10 @@
 - 完整本地回归：bridge 39 文件 437/437、启动器 8/8、extension 24 文件 180/180，两端 typecheck、扩展 production build、相关 Node/shell 语法、CI YAML 和 `git diff --check` 通过；仅有既有大 chunk 警告。普通 macOS CI 已加入与 Release 相同的真实签名、签名后项目树外 PTY 和 DMG 门禁。
 - Windows 复验首次因默认运行时已是 Node `v25.8.1` 被 `PROBE_NODE 必须指向 Node 22` 拒绝，未进入 PTY，不记作行为失败；改用已核验 Node `22.23.4` 和新的 `pty-probe-02` 后，`release37-signing-fix-win-01` 选择 `bun-node-pty`，六项行为及双隔离全 true。随后双 exe 构建、完整布局/SHA-256 校验和项目树外发行 smoke 成功，外部六项行为全 true、`backend=bun-node-pty`。
 - 当前尚未提交推送；新 SHA 的 macOS 真实 codesign、签名后外部 PTY、DMG 与三平台 CI 仍待读取。不得把 dry-run、VM 加载器或 Windows 结果冒充 macOS 原生签名证据；不打 tag、不重发 Release，macOS 实机/GUI/真实 API 中转及 Bun 直路线仍未验收。
+
+## 2026-11-12 CI #48 macOS 签名门禁通过
+
+- 修复与文档以 `88f805d14b6d568b2d5a557b7cda46da6df924a9`（`修复 macOS 应用包签名布局`）提交并推送，Author/Committer 均为 `aaahzb <aaahzb123@gmail.com>`，提交正文为空，无共同作者或 AI 尾注；根目录 zip、JPG、`venv/` 未纳入。
+- 对应 CI #48 run `43173448220` 状态 `completed`、结论 `success`，SHA 与上述提交一致。Ubuntu job `131031961412`、Windows job `131031961431`、macOS job `131031961213` 全部成功。Windows 的真实 PTY、完整发行/项目树外 smoke、绿色单文件、生命周期和扩展步骤均为 `success`。
+- macOS 的共同测试、真实 PTY、完整发行布局与项目树外 smoke 先成功；新增“真实 `.app` 签名、签名后项目树外 PTY 与 DMG”步骤从 07:12:49 运行到 07:17:09，结论 `success`，随后 artifact 与扩展依赖/typecheck/测试/build 也全部成功。脚本使用 `set -euo pipefail`，该步骤成功要求签名函数、整包深校验、外部 PTY smoke 和 hdiutil 全部退出 0；没有以本地 dry-run 替代 Runner 门禁。
+- 当前环境无 GitHub CLI 或 API 登录令牌，原始日志 API 返回 403，Web 原始日志下载返回 404/登录要求，因此这里只记录可公开读取的 run/job/step 状态与脚本非零即失败语义，不声称已读取原始日志正文，也不摘录未取得的 `PTY_SMOKE_RESULT`。未创建 tag、未重发 Release；macOS 实机 GUI、真实 API 中转和 Bun 直路线仍未验收。

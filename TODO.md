@@ -104,7 +104,8 @@
 - [x] 严格 RED→GREEN：首轮固定旧 Bundle 非代码布局拒绝、`.app` Resources 路径解析、Darwin 发行加载器与 helper Node 路径，取得 4 项准确失败；真实 staging 测试再因模块不存在取得 1 项 RED。实现后聚焦 45/45。
 - [x] 完整本地 bridge 39 文件 437/437、启动器 8/8、extension 24 文件 180/180，两端 typecheck、扩展 production build、Node/shell 语法、CI YAML 和 `git diff --check` 通过；普通 macOS CI 已增加真实 `.app` codesign、签名后项目树外 PTY smoke 与 DMG 构建门禁。
 - [x] 项目树外 Windows 复验 `release37-signing-fix-win-01`：显式使用已核验 Node 22.23.4，`auto` 选择 `bun-node-pty`，六项行为与 CWD/原生依赖双隔离全 true；完整发行布局、SHA-256 和外部 `ccc-terminal.exe --pty-smoke` 也通过，外部六项行为全 true。
-- [ ] 以用户本人身份提交并推送 `main`，读取新 SHA 对应三平台 CI；macOS 真实 codesign、签名后外部 PTY 与 DMG 仍待 Runner 证据。不创建 tag、不重发 Release；macOS 实机 Terminal.app、真实窗口、GUI 产品交互与真实 API 中转仍未验收。
+- [x] `88f805d14b6d568b2d5a557b7cda46da6df924a9` 已以用户本人身份提交并推送 `main`，无共同作者或 AI 尾注。CI #48 run `43173448220` 三平台全绿；macOS job `131031961213` 的真实 `.app` 签名、签名后外部 PTY 与 DMG 步骤成功，artifact 与扩展步骤也成功。未登录环境的原始日志接口返回 403/404，以上云端结论按 GitHub API 的 run/job/step 状态记录，不声称已读取日志正文。
+- [ ] 不创建 tag、不重发 Release；macOS 实机 Terminal.app、真实窗口、GUI 产品交互与真实 API 中转仍未验收，Bun 直路线仍不宣称通过。
 
 ## 别名主行打开当前文件夹（2026-10-31，已完成）
 

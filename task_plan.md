@@ -92,7 +92,7 @@
 - [x] 新回归先 RED：首轮 4 项准确失败，分别覆盖旧 MacOS 非代码布局未拒绝、manifest 仍解析到 MacOS、Darwin 加载器无代码区回退、helper 使用错误 Node；真实 staging 用例随后因模块不存在再取得 1 项 RED。
 - [x] 最小实现代码/资源分离及完整布局哈希校验；保留平面发行目录兼容性。build/sign/install/CI 已同步，普通 macOS CI 将真实执行 codesign、签名后外部 PTY smoke 和 DMG。
 - [x] 本地证据：聚焦 45/45、bridge 39 文件 437/437、启动器 8/8、extension 24 文件 180/180，两端 typecheck、扩展 build、脚本语法、CI YAML 与 `git diff --check` 通过。项目树外 Windows 真实 PTY 选择 `bun-node-pty`，六项行为、双隔离、发行布局及签名修改后的发行 smoke 均通过。
-- [ ] 以用户本人身份提交推送 `main`，跟踪新 SHA 的三平台 CI；macOS 真实 codesign 仍待新 Runner 日志，不创建 tag 或 Release，不宣称 macOS 实机已验收。
+- [x] `88f805d14b6d568b2d5a557b7cda46da6df924a9` 已以用户本人身份提交推送；CI #48 run `43173448220` 三平台全绿。macOS job `131031961213` 的真实 `.app` 签名、签名后外部 PTY 与 DMG 步骤成功，后续 artifact/扩展也成功。不创建 tag 或 Release，不宣称 macOS 实机已验收；未登录环境无法下载原始日志，云端结论按 API 的 run/job/step 状态记录。
 
 ## 当前阻塞
 
