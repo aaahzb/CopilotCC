@@ -85,7 +85,15 @@
 - [x] 项目 CI 明确使用 Node 22，日志为 `node: v22.23.4`。`actions/checkout@v4` / `actions/setup-node@v4` 被强制以 Node 24 运行只是 Action 自身警告，不是项目或 PTY child 升级，也不能解释发布文件缺执行位。
 - [x] 三项回归先取得准确 RED（3 失败、8 通过）：探针暂存未 chmod、发行复制未 chmod、macOS 主机校验接受 `0644`。新增共享权限修复后，暂存在完成标记前恢复执行位，`packagePty()` 修复发行副本，`verifyNativeLayout()` 在 Darwin 主机拒绝无执行位文件；同一聚焦测试转为 11/11。
 - [x] 完整本地回归：bridge 39 文件 432/432、启动器 8/8、extension 24 文件 180/180，两端 typecheck 与扩展 production build 通过，仅有既有大 chunk 警告。项目树外 Windows 真实 PTY 仍选择 `bun-node-pty`，六项行为及 CWD/原生依赖隔离全部通过。
-- [ ] 按已获授权提交并推送执行位修复后，跟踪新 SHA 的三平台 CI，重点确认 macOS 真实 PTY、发行布局、项目树外 smoke 和扩展后续步骤。Windows 回归不能替代 macOS 原生证据；macOS Terminal.app、真实窗口、签名和产品交互仍需实机验收。不打 tag、不发布 Release。
+- [x] `34aab032cc4eb97a59605d7786e750ae84117832`（`修复 macOS PTY 辅助程序执行位`）已提交并推送，对应真实结果为 CI #45；Ubuntu、Windows 成功，但 macOS 共同测试出现新的夹具失败，不能把该提交记作三平台通过。
+
+## GitHub Actions #45 与 Darwin 测试夹具修复（2026-11-12，本地修复完成）
+
+- [x] CI #45 run `43152101342`：Ubuntu job `130963441175`、Windows job `130963441176` 成功；macOS job `130963440887` 的共同测试为 1 个文件失败、36 个通过、2 个跳过，1 项失败、427 项通过、4 项跳过。真实 PTY、发行布局、项目树外 smoke、artifact 和扩展后续步骤均未执行。
+- [x] 失败用例为 `auto 回退复用完整暂存，不重复复制或覆盖前一路线`，错误是 `ENOENT ... chmod .../prebuilds/darwin-arm64/spawn-helper`。生产暂存按真实 Darwin 包结构恢复 helper 执行位，而旧用例只创建两个最小依赖包、没有该文件；不是 `posix_spawnp` 再现，也不能据此宣称执行位修复已在 macOS 原生验证。
+- [x] 在 Windows 先只给该用例注入 `platform:"darwin", arch:"arm64"`，复现同一 `ENOENT` RED；随后仅补测试用 `spawn-helper` 文件，不让生产代码忽略缺失的原生文件。聚焦两文件 11/11 和 bridge typecheck 通过。
+- [x] 最新完整回归：bridge 39 文件 432/432、启动器 8/8、extension 24 文件 180/180，两端 typecheck 与扩展 production build 通过，仅有既有大 chunk 警告。本次只修改测试夹具与文档，生产实现不变。
+- [ ] 按已获授权提交并推送夹具修复后，跟踪新 SHA 的三平台 CI，重点确认 macOS 越过共同测试并完成真实 PTY、发行布局、项目树外 smoke 和扩展步骤。Windows 回归不能替代 macOS 原生证据；macOS Terminal.app、真实窗口、签名和产品交互仍需实机验收。不打 tag、不发布 Release。
 
 ## 别名主行打开当前文件夹（2026-10-31，已完成）
 

@@ -208,3 +208,11 @@
 - 三项新回归先 RED：Darwin 暂存 `chmod` 调用为空、macOS 发行复制 `chmod` 调用为空、模拟 Darwin host 的 `0644` 布局被错误接受，共 3 失败、8 通过。新增 `pty-native-permissions.mjs`，暂存在完成标记前修复目标副本，发行打包复用同一函数，布局校验在 Darwin host 要求任一执行位；同命令转为 2 文件 11/11，四个 `.mjs` 的 `node --check` 通过。
 - 完整回归为 bridge 39 文件 432/432、启动器 8/8、extension 24 文件 180/180，两端 typecheck 和扩展 production build 通过，只有既有大 chunk 警告。启动器独立命令首次误指仓库根目录、因模块不存在未执行；改用实际 `bridge/scripts/run-portable-launcher-tests.mjs` 后 8/8，不记作产品测试失败。
 - 项目外 Windows 真实探针 `darwin-permission-fix-win-20261112-01` 由 Node 22.23.4 启动，选择 `bun-node-pty`，初始尺寸、输入、连续 tick、中文、resize、exit 7 与双隔离全 true。该结果只证明 Darwin 分支未破坏 Windows；新提交的 macOS Runner 仍是必需证据，实机 Terminal.app、窗口、签名和产品交互未验收，不打 tag、不发布 Release。
+
+## 2026-11-12 CI #45 与 Darwin 测试夹具修复
+
+- `34aab032cc4eb97a59605d7786e750ae84117832`（`修复 macOS PTY 辅助程序执行位`）已提交并推送。CI #45 run `43152101342` 总结论为 `failure`：Ubuntu job `130963441175`、Windows job `130963441176` 成功，macOS job `130963440887` 失败。Windows 的共同测试、真实 PTY、完整发行布局、项目树外 smoke、绿色单文件、启动器、生命周期与扩展步骤均逐项为 `success`。
+- macOS 共同测试为 1 个文件失败、36 个通过、2 个跳过，1 项失败、427 项通过、4 项跳过。失败项是 `tests/pty-probe-dependencies.test.ts` 的“auto 回退复用完整暂存”，在 `ensureDarwinSpawnHelperExecutable()` 对 `prebuilds/darwin-arm64/spawn-helper` 执行 chmod 时 `ENOENT`；真实 PTY、发行布局、项目树外 smoke、artifact 与扩展步骤均 skipped，因此这次没有原生执行位修复通过或失败的结论。
+- 根因是旧测试只创建 `node-pty/package.json`、`LICENSE` 和 `node-addon-api` 最小包，而 Darwin 生产逻辑按真实包结构要求 helper 存在。先只向该用例注入 `platform:"darwin", arch:"arm64"`，Windows 本地得到有效 RED：同一 `ENOENT`，该文件 1 失败、2 通过；再只补 `spawn-helper` 测试文件，生产文件未改，未允许缺失原生文件被静默忽略。
+- 补夹具后聚焦 `pty-probe-dependencies.test.ts` 与 `native-layout.test.ts` 两文件 11/11，bridge typecheck 通过。最新完整回归为 bridge 39 文件 432/432、启动器 8/8、extension 24 文件 180/180，两端 typecheck 和扩展 production build 通过，只有既有大 chunk 警告。
+- 当前待提交范围只有上述测试夹具与五份同步文档；根目录 zip、JPG、`venv/` 保持未跟踪。提交推送后必须读取新 SHA 对应的新 CI，不能继续沿用 #45；重点核实 macOS 共同测试、至少一条真实 PTY 路线六项行为、发行执行位、项目树外 smoke 和扩展步骤。即便全绿，macOS 实机 Terminal.app、真实窗口、签名和产品交互仍未验收，不打 tag、不发布 Release。

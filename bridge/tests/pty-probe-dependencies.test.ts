@@ -30,7 +30,12 @@ afterEach(() => {
 describe("PTY 探针依赖暂存", () => {
   it("auto 回退复用完整暂存，不重复复制或覆盖前一路线", () => {
     const f = fixture();
-    stagePtyDependencies(f.bridgeRoot, f.modules);
+    const sourceHelper = path.join(
+      f.bridgeRoot, "node_modules", "node-pty", "prebuilds", "darwin-arm64", "spawn-helper",
+    );
+    fs.mkdirSync(path.dirname(sourceHelper), { recursive: true });
+    fs.writeFileSync(sourceHelper, "mach-o fixture\n", "utf8");
+    stagePtyDependencies(f.bridgeRoot, f.modules, { platform: "darwin", arch: "arm64" });
     expect(fs.readFileSync(path.join(f.modules, "node-pty", "LICENSE"), "utf8"))
       .toBe("node-pty first route\n");
 

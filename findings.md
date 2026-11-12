@@ -152,3 +152,10 @@
 - GitHub 日志同时明确 `node-version: 22`、`node: v22.23.4`。Node 24 警告指 `actions/checkout@v4` 和 `actions/setup-node@v4` 自身原目标 Node 20 被强制升级，不改变项目测试或 PTY child 的 Node 22，不能用来掩盖确定性的权限缺陷。
 - 三项测试先分别证明旧实现没有暂存 chmod、没有发行 chmod、没有拒绝 `0644`，共 3 失败、8 通过。共享 `ensureDarwinSpawnHelperExecutable()` 统一目标路径和 `0755`；暂存必须先成功再写完成标记，发行打包使用同一函数，`verifyNativeLayout()` 仅在 Darwin host 校验 Darwin 布局的执行位，避免把 Windows `stat` 当 POSIX 证据。测试注入只提供确定性调用/mode，不冒充 macOS 原生执行。
 - 聚焦 11/11、bridge 432/432、启动器 8/8、extension 180/180、两端 typecheck/build 和 Windows 真实 PTY 均已通过。新 macOS CI 仍需独立证明至少一条路线六项行为、发行布局及执行位、项目树外 smoke 和扩展后续步骤；即便全绿，也不等于 macOS 实机产品验收。
+
+## 2026-11-12 CI #45 与 Darwin 测试夹具发现
+
+- `34aab03` 对应 CI #45 run `43152101342`。Ubuntu、Windows 成功；macOS 共同测试 1 个文件失败、36 个通过、2 个跳过，1 项失败、427 项通过、4 项跳过。失败发生在真实 PTY 之前，后续原生、发行、外部 smoke 与扩展步骤均 skipped，所以 #45 既没有证明 `spawn-helper` 权限修复有效，也没有再次观察到 `posix_spawnp`。
+- 唯一失败堆栈为 `ensureDarwinSpawnHelperExecutable()` → `stagePtyDependencies()` → “auto 回退复用完整暂存”用例，`chmod .../prebuilds/darwin-arm64/spawn-helper` 报 `ENOENT`。真实 `node-pty` Darwin 包必须有该文件；旧测试的最小包夹具没有它。生产代码应继续拒绝缺失原生文件，正确修复是补夹具而不是跳过 chmod。
+- 在 Windows 先只给旧用例注入 Darwin arm64，复现同一 `ENOENT`，证明测试能捕获 #45 的夹具缺陷；再添加最小 `spawn-helper` 文件，聚焦两文件 11/11。该 RED→GREEN 验证的是暂存测试准备与复用逻辑，不冒充 macOS 权限位或原生执行证据。
+- 最新完整本地回归为 bridge 432/432、启动器 8/8、extension 180/180，两端 typecheck/build 通过。本次生产实现不变；下一轮 macOS Runner 仍需独立证明共同测试、真实 PTY 六项行为、发行布局及执行位、项目树外 smoke 和扩展后续步骤，实机产品验收边界不变。

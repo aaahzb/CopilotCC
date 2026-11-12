@@ -210,6 +210,10 @@ extension/              # Chrome MV3 扩展（WXT + React）
 
 三项权限回归先以 3 失败、8 通过取得 RED，实现后聚焦 11/11；完整 bridge 432/432、启动器 8/8、extension 180/180、两端 typecheck/build 和项目树外 Windows 真实 PTY 均通过。CI 中的 Node 24 警告只属于 checkout/setup-node Action 自身，项目与 PTY child 仍使用 Node 22.23.4。新 SHA 的 macOS Runner 必须另行证明真实 PTY、发行布局、项目树外 smoke 和扩展步骤；CI 通过也不替代 macOS 实机 Terminal.app、真实窗口、签名及产品交互验收。仍未打 tag 或发布 Release。
 
+`34aab032cc4eb97a59605d7786e750ae84117832` 对应 CI #45（run `43152101342`）：Ubuntu、Windows 成功，macOS 共同测试 1 个文件失败、36 个通过、2 个跳过，1 项失败、427 项通过、4 项跳过。失败发生在“auto 回退复用完整暂存”用例，旧夹具只有最小依赖包，缺少生产 Darwin 分支按真实包结构要求存在的 `prebuilds/darwin-arm64/spawn-helper`，因此 chmod 报 `ENOENT`；真实 PTY、发行布局、项目树外 smoke、artifact 与扩展后续步骤均未执行。这不是原生 `posix_spawnp` 的复现，也不能作为执行位修复已通过 macOS 原生验证的证据。
+
+该夹具修复先只注入 Darwin arm64，在 Windows 复现同一 `ENOENT` RED，再仅补最小 helper 文件，不放宽生产缺失文件校验。聚焦两文件 11/11；最新完整 bridge 432/432、启动器 8/8、extension 180/180、两端 typecheck 和扩展 production build 均通过，仅有既有大 chunk 警告。新提交的 macOS Runner 必须重新证明共同测试、至少一条 PTY 路线六项行为、发行执行位与项目树外 smoke；即使 CI 全绿，macOS 实机 Terminal.app、真实窗口、签名及产品交互仍未验收，仍未打 tag 或发布 Release。
+
 ## 许可证
 
 [MIT](../LICENSE)
