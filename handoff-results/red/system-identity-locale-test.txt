@@ -1,0 +1,48 @@
+
+> ccc-bridge@0.1.0 test
+> npm run sync:protocol && vitest run --run tests/process-identity.test.ts
+
+
+> ccc-bridge@0.1.0 sync:protocol
+> node ../scripts/sync-protocol.mjs
+
+已同步 → bridge/src/protocol.ts
+已同步 → extension/src/lib/protocol.ts
+已同步 → bridge/src/pairing.ts
+已同步 → extension/src/lib/pairing.ts
+已同步 → bridge/src/upload-note.ts
+已同步 → extension/src/lib/upload-note.ts
+
+ RUN  v4.1.12 <HOME>/Documents/CCC_Dev/CopilotCC-macos-debug-handoff-20261114/bridge
+
+ ❯ tests/process-identity.test.ts (4 tests | 1 failed) 7ms
+     × 真实 macOS ps 在中文 Locale 下仍返回当前进程身份 5ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  tests/process-identity.test.ts > 进程身份 > 真实 macOS ps 在中文 Locale 下仍返回当前进程身份
+AssertionError: expected null to match object { pid: 27851 }
+
+- Expected:
+{
+  "pid": 27851,
+}
+
++ Received:
+null
+
+ ❯ tests/process-identity.test.ts:47:22
+     45|       process.env.LANG = "zh_CN.UTF-8";
+     46|       const actual = await readProcessIdentity(process.pid, "darwin");
+     47|       expect(actual).toMatchObject({ pid: process.pid });
+       |                      ^
+     48|       expect(actual?.executable).toBeTruthy();
+     49|       expect(Number.isFinite(Date.parse(actual?.startedAt ?? ""))).toB…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 3 passed (4)
+   Start at  17:45:53
+   Duration  83ms (transform 12ms, setup 0ms, import 17ms, tests 7ms, environment 0ms)

@@ -1,0 +1,76 @@
+{
+  "platform": "darwin",
+  "arch": "arm64",
+  "locale": "zh_CN.UTF-8",
+  "appOutsideProject": true,
+  "realApiCalled": false,
+  "clipboardSeededBeforeAnyRead": true,
+  "first": {
+    "window": {
+      "popup": true,
+      "visible": true,
+      "xterm": true,
+      "backend": "pty",
+      "activeHook": true
+    },
+    "asciiInputOutput": true,
+    "chineseInputOutput": true,
+    "realSelectionCopy": true,
+    "realMultilineChinesePaste": true,
+    "ptyResize": {
+      "before": [
+        129,
+        34
+      ],
+      "after": [
+        150,
+        41
+      ],
+      "resizeSignalSeen": true
+    },
+    "continuousOutput": true,
+    "realWheelScroll": {
+      "up": true,
+      "down": true
+    },
+    "hookEventSeen": true,
+    "wsObservedTypes": [
+      "terminal.attach",
+      "terminal.attached",
+      "terminal.input",
+      "terminal.opened",
+      "terminal.output",
+      "terminal.resize",
+      "terminal.state"
+    ],
+    "wsOpenAttachProvenByAttachedStateAndIo": true,
+    "closeWindowProcessStopped": true,
+    "closeWindowLeaseReleased": true
+  },
+  "refresh": {},
+  "bridgeShutdown": {},
+  "cleanup": {
+    "chromeClosed": true,
+    "bridgeStopped": true,
+    "rootRemoved": true,
+    "allOwnedCliStopped": true,
+    "bridgeExit": {
+      "code": 0,
+      "signal": null
+    }
+  },
+  "nativePtyBackend": "node-helper",
+  "chromeProduct": "Chrome/157.0.8103.39",
+  "extensionLoaded": true,
+  "settingsContext": {
+    "chrome": "object",
+    "storage": "object",
+    "local": "object",
+    "set": "function"
+  },
+  "actualSidepanelOpened": true,
+  "fatalCode": "XTERM_ATTACH_TIMEOUT",
+  "failedStage": "REFRESH_CLEANUP",
+  "evaluationDiagnostic": null,
+  "ok": false
+}

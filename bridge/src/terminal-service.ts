@@ -44,6 +44,8 @@ export interface TerminalServiceDeps {
   system: TerminalRuntimeFactory;
   /** 内嵌 PTY 运行时；缺省时仅 embedded 返回 PTY_UNAVAILABLE，系统终端与聊天不受影响 */
   embedded?: (context: TerminalStartContext) => Promise<EmbeddedTerminalHandle>;
+  /** 桥接整体退出时关闭共享 PTY backend；单次 lease 清理不得调用 */
+  embeddedClose?: () => Promise<void>;
   /** 身份已完全匹配后清理遗留内嵌 PTY，不重新打开页面；绝不用于 unknown 身份 */
   recoverEmbedded?(record: TerminalLeaseRecord): Promise<void>;
   /** 接管已有系统进程的退出文件，不重新启动终端；缺省时身份匹配也只能保持 unknown */
@@ -204,11 +206,12 @@ export class TerminalService {
     this.embeddedHandle?.session.detach(ws);
   }
 
-  /** @returns 关闭当前 embedded 后端和所有重连计时器的 Promise */
+  /** @returns 关闭当前 embedded 句柄及桥接级共享 backend 的 Promise */
   async closeEmbedded(): Promise<void> {
     const handle = this.embeddedHandle;
     this.embeddedHandle = null;
     await handle?.close();
+    await this.deps.embeddedClose?.();
   }
 
   /** @param leaseId 当前 embedded lease @returns 对应会话，否则抛出固定错误 */

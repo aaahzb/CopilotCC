@@ -1,0 +1,15 @@
+{
+  "cleanup": {
+    "chromeClosed": true,
+    "profileRemoved": true
+  },
+  "extensionLoadResult": {
+    "id": "<redacted-id>"
+  },
+  "workerStop": {
+    "success": true
+  },
+  "workerColdBeforeMessage": true,
+  "fatalError": "<redacted-diagnostic>",
+  "chromeLogMatches": []
+}

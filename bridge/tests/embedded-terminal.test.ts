@@ -77,7 +77,7 @@ describe("内嵌终端原生路线装配", () => {
 });
 
 describe("EmbeddedTerminalAdapter 正常关闭", () => {
-  it("等待真实退出和异步退出清理完成后才关闭 backend", async () => {
+  it("等待真实退出和异步退出清理，句柄关窗保留共享 backend，adapter 最终关闭", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ccc-embedded-close-"));
     tempDirs.push(dir);
     let emitExit: ((event: PtyExitEvent) => void) | undefined;
@@ -135,11 +135,68 @@ describe("EmbeddedTerminalAdapter 正常关闭", () => {
     await closing;
     expect(cleanupFinished).toBe(true);
     expect(closed).toBe(true);
+    expect(backend.close).not.toHaveBeenCalled();
+    await adapter.close();
     expect(backend.close).toHaveBeenCalledTimes(1);
   });
-});
+  it("单次关窗不关闭共享 backend，同一 adapter 可再次启动并最终统一关闭", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ccc-embedded-reopen-"));
+    tempDirs.push(dir);
+    const ptys: Array<PtyProcess & { kill: ReturnType<typeof vi.fn<() => Promise<void>>> }> = [];
+    const exitCallbacks: Array<((event: PtyExitEvent) => void) | undefined> = [];
+    let backendClosed = false;
+    const backend = {
+      kind: "node-helper" as const,
+      spawn: vi.fn(async () => {
+        if (backendClosed) throw new Error("PTY_BACKEND_CLOSED");
+        const index = ptys.length;
+        const pty = {
+          pid: 4321 + index,
+          onData: vi.fn(),
+          onExit: vi.fn((callback: (event: PtyExitEvent) => void) => { exitCallbacks[index] = callback; }),
+          write: vi.fn(),
+          resize: vi.fn(),
+          kill: vi.fn(async () => {}),
+        };
+        ptys.push(pty);
+        return pty;
+      }),
+      close: vi.fn(async () => { backendClosed = true; }),
+    };
+    const adapter = new EmbeddedTerminalAdapter({
+      backend,
+      probeVersion: async () => "2.1.316",
+      childCommand: { executable: "C:/bridge/ccc-terminal.exe", prefixArgs: [] },
+      readIdentity: async () => null,
+    });
+    const context = {
+      leaseId: LEASE_ID,
+      hookToken: "H".repeat(43),
+      mode: "embedded" as const,
+      folder: dir,
+      initialSessionId: LEASE_ID,
+      resumeSessionId: LEASE_ID,
+      cliPath: path.join(dir, "fake-claude.exe"),
+      port: 19280,
+      privateDir: path.join(dir, "terminal"),
+    };
+    const closeHandle = async (handle: Awaited<ReturnType<EmbeddedTerminalAdapter["start"]>>, index: number) => {
+      const closing = handle.close();
+      await vi.waitFor(() => expect(ptys[index]!.kill).toHaveBeenCalledTimes(1));
+      exitCallbacks[index]!({ exitCode: 0, signal: null });
+      await closing;
+    };
 
-describe("EmbeddedSession 连接所有权与重放", () => {
+    await closeHandle(await adapter.start(context), 0);
+    // RED：旧实现第一次 close 已关闭共享 backend，这里直接抛 PTY_BACKEND_CLOSED。
+    await closeHandle(await adapter.start(context), 1);
+    expect(backend.spawn).toHaveBeenCalledTimes(2);
+    expect(backend.close).not.toHaveBeenCalled();
+    await adapter.close();
+    expect(backend.close).toHaveBeenCalledTimes(1);
+    expect(backendClosed).toBe(true);
+  });
+
   it("初次 attach 前只保留待绑定连接，缓冲输出不发送；attach 后按序重放", () => {
     const f = session();
     const first = owner();

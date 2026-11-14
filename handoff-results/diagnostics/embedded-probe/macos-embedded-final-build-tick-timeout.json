@@ -1,0 +1,58 @@
+{
+  "platform": "darwin",
+  "arch": "arm64",
+  "locale": "zh_CN.UTF-8",
+  "appOutsideProject": true,
+  "realApiCalled": false,
+  "clipboardSeededBeforeAnyRead": true,
+  "first": {
+    "window": {
+      "popup": true,
+      "visible": true,
+      "xterm": true,
+      "backend": "pty",
+      "activeHook": true
+    },
+    "asciiInputOutput": true,
+    "chineseInputOutput": true,
+    "realSelectionCopy": true,
+    "realMultilineChinesePaste": true,
+    "ptyResize": {
+      "before": [
+        129,
+        34
+      ],
+      "after": [
+        150,
+        41
+      ],
+      "resizeSignalSeen": true
+    }
+  },
+  "refresh": {},
+  "bridgeShutdown": {},
+  "cleanup": {
+    "chromeClosed": true,
+    "bridgeStopped": true,
+    "rootRemoved": true,
+    "allOwnedCliStopped": true,
+    "bridgeExit": {
+      "code": 0,
+      "signal": null
+    }
+  },
+  "nativePtyBackend": "node-helper",
+  "chromeProduct": "Chrome/157.0.8103.39",
+  "extensionLoaded": true,
+  "settingsContext": {
+    "chrome": "object",
+    "storage": "object",
+    "local": "object",
+    "set": "function"
+  },
+  "actualSidepanelOpened": true,
+  "fatalCode": "CONTINUOUS_TICK_OUTPUT_TIMEOUT",
+  "failedStage": "CONTINUOUS_OUTPUT_AND_WHEEL",
+  "evaluationDiagnostic": null,
+  "ok": false
+}

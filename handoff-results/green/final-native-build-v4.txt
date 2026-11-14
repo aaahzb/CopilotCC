@@ -1,0 +1,9 @@
+  [42ms]  bundle  73 modules
+ [141ms] compile  <HOME>/Documents/CCC_Dev/CopilotCC-macos-debug-handoff-20261114/bridge/dist/ccc-bridge-darwin-arm64/ccc-bridge
+Bundled 4 modules in 3ms
+
+  helper.cjs  8.84 KB  (entry point)
+
+✔ dist/ccc-bridge-darwin-arm64（PTY node-helper，原生布局与 SHA-256 已校验）
+
+完成。macOS 打包下一步（仅 macOS）：bash scripts/build-mac-app.sh  # 组装 .app + ad-hoc 预签 + dmg

@@ -1,0 +1,41 @@
+
+> ccc-bridge@0.1.0 test
+> npm run sync:protocol && vitest run tests/embedded-terminal.test.ts
+
+
+> ccc-bridge@0.1.0 sync:protocol
+> node ../scripts/sync-protocol.mjs
+
+已同步 → bridge/src/protocol.ts
+已同步 → extension/src/lib/protocol.ts
+已同步 → bridge/src/pairing.ts
+已同步 → extension/src/lib/pairing.ts
+已同步 → bridge/src/upload-note.ts
+已同步 → extension/src/lib/upload-note.ts
+
+ RUN  v4.1.12 <HOME>/Documents/CCC_Dev/CopilotCC-macos-debug-handoff-20261114/bridge
+
+ ❯ tests/embedded-terminal.test.ts (10 tests | 1 failed) 11ms
+     × 单次关窗不关闭共享 backend，同一 adapter 可再次启动并最终统一关闭 2ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  tests/embedded-terminal.test.ts > EmbeddedTerminalAdapter 正常关闭 > 单次关窗不关闭共享 backend，同一 adapter 可再次启动并最终统一关闭
+Error: PTY_BACKEND_CLOSED
+ ❯ Object.<anonymous> tests/embedded-terminal.test.ts:149:34
+    147|       kind: "node-helper" as const,
+    148|       spawn: vi.fn(async () => {
+    149|         if (backendClosed) throw new Error("PTY_BACKEND_CLOSED");
+       |                                  ^
+    150|         const index = ptys.length;
+    151|         const pty = {
+ ❯ EmbeddedTerminalAdapter.start src/embedded-terminal.ts:277:41
+ ❯ tests/embedded-terminal.test.ts:190:23
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 9 passed (10)
+   Start at  19:19:31
+   Duration  180ms (transform 54ms, setup 0ms, import 108ms, tests 11ms, environment 0ms)

@@ -310,7 +310,7 @@ export class EmbeddedTerminalAdapter {
         await session.close();
         await exited; // kill 只发请求；node-helper 必须存活到真实 exit 帧到达。
         await exitCleanup;
-        await this.deps.backend.close();
+        // backend 由 adapter 持有并可启动后续 lease；单次关窗不能关闭共享 helper。
       },
     };
     pty.onData((data) => session.append(data));
@@ -326,6 +326,11 @@ export class EmbeddedTerminalAdapter {
       notifyExited();
     });
     return handle;
+  }
+
+  /** 桥接整体退出时关闭共享 backend；普通 lease 的 handle.close 不调用此方法。 */
+  async close(): Promise<void> {
+    await this.deps.backend.close();
   }
 
   /**

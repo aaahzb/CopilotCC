@@ -80,7 +80,13 @@ export async function readProcessIdentity(
     if (platform === "darwin") {
       const { stdout } = await execFileAsync("/bin/ps", [
         "-p", String(pid), "-o", "comm=", "-o", "lstart=",
-      ], { timeout: 3000, maxBuffer: 8192, windowsHide: true });
+      ], {
+        timeout: 3000,
+        maxBuffer: 8192,
+        windowsHide: true,
+        // lstart 会跟随系统区域设置本地化；固定子进程 Locale，保留可严格解析的稳定格式。
+        env: { ...process.env, LC_ALL: "C" },
+      });
       return parseMacProcessIdentity(stdout, pid);
     }
   } catch {

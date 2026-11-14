@@ -12,7 +12,7 @@ import { claimInstance, writeRuntime, releaseRuntimeOnExit } from "./runtime";
 import { encodePairing } from "./pairing";
 import { type ServerMessage } from "./protocol";
 import { runTerminalHookHelper } from "./terminal-hook-helper";
-import { runTerminalChild } from "./terminal-child";
+import { runTerminalChild, terminalChildErrorCode } from "./terminal-child";
 import { SystemTerminalAdapter } from "./system-terminal";
 import { createEmbeddedTerminalAdapter } from "./embedded-terminal";
 import { runPtySmoke } from "./pty-smoke";
@@ -40,6 +40,7 @@ async function cmdStart(): Promise<void> {
       privateDir: path.join(configDir(), "terminal"),
       system: (context) => systemTerminal.start(context),
       embedded: (context) => embeddedTerminal.start(context),
+      closeEmbedded: () => embeddedTerminal.close(),
       recoverEmbedded: (record) => embeddedTerminal.recover(record),
       recover: (record) => systemTerminal.recover(record),
     },
@@ -153,8 +154,8 @@ if (cmd === "--pty-smoke") {
     console.error("私有终端请求路径非法");
     process.exitCode = 1;
   } else {
-    runTerminalChild(requestFile).catch(() => {
-      console.error("私有终端包装进程失败");
+    runTerminalChild(requestFile).catch((error: unknown) => {
+      console.error(`私有终端包装进程失败（${terminalChildErrorCode(error)}）`);
       process.exitCode = 1;
     });
   }

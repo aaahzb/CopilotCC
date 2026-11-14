@@ -1,0 +1,33 @@
+[证据恢复说明]
+本文件依据本轮会话工具记录恢复；原 RED/GREEN 日志在归档到同一目录时同名覆盖。
+这不是重新运行的测试，也不是最终修复证据。该 Hook stdin 假设后来经真实应用 A/B 否定，生产修改和临时测试均已撤回。
+以下保留原始 RED 输出，用户主目录统一替换为 <HOME>。
+
+ RUN  v4.1.12 <HOME>/Documents/CCC_Dev/CopilotCC-macos-debug-handoff-20261114/bridge
+
+ ❯ tests/terminal-hooks.test.ts (14 tests | 1 failed) 23ms
+     × Hook body 通过 data/end 事件完成，不依赖运行时的 stdin async iterator 2ms
+
+⎯⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  tests/terminal-hooks.test.ts > 终端 Hook 安全 > Hook body 通过 data/end 事件完成，不依赖运行时的 stdin async iterator
+AssertionError: promise rejected "TypeError: input is not async iterable" instead of resolving
+ ❯ tests/terminal-hooks.test.ts:113:38
+    111|       input.emit("end");
+    112|     });
+    113|     await expect(readHookJson(input)).resolves.toBe('{"event":true}');
+       |                                      ^
+    114|   });
+    115|
+
+Caused by: TypeError: input is not async iterable
+ ❯ readHookJson src/terminal-hooks.ts:168:29
+ ❯ tests/terminal-hooks.test.ts:113:18
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 13 passed (14)
+   Start at  18:40:14
+   Duration  178ms (transform 41ms, setup 0ms, import 94ms, tests 23ms, environment 0ms)

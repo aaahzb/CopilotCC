@@ -1,0 +1,22 @@
+
+> ccc-bridge@0.1.0 test
+> npm run sync:protocol && vitest run --run tests/terminal-child.test.ts tests/process-identity.test.ts
+
+
+> ccc-bridge@0.1.0 sync:protocol
+> node ../scripts/sync-protocol.mjs
+
+已同步 → bridge/src/protocol.ts
+已同步 → extension/src/lib/protocol.ts
+已同步 → bridge/src/pairing.ts
+已同步 → extension/src/lib/pairing.ts
+已同步 → bridge/src/upload-note.ts
+已同步 → extension/src/lib/upload-note.ts
+
+ RUN  v4.1.12 <HOME>/Documents/CCC_Dev/CopilotCC-macos-debug-handoff-20261114/bridge
+
+
+ Test Files  2 passed (2)
+      Tests  12 passed (12)
+   Start at  18:02:55
+   Duration  614ms (transform 33ms, setup 0ms, import 47ms, tests 535ms, environment 0ms)

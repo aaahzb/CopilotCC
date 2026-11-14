@@ -1,0 +1,34 @@
+{
+  "platform": "darwin",
+  "arch": "arm64",
+  "locale": "zh_CN.UTF-8",
+  "appOutsideProject": true,
+  "realApiCalled": false,
+  "clipboardSeededBeforeAnyRead": false,
+  "first": {},
+  "refresh": {},
+  "bridgeShutdown": {},
+  "cleanup": {
+    "chromeClosed": true,
+    "bridgeStopped": true,
+    "rootRemoved": true,
+    "allOwnedCliStopped": true,
+    "bridgeExit": {
+      "code": 0,
+      "signal": null
+    }
+  },
+  "chromeProduct": "Chrome/157.0.8103.39",
+  "extensionLoaded": true,
+  "settingsContext": {
+    "chrome": "object",
+    "storage": "object",
+    "local": "object",
+    "set": "function"
+  },
+  "actualSidepanelOpened": true,
+  "fatalCode": "EMBEDDED_BACKEND_NOT_NODE_HELPER",
+  "failedStage": "FIRST_EMBEDDED_OPEN",
+  "evaluationDiagnostic": null,
+  "ok": false
+}

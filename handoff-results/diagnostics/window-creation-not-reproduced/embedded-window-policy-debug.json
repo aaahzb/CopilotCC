@@ -1,0 +1,47 @@
+{
+  "cleanup": {
+    "chromeClosed": true,
+    "profileRemoved": true
+  },
+  "sidepanelDebug": {
+    "href": "<redacted-url>",
+    "readyState": "complete",
+    "title": "chrome-extension://<extension-or-target-id>/sidepanel.html",
+    "bodyText": "<redacted-diagnostic>",
+    "chromeType": "object",
+    "runtimeType": "undefined"
+  },
+  "targetsAtFailure": [
+    {
+      "type": "page",
+      "url": "chrome-extension://<extension-id>/sidepanel.html"
+    },
+    {
+      "type": "page",
+      "url": "about:blank"
+    },
+    {
+      "type": "browser_ui",
+      "url": "<redacted-url>"
+    },
+    {
+      "type": "service_worker",
+      "url": "chrome-extension://<extension-id>/thunk.js"
+    },
+    {
+      "type": "service_worker",
+      "url": "chrome-extension://<extension-id>/background.js"
+    },
+    {
+      "type": "service_worker",
+      "url": "chrome-extension://<extension-id>/service_worker.js"
+    }
+  ],
+  "relevantPolicies": [],
+  "extensionsPage": {
+    "body": "<redacted-diagnostic>",
+    "manager": " "
+  },
+  "fatalError": "<redacted-diagnostic>",
+  "chromeLogMatches": []
+}

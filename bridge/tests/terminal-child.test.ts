@@ -1,10 +1,10 @@
 import { EventEmitter } from "node:events";
-import type { ChildProcess } from "node:child_process";
+import { spawnSync, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { runTerminalChild, type TerminalChildRequest } from "../src/terminal-child";
+import { runTerminalChild, terminalChildErrorCode, type TerminalChildRequest } from "../src/terminal-child";
 
 const LEASE_ID = "33333333-3333-4333-8333-333333333333";
 const tempDirs: string[] = [];
@@ -125,5 +125,35 @@ describe("runTerminalChild", () => {
       identity: async () => ({ pid: 1, executable: "x", startedAt: "2026-11-10T08:00:00.000Z" }),
     })).rejects.toThrow("TERMINAL_CHILD_REQUEST");
     expect(spawnImpl.mock.calls.length).toBe(0);
+  });
+
+  it("脱敏诊断保留固定与系统错误码，但不暴露原始异常正文", () => {
+    expect(terminalChildErrorCode(new Error("TERMINAL_CHILD_IDENTITY"))).toBe("TERMINAL_CHILD_IDENTITY");
+    const io = Object.assign(new Error("ENOENT: /private/request/token-content"), { code: "ENOENT" });
+    expect(terminalChildErrorCode(io)).toBe("ENOENT");
+    expect(terminalChildErrorCode(new Error("token=secret /private/request.json"))).toBe("TERMINAL_CHILD_UNKNOWN");
+  });
+
+  it.each(["src/index.ts", "src/tray.ts"])("%s 保留固定错误码且不泄露私有请求路径", (entry) => {
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), "ccc-terminal-entry-"));
+    tempDirs.push(work);
+    const directory = path.join(work, "terminal");
+    fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+    const requestFile = path.join(directory, `${LEASE_ID}.request.json`);
+    fs.writeFileSync(requestFile, "{invalid-private-json", { encoding: "utf8", mode: 0o600 });
+    const result = spawnSync(process.execPath, [
+      path.resolve("node_modules", "tsx", "dist", "cli.mjs"),
+      path.resolve(entry), "--terminal-child", requestFile,
+    ], {
+      cwd: path.resolve("."),
+      env: { ...process.env, CCC_BRIDGE_HOME: work },
+      encoding: "utf8",
+      timeout: 15_000,
+      windowsHide: true,
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("TERMINAL_CHILD_REQUEST");
+    expect(result.stderr).not.toContain(requestFile);
+    expect(result.stderr).not.toContain("invalid-private-json");
   });
 });

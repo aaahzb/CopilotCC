@@ -1,0 +1,49 @@
+
+> ccc-bridge@0.1.0 test
+> npm run sync:protocol && vitest run --run tests/terminal-child.test.ts
+
+
+> ccc-bridge@0.1.0 sync:protocol
+> node ../scripts/sync-protocol.mjs
+
+已同步 → bridge/src/protocol.ts
+已同步 → extension/src/lib/protocol.ts
+已同步 → bridge/src/pairing.ts
+已同步 → extension/src/lib/pairing.ts
+已同步 → bridge/src/upload-note.ts
+已同步 → extension/src/lib/upload-note.ts
+
+ RUN  v4.1.12 <HOME>/Documents/CCC_Dev/CopilotCC-macos-debug-handoff-20261114/bridge
+
+ ❯ tests/terminal-child.test.ts (7 tests | 2 failed) 626ms
+     × src/index.ts 保留固定错误码且不泄露私有请求路径 265ms
+     × src/tray.ts 保留固定错误码且不泄露私有请求路径 186ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  tests/terminal-child.test.ts > runTerminalChild > src/index.ts 保留固定错误码且不泄露私有请求路径
+ FAIL  tests/terminal-child.test.ts > runTerminalChild > src/tray.ts 保留固定错误码且不泄露私有请求路径
+AssertionError: expected '私有终端包装进程失败\n' to contain 'TERMINAL_CHILD_REQUEST'
+
+- Expected
++ Received
+
+- TERMINAL_CHILD_REQUEST
++ 私有终端包装进程失败
++
+
+ ❯ tests/terminal-child.test.ts:148:27
+    146|     });
+    147|     expect(result.status).toBe(1);
+    148|     expect(result.stderr).toContain("TERMINAL_CHILD_REQUEST");
+       |                           ^
+    149|     expect(result.stderr).not.toContain(requestFile);
+    150|     expect(result.stderr).not.toContain("invalid-private-json");
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 5 passed (7)
+   Start at  18:02:04
+   Duration  708ms (transform 20ms, setup 0ms, import 26ms, tests 626ms, environment 0ms)

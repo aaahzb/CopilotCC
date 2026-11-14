@@ -24,7 +24,7 @@ Chrome 侧边栏(React) ┐
 - 常驻 `TranscriptWatcher` 以 250ms 防抖和 2 秒对账发现转录增删改；只有 lease 当前 sessionId 才生成带单调 revision 的 `session.mirror.data`，普通外部新会话只刷新列表。
 - Windows 系统终端由私有包装进程记录身份和退出文件。GUI 启动器退出不等于 Claude 退出；重启恢复必须核对 PID + executable + startedAt，unknown 只允许人工解除。启动状态等待上限为 20 秒；包装进程先写 status，只有桥接接管 lease 并写入 `.start` 后才允许启动真实 CLI，最终失败写 `.cancel`，避免迟到窗口失去 lease 后仍启动交互进程。
 - Windows 发行目录必须同时包含 `ccc-bridge.exe`（GUI subsystem=2，托盘主程序）和 `ccc-terminal.exe`（Console subsystem=3，`--terminal-child` / `--terminal-hook`）。不要把 Console 包装改回 GUI exe，也不要通过修改发行 PE 头规避子系统问题。
-- macOS 使用 Terminal.app 的启动代码与 CI 构建已覆盖，但尚未在 macOS arm64 真机执行同等的窗口、Hook 会话跟随、退出和重启恢复验收，不能标为已真实验收。
+- macOS 使用 Terminal.app。2026-11-14 的 arm64 实机已复现原始“私有终端包装进程失败”：中文 Locale 下 `/bin/ps` 的 `lstart` 被本地化，严格身份解析返回 `null`，最终报 `TERMINAL_CHILD_IDENTITY`。最小修复只对 `ps` 子进程固定 `LC_ALL=C`，不放宽 PID + executable + startedAt 身份校验。最终 v4 已通过真实窗口、身份、Hook 会话跟随、ASCII/中文、退出与定向清理；真实 Claude Code CLI 2.1.325 只访问本机假上游。原始插件窗口创建故障仍未复现，交接总状态与范围见 [RETURN-REPORT](../RETURN-REPORT.md)。
 - 私有文件位于 `<CCC_BRIDGE_HOME>/terminal/`：`system-lease.json` 保存当前系统 lease，`<leaseId>.request.json` / `.settings.json` / `.hook-token` / `.status.json` / `.start` / `.cancel` / `.exit.json` / `.stop` 分别用于启动请求、Hook 配置、私有 token、包装身份、启动准许、启动取消、真实退出和停止请求。公开 WS 状态不得包含 token、环境或凭据，验收日志不得打印这些文件的秘密内容。
 
 ### 插件独立终端架构
@@ -34,7 +34,8 @@ Chrome 侧边栏(React) ┐
 - 输出按 `leaseId + seq` 进入 1 MiB/256 块有界缓冲；attach 顺序固定为 `terminal.attached` 后重放 `terminal.output`。attachToken 只保存在原终端页面内存，不能写入 chrome.storage、sessionStorage 或 localStorage；同一页面断线有 3 秒重连宽限，普通聊天 WS 断开不影响 PTY。刷新后的新文档没有原 token，旧 PTY 被清理并使用新 lease；序号缺口必须持续显示错误并关闭 owned PTY。
 - `EmbeddedSession` 与系统终端分别持久化 `embedded-lease.json` / `system-lease.json`。异常重启先核对 PID + executable + startedAt；只有明确 ESRCH 才按已退出清理，权限或瞬时查询错误保持只读，unknown 人工解除不杀进程。
 - 正常 `server.close()` 等待 kill 请求、真实 PTY exit、全部异步退出清理（最终镜像、SDK 恢复、idle 和私有 lease 清除）完成后才关闭 backend；不能把 `PtyProcess.kill()` 的 Promise 当作进程已经退出。
-- 原生路线只能由真实编译产物探针选为 `bun-node-pty` 或 `node-helper`。便携模式由生产入口把 `CCC_PORTABLE_RUNTIME_DIR` 指向已校验的私有负载；传统目录模式才读取 exe 旁 `pty-manifest.json`。清单缺失/非法时仅 embedded 返回 `PTY_UNAVAILABLE`，系统终端和普通聊天仍须可用。
+- `EmbeddedTerminalAdapter` 持有可连续启动多个 lease 的共享 backend。普通 lease 的 `handle.close()` 只等待当前 session 退出与清理，**不得关闭共享 backend**；`TerminalService` 进入 idle 时也只关闭当前 handle。桥接整体退出才沿 `server.close()` → `TerminalService.closeEmbedded()` → `embeddedClose` → `adapter.close()` 最终关闭共享 backend，即使没有活动 handle 也要执行最终关闭。否则第一次关窗后第二次 `spawn()` 会以 `PTY_BACKEND_CLOSED` 失败。
+- 原生路线只能由真实编译产物探针选为 `bun-node-pty` 或 `node-helper`。便携模式由生产入口把 `CCC_PORTABLE_RUNTIME_DIR` 指向已校验的私有负载；传统目录模式才读取 exe 旁 `pty-manifest.json`。清单缺失/非法时仅 embedded 返回 `PTY_UNAVAILABLE`，系统终端和普通聊天仍须可用。macOS 本轮 Bun 直路线仍为 `initial-size_TIMEOUT`，最终使用 `node-helper`；公开 WS 的 `TerminalBackend` 值仍为 `"pty"`，内部 manifest 才记录 `"node-helper"`。
 - Windows 内部完整发行布局如下；`runtime/` 仅 node-helper 路线需要。传统目录和本地源码验收必须保留整棵目录；绿色发布则把同一布局压缩、跨文件固定块去重后内嵌进 `CopilotCC.exe`，用户不再接触这些附属文件。
 
   ```text
@@ -51,7 +52,7 @@ Chrome 侧边栏(React) ┐
 - **绿色单文件发布**：`build-portable-exe.mjs` 用 7-Zip 压缩上述负载，以 1 MiB 固定块跨文件去重，把 `payload-manifest.json`、去重配方和内容包作为 `CopilotCC.Payload.zip` 嵌入 WinForms GUI 启动器。启动器只依赖 Windows 10 自带的 .NET Framework，输出唯一 `dist/portable-win-x64/CopilotCC.exe`。
 - 私有运行目录为 `<CCC_BRIDGE_HOME>/runtime/<payloadSha256>/`。每次启动先在命名 Mutex 内按专有 product 标记清理旧版本与 `.extracting-*`，再全量校验当前版本；缺失或损坏时在 staging 解压、逐文件 SHA-256 复核并原子发布，完整当前版本直接复用。活跃、未知、foreign product、junction 和权限异常目录保留，正式运行目录不留下去重配方或 pack。
 - Bun 的 Win32 `LoadLibrary` 对深层原生 `.node` 路径仍受 `MAX_PATH` 限制。`package-pty.mjs` 只在发行副本的 `node-pty/lib/utils.js` 追加规范 `\\?\` 路径 + `process.dlopen()` 回退，同时覆盖主进程 ConPTY 和关闭时 fork 的 console-list agent；补丁后的文件及哈希进入原生与便携 manifest，仓库 `node_modules` 不被改写。
-- macOS Terminal.app、原生 PTY、签名和真实窗口均没有实机证据；脚本、dry-run 或 CI 配置不能标成 macOS 已验收。
+- macOS 2026-11-14 实机证据包括：原始系统终端故障 RED→GREEN、最终 v4 的真实 Terminal.app、真实 Chrome 侧边栏/独立终端、WS + node-helper PTY + xterm 交互、严格签名、DMG CRC 与原生 smoke。原始插件窗口创建故障仍未复现，不能用最终功能全绿替代其 RED/根因；完整边界见 [RETURN-REPORT](../RETURN-REPORT.md)。
 
 ## 开发者
 
@@ -74,7 +75,7 @@ cd extension && npm i && npm run build
 # 协议单一来源是 shared/protocol.ts，两端复制件由脚本同步（改协议只改它）
 node scripts/sync-protocol.mjs
 
-cd bridge && npm test                  # 桥接 39 个测试文件，432 个单测
+cd bridge && npm test                  # macOS：38 文件/440 项通过、2 文件/4 项跳过；Windows：40 文件通过、443 项通过/1 项跳过
 cd bridge && npm run typecheck         # 桥接严格类型检查
 cd bridge && npm run selftest          # 离线：握手 + 绑定流程，不调 API
 cd bridge && npm run selftest:live     # 端到端：向真实 claude 发一条消息（走本机中转配置）
@@ -125,6 +126,8 @@ node bridge/scripts/verify-embedded-terminal.mjs \
 ```
 
 正常脚本逐项要求窗口可见/去重、认证与 opened/attach 顺序、resume/生成 UUID、ASCII/中文/IME、连续输出、真实 132×36、Hooks、双视图只读、11 类写拒绝、非 owner 错误、连续重放、3 秒内重连与超时清理、刷新新 lease、缺帧错误保留、结束/pagehide/桥接关闭清理、三类异常恢复、原生失败隔离及系统终端/普通聊天可用。最终还必须满足 `commandHooksWithoutFailure=true`、`upstreamRequests=0`、`realApiCalled=false`、`runtimeErrors=[]` 和 cleanup remaining/errors 双空；任一缺证据都会非零退出。脚本只登记并定向清理本轮隔离窗口与进程，不按标题批量关闭用户窗口。
+
+2026-11-14 已用 Mac 返回源码的新 Windows 绿色单 exe 独立执行上述完整流程：首次及后续多次打开均通过，43 项功能断言为真，错误、上游请求与清理残留均为空，四张关键截图已人工核对。结果与静态复验范围见 [TODO](../TODO.md) 顶部“Windows 独立复验”；该 Windows 证据不替代原始 macOS 插件窗口故障的有效 RED 和根因。
 
 ### 真实 Claude Code CLI 会话恢复补验
 
@@ -193,6 +196,8 @@ extension/              # Chrome MV3 扩展（WXT + React）
 
 ### CI / 发版
 
+> 本节保留 2026-11-12 及更早的历史 CI/CD 记录。最新 macOS 实机状态见下文“2026-11-14 macOS arm64 实机交接”和 [RETURN-REPORT](../RETURN-REPORT.md)。
+
 - **CI**：push / PR 触发（`.github/workflows/ci.yml`），在 ubuntu / windows / macOS 三平台跑两端类型检查 + 单测 + 扩展构建。Windows 另跑真实 PTY 路线、完整原生布局/项目树外冒烟、启动器八组回归、绿色单 exe 构建和 `$RUNNER_TEMP` 严格子目录中的生命周期验收。
 - **发版**：打 tag 即自动构建并发布 Release（`.github/workflows/release.yml`）：
 
@@ -227,6 +232,16 @@ Release #37（run `43164913706`）随后暴露了平面 PTY 测试未覆盖的 `
 随后用户提供的 Release run `43177539200`（tag `v2026.11.12.2`，SHA `c59c36d`）原始日志证明上述签名修复在 CD 中确实成功：整包 codesign 深校验通过，签名后完整复制包的 PTY 六项行为全 true，DMG 和三类公开资产上传也成功。真正失败发生在 publish 汇总：`actions/download-artifact@v4` 的多行 `pattern: "bridge-*\nextension"` 被该 Action 固定 SHA 的源码交给单个 `Minimatch`，不会按换行拆分，因此找到 5 个 artifact 却下载 0 个，随后 `ls assets/` 退出 2，Release 创建步骤未执行。
 
 publish 现改为分别按 `bridge-win`、`bridge-mac`、`extension` 三个固定名称下载到同一 `assets/`，任一缺失会直接失败，两个 PTY route 报告仍仅保留为内部证据。新增工作流回归先 RED 后 GREEN；完整 bridge 40 文件 438/438（含启动器 8/8）、extension 24 文件 180/180，两端 typecheck、扩展 production build 和 release YAML 解析通过。修复提交 `1fb226bafc7ac8ee33b94a65f8579cbeb8958304` 对应 CI #50（run `43181108593`）三平台成功，macOS job `131057021655` 的真实签名、签名后 PTY 与 DMG 步骤也成功。本次未创建 tag 或重发 Release，因此新 publish 配置仍需后续真实 tag 运行才能记为 CD 端到端通过，普通 CI 成功不能代替该证据。
+
+### 2026-11-14 macOS arm64 实机交接
+
+- 环境为 macOS 27.2.1 / Darwin 27.2.0 arm64、中文 `zh_CN.UTF-8`、Chrome 157.0.8103.39、应用内 Node 22.23.4；真实 Claude Code CLI 为 2.1.325。
+- 系统终端原始链已完成真实 Release RED、底层固定错误定位、最小 Locale 修复和最终真实 Terminal.app GREEN。生产诊断只保留固定错误码或 Node 系统 `code`，不输出私有请求路径、正文或完整环境。
+- 原始“插件终端窗口创建失败，未启动 Claude”在 Release/本地构建、冷/热 Worker、全屏和真实 sidePanel 中均未复现，仍无有效原始 RED 与根因。`extension/src/lib/terminal-window.ts`、后台与侧边栏未做无证据修改。
+- 另行修复首次关窗后第二次打开失败：单 lease 清理曾误关共享 backend，导致第二次 `spawn()` 抛 `PTY_BACKEND_CLOSED`。此故障发生时窗口和 WS 已创建，不能当成原始窗口创建故障的修复。
+- 最终真实 Chrome 综合验收覆盖 WS open/attach、PTY、xterm、ASCII/中文、复制粘贴、resize、连续输出、滚动、二次打开、刷新与退出清理，使用隔离假 CLI；真实 CLI + 本机假上游是在系统 Terminal.app 链验证。两轮均 `realApiCalled=false`，本轮 Chrome 已定向关闭并验证退出。
+- 最终回归为 bridge 40 文件 / 444 项（38 文件 / 440 项通过，2 文件 / 4 项跳过）、extension 24 文件 / 180 项，两端 typecheck 和扩展 production build 通过。最终 DMG 为 87,163,702 字节，SHA-256 `cd1c1e73163cbda7698a6c09d2fe954dbb6f92b0391e4189dabe2d9e1d805666`，CRC、严格 ad-hoc 签名、arm64 和 node-helper PTY smoke 通过。Bun 直路线仍未通过。
+- **交接总状态：未完成。** 精确阻塞是原始插件窗口创建故障没有可复现的产品 RED，因而无法做根因修复及该原始链的 RED→GREEN。证据分类和命令见 [RETURN-REPORT](../RETURN-REPORT.md) 与 [handoff-results/README](../handoff-results/README.md)。
 
 ## 许可证
 

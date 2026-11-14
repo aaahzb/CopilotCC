@@ -5,7 +5,7 @@ import type { ServerMessage } from "../src/protocol";
 const SID_1 = "11111111-1111-4111-8111-111111111111";
 const SID_2 = "22222222-2222-4222-8222-222222222222";
 
-function fixture(): {
+function fixture(overrides: Partial<TerminalServiceDeps> = {}): {
   service: TerminalService;
   sent: ServerMessage[];
   listed: number;
@@ -40,8 +40,19 @@ function fixture(): {
     system: async () => { throw new Error("unused"); },
     prepareRecovery: () => {},
   };
+  Object.assign(deps, overrides);
   return { service: new TerminalService(deps), sent, get listed() { return state.listed; } };
 }
+
+describe("TerminalService 共享 backend 生命周期", () => {
+  it("桥接最终关闭时即使没有活动句柄，也关闭共享 embedded backend", async () => {
+    let closed = 0;
+    const { service } = fixture({ embeddedClose: async () => { closed += 1; } });
+    await service.closeEmbedded();
+    expect(closed).toBe(1);
+    service.close();
+  });
+});
 
 describe("TerminalService 镜像", () => {
   it("只镜像 lease 当前会话，revision 单调递增", async () => {

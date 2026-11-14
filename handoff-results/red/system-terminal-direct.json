@@ -1,0 +1,7 @@
+{
+  "errorCode": "TERMINAL_CHILD_IDENTITY",
+  "statusExists": false,
+  "startExists": false,
+  "exitExists": false,
+  "home": "<ISOLATED_HOME>"
+}

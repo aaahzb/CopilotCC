@@ -25,7 +25,7 @@ import { WorkspaceStore } from "./workspace-store";
 import { ICON_ICO_B64, ICON_PNG_B64 } from "./icon";
 import { TRAYBIN_WIN_B64 } from "./traybin-win-b64";
 import { runTerminalHookHelper } from "./terminal-hook-helper";
-import { runTerminalChild } from "./terminal-child";
+import { runTerminalChild, terminalChildErrorCode } from "./terminal-child";
 import { SystemTerminalAdapter } from "./system-terminal";
 import { createEmbeddedTerminalAdapter } from "./embedded-terminal";
 import { runPtySmoke } from "./pty-smoke";
@@ -169,6 +169,7 @@ async function main(): Promise<void> {
       privateDir: path.join(configDir(), "terminal"),
       system: (context) => systemTerminal.start(context),
       embedded: (context) => embeddedTerminal.start(context),
+      closeEmbedded: () => embeddedTerminal.close(),
       recoverEmbedded: (record) => embeddedTerminal.recover(record),
       recover: (record) => systemTerminal.recover(record),
     },
@@ -272,8 +273,8 @@ if (process.argv[2] === "--pty-smoke") {
     console.error("私有终端请求路径非法");
     process.exitCode = 1;
   } else {
-    runTerminalChild(requestFile).catch(() => {
-      console.error("私有终端包装进程失败");
+    runTerminalChild(requestFile).catch((error: unknown) => {
+      console.error(`私有终端包装进程失败（${terminalChildErrorCode(error)}）`);
       process.exitCode = 1;
     });
   }

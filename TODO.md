@@ -14,6 +14,27 @@
 - [x] Task 12: page-extract.ts + UI 组件 + App 装配
 - [ ] Task 13: 端到端手动验收 + README.md
 
+## 2026-11-14 macOS 实机调试交接（总状态：未完成）
+
+> 下文各日期章节保留当时的历史状态；当前结论以本节和 [RETURN-REPORT](RETURN-REPORT.md) 为准。
+
+- [x] 原始系统 Terminal.app 故障已分别取得真实 Release RED、直接请求 `TERMINAL_CHILD_IDENTITY`、中文 Locale 身份解析 RED，并以只对 `ps` 子进程固定 `LC_ALL=C` 的最小修复转 GREEN；两个生产入口同时保留脱敏固定错误码。
+- [x] 最终 v4 已通过真实 Terminal.app 的隔离假 CLI 全流程，以及真实 Claude Code CLI 2.1.325 + `127.0.0.1` 假上游的启动、输入、回复、Hook、退出和清理；未调用真实 API。
+- [x] 独立复现并修复首次关窗后第二次打开失败：普通 lease 的 `handle.close()` 不再关闭共享 backend，桥接最终退出仍通过 `closeEmbedded()` 统一关闭。该缺陷发生在窗口成功创建之后。
+- [x] 最终 production 扩展在真实 Chrome 侧边栏和独立窗口通过 WS、node-helper PTY、xterm、输入输出、复制粘贴、resize、连续输出、滚动、二次打开、刷新与清理；该轮使用隔离假 CLI。
+- [x] bridge 40 文件 / 444 项（38 文件 / 440 项通过，2 文件 / 4 项跳过）、extension 24 文件 / 180 项、两端 typecheck、扩展 production build、DMG CRC、严格 ad-hoc 签名、arm64 和 node-helper PTY smoke 均通过。
+- [ ] **原始“插件终端窗口创建失败，未启动 Claude”未复现、未定位，缺少有效原始 RED→GREEN；因此整体交接仍是未完成。** 实机功能全绿与二次打开修复都不能替代该完成条件。
+- [ ] macOS Bun 直路线仍为 `initial-size_TIMEOUT`，最终路线为 node-helper；不宣称 Bun 直路线通过。未创建 tag、Release 或推送。
+
+### Windows 独立复验（2026-11-14，已通过）
+
+- [x] 在安全展开、路径/类型/敏感文件检查及完整差异审查后，使用 lockfile 固定依赖独立复验：bridge 40 文件通过、443 项通过 / 1 项 Darwin 专项跳过，启动器 8/8；extension 24 文件 / 180 项通过；两端 typecheck 和扩展 production build 通过。
+- [x] 返回源码的新 Windows 编译产物选择 `bun-node-pty`，初始尺寸、输入回显、连续输出、中文、resize、退出码 7 及项目树外隔离均通过。新绿色单 exe 为 54,138,368 bytes，SHA-256 `bb80fa8ecb709b33f8e2671d5bf4f3142930d6eb5158a13284113453b4c5f64f`，payload SHA-256 `6230ff7fb0ce0f75eb8ecf0f41b65bc9da8df53be0fa6a160be0ae9d518aaffa`。
+- [x] 新构建绿色单 exe + 真实 Chrome + 隔离假 CLI 的完整双终端验收退出码 0、`ok=true`：43 项功能断言为真，覆盖首次窗口、WS open/attach、PTY/xterm、ASCII、中文、IME、复制粘贴、连续输出、132×36 resize、Hooks、双视图只读、重连、刷新、缺帧、异常恢复、系统终端互斥与正常退出。`runtimeErrors=[]`、`hookFailures=[]`、`upstreamRequests=0`、`realApiCalled=false`，cleanup remaining/errors 双空。
+- [x] 首次关窗后，驱动继续完成第二至第六次 `openFreshEmbedded()` 及后续恢复夹具；结果未出现 `PTY_BACKEND_CLOSED`，后续 lease 和刷新后的新 lease 均有效。初始插件窗口、中文/IME、132×36 resize 与系统终端四张关键截图已人工查看。
+- [x] 本轮证据：`D:/ccc-fast-final-verify-20261026/tool-history-20261027/dual-terminal-20261110/macos-return-20261114/windows-e2e-01/embedded-verification.json`。全程使用独立配置、端口、Chrome profile、工作目录和本机假上游，未停止或替换用户桥接，未调用真实 API。
+- [ ] Windows 复验通过不证明原始 macOS 插件窗口创建故障已修复；该故障仍按 Mac 返回报告保持未复现、未定位。本轮未重新执行 Windows 真实 CLI resume 专项，沿用上述历史真实 CLI 2.1.316 证据，不把它冒充为本轮结果。
+
 ## 双终端阶段 A：系统终端续聊（2026-11-10，Windows 验收完成）
 
 - [x] 共用 lease、Session Hooks、TranscriptWatcher 与结构化历史镜像；系统终端独占期间侧边栏和独立窗口只读，草稿与历史分页保留，服务端拒绝全部写操作。

@@ -1,0 +1,10 @@
+{
+  "result": {
+    "code": null,
+    "signal": "SIGKILL"
+  },
+  "requestSeen": false,
+  "genericFailure": false,
+  "stderrLength": 0,
+  "ok": false
+}

@@ -1,0 +1,9 @@
+{
+  "realTerminal": true,
+  "genericMessage": true,
+  "exitCode": "1",
+  "statusExists": false,
+  "startExists": false,
+  "exitExists": false,
+  "cliSpawned": false
+}

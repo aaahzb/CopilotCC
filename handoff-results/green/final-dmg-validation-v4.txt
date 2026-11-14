@@ -1,0 +1,65 @@
+正在检查“Protective Master Boot Record（MBR：0）”的校验和…
+Protective Master Boot Record（MBR：0）：已验证CRC32 $EF29A407
+正在检查“GPT Header（Primary GPT Header：1）”的校验和…
+    GPT Header（Primary GPT Header：1）：已验证CRC32 $50E5A2AF
+正在检查“GPT Partition Data（Primary GPT Table：2）”的校验和…
+GPT Partition Data（Primary GPT Table：已验证CRC32 $77BFB23D
+正在检查“（Apple_Free：3）”的校验和…
+                      （Apple_Free：3）：已验证CRC32 $00000000
+正在检查“disk image（Apple_APFS：4）”的校验和…
+            disk image（Apple_APFS：4）：已验证CRC32 $8F9EFA81
+正在检查“（Apple_Free：5）”的校验和…
+                      （Apple_Free：5）：已验证CRC32 $00000000
+正在检查“GPT Partition Data（Backup GPT Table：6）”的校验和…
+GPT Partition Data（Backup GPT Table：：已验证CRC32 $77BFB23D
+正在检查“GPT Header（Backup GPT Header：7）”的校验和…
+     GPT Header（Backup GPT Header：7）：已验证CRC32 $84D4B808
+已验证CRC32 $1F8A91F1
+hdiutil: verify: checksum of "<HOME>/Documents/CCC_Dev/CopilotCC-macos-debug-handoff-20261114/ccc-bridge-darwin-arm64.dmg" is VALID
+预计CRC32 $1F8A91F1
+hdiutil: WARNING: 'hdiutil attach -readonly -nobrowse -mountpoint ...' is deprecated. Please use 'diskutil image attach --readOnly --mountOptions nobrowse --mountPoint ...' instead.
+/dev/disk4          	GUID_partition_scheme
+/dev/disk4s1        	Apple_APFS
+/dev/disk5          	EF57347C-0000-11AA-AA11-0030654
+/dev/disk5s1        	41504653-0000-11AA-AA11-0030654	<TMP>
+hdiutil: WARNING: 'hdiutil detach ...' is deprecated. Please use 'diskutil eject ...' instead.
+"disk4" ejected.
+--prepared:<TMP>/CopilotCC Bridge.app/Contents/MacOS/spawn-helper
+--prepared:<TMP>/CopilotCC Bridge.app/Contents/MacOS/pty.node
+--validated:<TMP>/CopilotCC Bridge.app/Contents/MacOS/spawn-helper
+--validated:<TMP>/CopilotCC Bridge.app/Contents/MacOS/pty.node
+--prepared:<TMP>/CopilotCC Bridge.app/Contents/MacOS/traybin/tray_darwin_release
+--validated:<TMP>/CopilotCC Bridge.app/Contents/MacOS/traybin/tray_darwin_release
+--prepared:<TMP>/CopilotCC Bridge.app/Contents/MacOS/node
+--validated:<TMP>/CopilotCC Bridge.app/Contents/MacOS/node
+<TMP>/CopilotCC Bridge.app: valid on disk
+<TMP>/CopilotCC Bridge.app: satisfies its Designated Requirement
+Executable=<TMP>/CopilotCC Bridge.app/Contents/MacOS/ccc-bridge
+Identifier=com.copilotcc.bridge
+Format=app bundle with Mach-O thin (arm64)
+CodeDirectory v=20400 size=176173 flags=0x2(adhoc) hashes=5499+3 location=embedded
+Hash type=sha256 size=32
+CandidateCDHash sha256=9eba8edf2e61cf6186e0367ab0a9b4b1246492d7
+CandidateCDHashFull sha256=9eba8edf2e61cf6186e0367ab0a9b4b1246492d7b6b2943ef86886ad0328b955
+Hash choices=sha256
+CMSDigest=9eba8edf2e61cf6186e0367ab0a9b4b1246492d7b6b2943ef86886ad0328b955
+CMSDigestType=2
+CDHash=9eba8edf2e61cf6186e0367ab0a9b4b1246492d7
+Signature=adhoc
+Info.plist entries=10
+TeamIdentifier=not set
+Sealed Resources version=2 rules=13 files=285
+Internal requirements count=0 size=12
+Total signatures=1
+Chosen signature=1
+<TMP>/CopilotCC Bridge.app/Contents/MacOS/ccc-bridge: Mach-O 64-bit executable arm64
+<TMP>/CopilotCC Bridge.app/Contents/MacOS/node: Mach-O 64-bit executable arm64
+<TMP>/CopilotCC Bridge.app/Contents/MacOS/pty.node: Mach-O 64-bit bundle arm64
+<TMP>/CopilotCC Bridge.app/Contents/MacOS/spawn-helper: Mach-O 64-bit executable arm64
+<TMP>/CopilotCC Bridge.app/Contents/MacOS/traybin/tray_darwin_release: Mach-O 64-bit executable arm64
+ccc-bridge smoke：实际 darwin/arm64，期望 darwin/arm64 → OK
+PTY_SMOKE_RESULT:{"initialSize":true,"inputEcho":true,"continuousTicks":true,"chinese":true,"resize":true,"exitCode7":true,"backend":"node-helper"}
+cd1c1e73163cbda7698a6c09d2fe954dbb6f92b0391e4189dabe2d9e1d805666  <HOME>/Documents/CCC_Dev/CopilotCC-macos-debug-handoff-20261114/ccc-bridge-darwin-arm64.dmg
+DMG_BYTES=87163702
+FINAL_DMG_VALIDATION=PASS
+FINAL_APP_COPY=<TMP>/CopilotCC Bridge.app

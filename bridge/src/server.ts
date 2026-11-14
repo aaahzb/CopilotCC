@@ -54,6 +54,8 @@ export interface ServerDeps {
     system: TerminalRuntimeFactory;
     /** 内嵌 PTY 运行时；不注入时仅 embedded 不可用 */
     embedded?: (context: TerminalStartContext) => Promise<EmbeddedTerminalHandle>;
+    /** 桥接整体退出时关闭共享 PTY backend；普通关窗不调用 */
+    closeEmbedded?: () => Promise<void>;
     /** 身份匹配后定向清理异常重启遗留的内嵌 PTY；unknown 身份不得调用 */
     recoverEmbedded?: (record: TerminalLeaseRecord) => Promise<void>;
     privateDir: string;
@@ -1335,6 +1337,7 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
     resolveCli: deps.terminal.resolveCli ?? resolveClaudeExecutable,
     system: deps.terminal.system,
     ...(deps.terminal.embedded ? { embedded: deps.terminal.embedded } : {}),
+    ...(deps.terminal.closeEmbedded ? { embeddedClose: deps.terminal.closeEmbedded } : {}),
     ...(deps.terminal.recoverEmbedded ? { recoverEmbedded: deps.terminal.recoverEmbedded } : {}),
     ...(deps.terminal.recover ? { recover: deps.terminal.recover } : {}),
     ...(deps.terminal.matchesIdentity ? { matchesIdentity: deps.terminal.matchesIdentity } : {}),

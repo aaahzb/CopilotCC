@@ -1,0 +1,119 @@
+{
+  "platform": "darwin",
+  "arch": "arm64",
+  "locale": "zh_CN.UTF-8",
+  "appOutsideProject": true,
+  "fake": {
+    "isolationEnvironmentExportedByProbe": true,
+    "realTerminalTabCreated": true,
+    "osascript": {
+      "exitCode": 0,
+      "appleEventNotAuthorized": false,
+      "numericError": null
+    },
+    "openedBackend": "terminal-app",
+    "leaseIdValid": true,
+    "statusIdentity": {
+      "leaseMatches": true,
+      "pidValid": true,
+      "executablePresent": true,
+      "executableMatchesLivePs": true,
+      "startedAtValid": true,
+      "mode600": true,
+      "startExists": true
+    },
+    "hookActive": true,
+    "currentSessionValid": true,
+    "cliOutputVisible": true,
+    "asciiInputOutput": true,
+    "chineseInputOutput": true,
+    "cliSpawn": {
+      "cwdMatches": true,
+      "cwdContainsSpace": true,
+      "sessionArgValid": true,
+      "exactlyOneSessionSelector": true,
+      "startEventSeen": true,
+      "hookEventSeen": true
+    },
+    "exit": {
+      "leaseMatches": true,
+      "exitCode": 0,
+      "reason": "exit"
+    },
+    "leaseReleased": true,
+    "ok": true,
+    "bridgeExit": {
+      "code": 0,
+      "signal": null
+    },
+    "bridgeStopped": true,
+    "ownedCliStopped": true,
+    "wrapperStopped": true
+  },
+  "real": {
+    "cliVersion": "2.1.325 (Claude Code)",
+    "isolationEnvironmentExportedByProbe": true,
+    "realTerminalTabCreated": true,
+    "osascript": {
+      "exitCode": 0,
+      "appleEventNotAuthorized": false,
+      "numericError": null
+    },
+    "openedBackend": "terminal-app",
+    "leaseIdValid": true,
+    "statusIdentity": {
+      "leaseMatches": true,
+      "pidValid": true,
+      "executablePresent": true,
+      "executableMatchesLivePs": true,
+      "startedAtValid": true,
+      "mode600": true,
+      "startExists": true
+    },
+    "hookActive": true,
+    "currentSessionValid": true,
+    "promptSent": true,
+    "localUpstreamRequestSeen": true,
+    "localReplyVisible": true,
+    "localRequestSummary": [
+      {
+        "kind": "messages",
+        "stream": true,
+        "hasMarker": true
+      }
+    ],
+    "leaseReleased": true,
+    "ok": true,
+    "bridgeExit": {
+      "code": 0,
+      "signal": null
+    },
+    "bridgeStopped": true,
+    "ownedCliStopped": true,
+    "wrapperStopped": true
+  },
+  "cleanup": {
+    "bridgeProcessesStopped": [
+      {
+        "kind": "fake",
+        "stopped": true
+      },
+      {
+        "kind": "real",
+        "stopped": true
+      }
+    ],
+    "terminalWindowsClosed": [
+      {
+        "closeRequested": true
+      },
+      {
+        "closeRequested": true
+      }
+    ]
+  },
+  "realApiCalled": false,
+  "fatalCode": null,
+  "ok": true,
+  "privateRootRemoved": true
+}

@@ -4,6 +4,7 @@ import {
   matchesProcessIdentity,
   parseMacProcessIdentity,
   parseWindowsProcessIdentity,
+  readProcessIdentity,
 } from "../src/process-identity";
 
 const identity = {
@@ -32,6 +33,26 @@ describe("进程身份", () => {
     expect(await matchesProcessIdentity(identity, async () => ({ ...identity, pid: 1234, executable: "C:/other.exe" })))
       .toBe(false);
     expect(await matchesProcessIdentity(identity, async () => null)).toBe(false);
+  });
+
+  const itMac = process.platform === "darwin" ? it : it.skip;
+  itMac("真实 macOS ps 在中文 Locale 下仍返回当前进程身份", async () => {
+    const names = ["LC_ALL", "LC_TIME", "LANG"] as const;
+    const saved = names.map((name) => [name, process.env[name]] as const);
+    try {
+      process.env.LC_ALL = "zh_CN.UTF-8";
+      process.env.LC_TIME = "zh_CN.UTF-8";
+      process.env.LANG = "zh_CN.UTF-8";
+      const actual = await readProcessIdentity(process.pid, "darwin");
+      expect(actual).toMatchObject({ pid: process.pid });
+      expect(actual?.executable).toBeTruthy();
+      expect(Number.isFinite(Date.parse(actual?.startedAt ?? ""))).toBe(true);
+    } finally {
+      for (const [name, value] of saved) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
   });
 
   it("只有 ESRCH 证明进程退出，权限或其他探测错误保持未知", () => {

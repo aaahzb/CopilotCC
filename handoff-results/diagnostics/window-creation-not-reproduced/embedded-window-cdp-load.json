@@ -1,0 +1,42 @@
+{
+  "cleanup": {
+    "chromeClosed": true,
+    "profileRemoved": true
+  },
+  "extensionLoadResult": {
+    "id": "<redacted-id>"
+  },
+  "messageResult": {
+    "response": {
+      "ok": true,
+      "winId": 1200066583,
+      "reused": false
+    }
+  },
+  "workerSeen": true,
+  "workerEvents": [],
+  "targetsAfterMessage": [
+    {
+      "type": "page",
+      "url": "chrome-extension://<extension-id>/terminal.html"
+    },
+    {
+      "type": "page",
+      "url": "chrome-extension://<extension-id>/sidepanel.html"
+    },
+    {
+      "type": "service_worker",
+      "url": "chrome-extension://<extension-id>/background.js"
+    }
+  ],
+  "directResult": {
+    "result": {
+      "type": "object",
+      "value": {
+        "ok": true,
+        "winId": 1200066585
+      }
+    }
+  },
+  "chromeLogMatches": []
+}

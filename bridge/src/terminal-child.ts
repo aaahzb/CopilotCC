@@ -21,6 +21,21 @@ export interface TerminalChildDeps {
   identity?: (pid: number) => Promise<ProcessIdentity | null>;
 }
 
+/**
+ * 生产入口可安全展示的终端包装错误码；不回显可能含私有路径或 token 的原始异常正文。
+ * @param error 包装流程抛出的未知异常
+ * @returns 固定终端错误码、Node 系统错误码，或不含详情的未知错误码
+ */
+export function terminalChildErrorCode(error: unknown): string {
+  if (error instanceof Error && /^TERMINAL_CHILD_(REQUEST|IDENTITY|START_TIMEOUT|SPAWN)$/.test(error.message)) {
+    return error.message;
+  }
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  return typeof code === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(code)
+    ? code
+    : "TERMINAL_CHILD_UNKNOWN";
+}
+
 /** @param value 不可信 JSON 值 @returns 只含字符串键的record，否则null */
 function recordOf(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
