@@ -167,6 +167,8 @@ export async function buildPortableExe(options) {
   if (fs.existsSync(outDir) && fs.readdirSync(outDir).some((name) => name !== "CopilotCC.exe")) {
     throw new Error("PORTABLE_BUILD: output directory contains non-portable files");
   }
+  // 干净检出尚无 dist；先创建父目录，不能依赖此前构建遗留。
+  fs.mkdirSync(path.join(bridgeRoot, "dist"), { recursive: true });
   const temp = fs.mkdtempSync(path.join(bridgeRoot, "dist", ".portable-build-"));
   try {
     const payloadDir = path.join(temp, "payload");

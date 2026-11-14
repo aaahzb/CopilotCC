@@ -14,6 +14,17 @@
 - [x] Task 12: page-extract.ts + UI 组件 + App 装配
 - [ ] Task 13: 端到端手动验收 + README.md
 
+## GitHub Actions #52 干净构建与失败即停修复（2026-11-14，本地复验完成，云端待验证）
+
+- [x] 已核对真实 CI #52（run `43604175479`，提交 `58e27a1`）：Ubuntu job 失败于扩展计划卡快照恢复用例；macOS job 成功；Windows job 虽显示 `success`，原始日志实际为 1 个文件失败、2 项失败、441 项通过、1 项跳过，两个失败均为干净目录下 `bridge/dist/.portable-build-*` 的 `ENOENT: mkdtemp`。同提交的 Release #40 成功不是 CI 重跑证据。
+- [x] 便携构建根因是 `mkdtempSync()` 不会创建父目录，干净 CI 没有此前构建遗留的 `bridge/dist/`。新增隔离干净脚本目录的真实构建回归，先取得与 CI 相同的 `ENOENT` RED，再仅在 `buildPortableExe()` 创建临时目录前补 `mkdirSync(..., { recursive: true })`，聚焦 5/5 转 GREEN；未改变压缩、去重、启动器或输出目录安全语义。
+- [x] Windows 公共步骤默认 PowerShell 会继续执行后续命令，使最后的架构检查或扩展构建成功覆盖此前测试失败的退出码。CI 的桥接、扩展两个公共多命令步骤均改为显式 `shell: bash`；Ubuntu/Windows/macOS 矩阵保持不变，没有删除 Ubuntu 或以矩阵绕过失败。受控失败探针退出 7 且未执行后一条命令；workflow YAML 可解析，两个公共步骤均为 fail-fast，6 个 shell 段语法通过。Release 已有全局 `defaults.run.shell: bash`，无需同类修改。
+- [x] Ubuntu 单次失败已沿 `chat.sync.pendingInteractions` → `setPermReqs()` → `PermissionCard` 完整追踪，生产数据流无平台分支；计划详情断言改为同等内容的 `vi.waitFor()` 条件等待，不跳过测试、不重试整例、不接受缺失节点。修改前在本机 Node 25、Node 22.23.4、限并发及四路并发下累计 44 次扩展全量（每次 180 项）均通过，WSL 又不可用，故**没有取得 Ubuntu 本地 RED，也没有证明生产根因已定位或云端 flaky 已消除**；本次只完成测试同步加固，聚焦 42/42 与全量 180/180 通过。
+- [x] 最终本地全量：bridge 40 个测试文件，444 项通过、1 项 Darwin 专项跳过（共 445 项）；extension 24 个测试文件、180/180；两端 typecheck、扩展 production build 和启动器 8/8 均通过。使用 Node 22 对应工具入口复验，未把本机结果冒充云端 CI。
+- [x] 真实绿色单 exe 构建成功：54,138,368 bytes，SHA-256 `f4c50672282430a62af5992dbffc5ce43b16401f75ea8350927dbafd75b2ab12`，payload SHA-256 `03f871fe9f582066a3160866b41ff68a87da08e01206230efa4fcb8b70f42630`。项目树外生命周期 `ci-52-portable-lifecycle-fixed-01/portable-verification.json` 为 `ok=true`、15 项必需断言全 true，`realApiCalled=false`、cleanup remaining/errors 双空、当前哈希一致；启动进度截图已人工确认“正在解压当前组件”和绿色进度条。首次指定的根目录被现有白名单拒绝且未创建验收目录，随后使用已批准根目录下的严格子目录通过，未放宽安全策略。
+- [ ] 本地修复与复验已完成，并按用户授权提交到本地 main；推送和云端 CI 尚未执行，Ubuntu 与 Windows 的真实新 run 仍待验证。本轮未修改扩展或终端生产逻辑，也未重新执行真实双终端 E2E；原始 macOS“插件终端窗口创建失败，未启动 Claude”仍按下一节保持未复现、未定位，不能关闭。
+- **历史证据边界：**下文 CI #42–#51 的 Windows“通过/全绿”保留当时 job/step 运行结论，但修复前公共步骤可能吞掉测试退出码，不能再单独作为 Windows 测试全绿证明。除 CI #52 原始日志已明确证明两项隐藏失败外，不反向推定其他历史 run 必有失败；需要时应逐份读取原始日志复核。
+
 ## 2026-11-14 macOS 实机调试交接（总状态：未完成）
 
 > 下文各日期章节保留当时的历史状态；当前结论以本节和 [RETURN-REPORT](RETURN-REPORT.md) 为准。

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 // @ts-expect-error 构建脚本以 JSDoc 记录接口，Vitest 直接执行同一 ESM 文件。
 import { buildPortableExe, createPayloadManifest } from "../scripts/build-portable-exe.mjs";
 
@@ -78,5 +79,35 @@ describe("绿色单文件负载构建", () => {
     expect(result.sha256).toMatch(/^[a-f0-9]{64}$/);
     expect(result.zipBytes).toBeGreaterThan(0);
     expect(result.zipBytes).toBeLessThan(20000);
+  }, 180000);
+
+  it.skipIf(process.platform !== "win32")("干净脚本目录没有 dist 时也能完成真实构建", async () => {
+    const isolated = fs.mkdtempSync(path.join(os.tmpdir(), "ccc-portable-clean-tree-"));
+    tempDirs.push(isolated);
+    const isolatedBridge = path.join(isolated, "bridge");
+    const sourceBridge = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+    const required = [
+      "scripts/build-portable-exe.mjs",
+      "scripts/run-portable-launcher-tests.mjs",
+      "launcher/PortableRuntime.cs",
+      "launcher/PortableLauncher.cs",
+      "assets/icon.ico",
+    ];
+    for (const relative of required) {
+      const target = path.join(isolatedBridge, ...relative.split("/"));
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.copyFileSync(path.join(sourceBridge, ...relative.split("/")), target);
+    }
+    expect(fs.existsSync(path.join(isolatedBridge, "dist"))).toBe(false);
+
+    // 动态加载隔离副本，使脚本自己的 bridgeRoot 也处于没有 dist 的干净目录。
+    const cleanModule = await import(pathToFileURL(path.join(isolatedBridge, "scripts", "build-portable-exe.mjs")).href) as {
+      buildPortableExe: typeof buildPortableExe;
+    };
+    const source = payloadFixture();
+    const outDir = path.join(source, "public");
+    const result = await cleanModule.buildPortableExe({ sourceDir: source, outDir });
+    expect(fs.readdirSync(outDir)).toEqual(["CopilotCC.exe"]);
+    expect(result.bytes).toBeGreaterThan(0);
   }, 180000);
 });

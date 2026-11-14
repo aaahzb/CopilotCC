@@ -29,6 +29,7 @@ jobs:
 
       - name: 桥接：依赖 / 类型检查 / 单测 / 预编译件架构审计
         working-directory: bridge
+        shell: bash
         run: |
           npm ci
           npm run typecheck
@@ -94,6 +95,7 @@ jobs:
 
       - name: 扩展：依赖 / 类型检查 / 单测 / 构建
         working-directory: extension
+        shell: bash
         run: |
           npm ci
           npx wxt prepare

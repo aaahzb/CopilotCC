@@ -845,7 +845,10 @@ describe("App 计划审批完整链路", () => {
         summary: "申请批准计划并继续执行", plan, planFilePath: "D:\\plans\\live.md", detail: "{}",
       }],
     } as unknown as ServerMessage);
-    expect(host.querySelector("details.plan-detail")?.textContent).toContain(plan);
+    // CI 较慢调度下等待 React 提交；断言内容不变，不跳过快照恢复验收。
+    await vi.waitFor(() => {
+      expect(host.querySelector("details.plan-detail")?.textContent).toContain(plan);
+    });
     const textarea = host.querySelector<HTMLTextAreaElement>(".permission-card textarea");
     expect(textarea).not.toBeNull();
     await act(async () => {
