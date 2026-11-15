@@ -55,6 +55,20 @@ describe("进程身份", () => {
     }
   });
 
+  const itWin = process.platform === "win32" ? it : it.skip;
+  itWin("真实 Windows 查询不依赖 WMI，返回当前进程路径与启动时间", async () => {
+    const actual = await readProcessIdentity(process.pid, "win32");
+    expect(actual).toMatchObject({ pid: process.pid });
+    // Get-Process 与 process.execPath 必须指向同一个原生程序；路径分隔符和大小写不敏感。
+    expect(actual?.executable.replace(/\\/g, "/").toLowerCase())
+      .toBe(process.execPath.replace(/\\/g, "/").toLowerCase());
+    expect(Number.isFinite(Date.parse(actual?.startedAt ?? ""))).toBe(true);
+  });
+
+  itWin("Windows 查询不存在的 PID 返回 null，而不是抛出原始异常", async () => {
+    await expect(readProcessIdentity(2_147_483_647, "win32")).resolves.toBeNull();
+  });
+
   it("只有 ESRCH 证明进程退出，权限或其他探测错误保持未知", () => {
     const candidate = (processIdentity as unknown as {
       isProcessAlive?: (pid: number, probe?: (pid: number) => void) => boolean;

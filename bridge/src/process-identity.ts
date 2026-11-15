@@ -71,10 +71,14 @@ export async function readProcessIdentity(
   if (!Number.isInteger(pid) || pid <= 0) return null;
   try {
     if (platform === "win32") {
-      const script = `$p=Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}"; if ($null -eq $p) { exit 3 }; [Console]::Out.WriteLine($p.ExecutablePath); [Console]::Out.WriteLine($p.CreationDate.ToUniversalTime().ToString("o"))`;
+      // 不用 Get-CimInstance：首次查询会唤醒 WMI 服务，CI 冷启动常超过 3s 硬超时，
+      // 包装进程拿不到身份就直接失败（2026-11-15 Windows CI 实测：首条用例超时、后续热查询通过）。
+      // Get-Process 走系统进程 API（GetProcessTimes/MainModule），不经 WMI，本地约 155ms；
+      // 输出格式与解析器保持一致：可执行路径一行、ISO 启动时间一行。
+      const script = `$p=Get-Process -Id ${pid} -ErrorAction Stop; [Console]::Out.WriteLine($p.Path); [Console]::Out.WriteLine($p.StartTime.ToUniversalTime().ToString("o"))`;
       const { stdout } = await execFileAsync("powershell.exe", [
         "-NoProfile", "-NonInteractive", "-Command", script,
-      ], { timeout: 3000, maxBuffer: 8192, windowsHide: true });
+      ], { timeout: 8000, maxBuffer: 8192, windowsHide: true });
       return parseWindowsProcessIdentity(stdout, pid);
     }
     if (platform === "darwin") {

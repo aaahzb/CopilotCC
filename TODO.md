@@ -44,7 +44,16 @@
 - [x] 修复：两个入口用例显式设置 30s 超时；内部 15s `vi.waitFor` 仍是实际完成条件，不会把挂死当成通过。用 `--testTimeout=1000` 复跑证明用例级 30s 覆盖全局默认，两个入口用例分别 593ms / 679ms 通过，文件 11/11。
 - [x] macOS 唯一失败是 DMG 阶段 `hdiutil: create failed - No space left on device`；失败前日志显示主机仍有 95Gi 可用、舞台仅 198M，287 个文件逻辑总量 207,111,424 bytes、分配 207,790,080 bytes，无稀疏文件，更符合 runner 上 hdiutil 临时镜像容量估算/偶发故障，不能归因于应用代码体积变化。
 - [x] 修复：`build-mac-app.sh` 给 hdiutil 显式 `-size`（舞台 `du -sk` + 64MiB 元数据余量），并对该已知偶发失败做 3 次有界重试、每次清理半成品；`bash -n` 通过。本机无 macOS，新命令的真实 hdiutil 执行仍待下一次云端 macOS job 验证。
-- [ ] 本轮修复尚未提交、未推送；需要重新触发 CI 才能确认 Ubuntu/Windows 超时与 macOS DMG 均恢复。
+- [x] 该轮修复已提交为 `0c3e2cb 修复 CI 终端入口测试超时与 macOS DMG 容量` 并由用户推送；云端 run `118310643514` 显示 macOS DMG 已通过，剩余失败见下节。
+
+### CI run 118310643514 回归修复（2026-11-15）
+
+- [x] 全量复核 run `118310643514`（提交 `0c3e2cb`）三平台所有已执行 step：macOS 桥接 39 通过 / 2 跳过、扩展 24/24、DMG 打包与上传全部通过（上一轮 hdiutil 修复生效）；失败只剩 `terminal-child.test.ts` 的两条入口成功用例：Ubuntu 2 条（文件 31s）、Windows 1 条（`src/index.ts`，同次 `src/tray.ts` 通过），失败点均为等待 `.status.json` 15s 后 `expected false to be true`，不再是 5s 用例超时。Windows 专属 job 步骤因桥接测试失败全部未启动，本轮已在本地补跑等价步骤。
+- [x] Ubuntu 根因（确定性）：`readProcessIdentity` 只实现 Windows/macOS，Linux 直接返回 null；`runTerminalChild` 立即抛 `TERMINAL_CHILD_IDENTITY`，包装进程永远不会写 `.status.json`。两条失败用例各自白等 15s，文件耗时 31s 与之吻合。`--terminal-child` 只由系统终端路径拉起，而 `SystemTerminalAdapter` 明确拒绝 Linux（`TERMINAL_PLATFORM_UNSUPPORTED`），因此成功路径只在 Windows/macOS 有意义；Linux 的入口接线继续由非法请求用例覆盖，成功用例在 Linux 显式跳过并注明原因。
+- [x] Windows 根因（偶发）：身份查询走 `Get-CimInstance Win32_Process`（WMI），`execFile` 硬超时仅 3s；CI 首次查询需要唤醒 WMI 服务，超过 3s 后返回 null，包装进程按身份失败退出。两次 run 都是第一条入口用例失败、第二条（WMI 已热）通过，符合冷启动特征。修复为 `Get-Process -Id ... -ErrorAction Stop`（系统进程 API，不经 WMI；本地实测约 155ms，WMI 约 220ms），超时放宽到 8s；新增 Windows 真实身份用例与“不存在的 PID 返回 null”用例。
+- [x] 测试可诊断性：真实子进程用例改为捕获 stdout/stderr，status 等待与子进程退出竞速——进程提前退出立即带 `code/signal/输出尾部` 失败，不再把崩溃误报为“文件不存在”；等待预算 25s、用例级 45s，失败时在 finally 终止残留包装进程。
+- [x] 本地复验：bridge 41 文件 / 458 通过 / 1 跳过（macOS 专项），`tsc --noEmit` 通过；Windows 专属 CI 等价步骤全部通过——原生布局 SHA-256、fake CLI 编译、发行包 PTY smoke（initialSize/inputEcho/continuousTicks/chinese/resize/exitCode7 全 true，bun-node-pty）、启动器 8/8、绿色单 exe 构建、项目树外生命周期验收 `ok=true`（15 项 required 全 true）；extension 24 文件 / 182 通过、typecheck、production build 3.03 MB。本机 Node 25 会触发 PTY 探针的“必须 Node 22”守卫，构建使用此前同一台机器成功、六项行为全过的 `ci43-win-after-01/pty-route.json`；探针脚本本身未改动，留待云端 Node 22 复跑。
+- [ ] 尚未推送；需要下一次云端 CI 三平台同时复验。
 
 ## 2026-11-14 macOS 实机调试交接（总状态：未完成）
 

@@ -157,41 +157,99 @@ describe("runTerminalChild", () => {
     expect(terminalChildErrorCode(new Error("token=secret /private/request.json"))).toBe("TERMINAL_CHILD_UNKNOWN");
   });
 
-  // 真实子进程用例要冷启动 tsx 并加载入口模块；CI 并行跑全量测试时可能超过 Vitest 默认 5s 上限，
-  // 这里显式放宽到 30s。用例内部的 vi.waitFor(15s) 仍是实际完成条件，不会把挂死误判为通过。
-  it.each(["src/index.ts", "src/tray.ts"])("%s 成功路径启用启动日志并按段记录包装耗时", async (entry) => {
-    const work = fs.mkdtempSync(path.join(os.tmpdir(), "ccc-terminal-entry-log-"));
-    tempDirs.push(work);
-    const directory = path.join(work, "terminal");
-    fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
-    const requestFile = path.join(directory, `${LEASE_ID}.request.json`);
-    fs.writeFileSync(requestFile, JSON.stringify({
-      leaseId: LEASE_ID,
-      cwd: work,
-      cliPath: process.execPath,
-      args: ["-e", "0"], // 本地 Node 立即成功退出，不启动真实 Claude
-      exitFile: path.join(directory, `${LEASE_ID}.exit.json`),
-      stopFile: path.join(directory, `${LEASE_ID}.stop`),
-    }), { encoding: "utf8", mode: 0o600 });
-    const running = spawn(process.execPath, [
-      path.resolve("node_modules", "tsx", "dist", "cli.mjs"),
-      path.resolve(entry), "--terminal-child", requestFile,
-    ], {
-      cwd: path.resolve("."),
-      env: { ...process.env, CCC_BRIDGE_HOME: work },
-      windowsHide: true,
-    });
-    await vi.waitFor(
-      () => expect(fs.existsSync(path.join(directory, `${LEASE_ID}.status.json`))).toBe(true),
-      { timeout: 15_000 },
-    );
-    fs.writeFileSync(path.join(directory, `${LEASE_ID}.start`), "", "utf8");
-    const exitCode = await new Promise<number | null>((resolve) => running.once("exit", resolve));
-    expect(exitCode).toBe(0);
-    await vi.waitFor(() => expect(fs.readFileSync(path.join(work, "startup.log"), "utf8")).toMatch(
-      /\[startup\] terminal-child identity=\d+ms status=\d+ms start=\d+ms spawn=\d+ms total=\d+ms/,
-    ));
-  }, 30_000);
+  /** 持续排空子进程输出，失败时返回尾部诊断文本，避免管道写满反过来卡住子进程。 */
+  function collectOutput(child: ChildProcess): () => string {
+    let text = "";
+    const append = (data: string): void => { text = (text + data).slice(-16_384); };
+    child.stdout?.setEncoding("utf8");
+    child.stderr?.setEncoding("utf8");
+    child.stdout?.on("data", append);
+    child.stderr?.on("data", append);
+    return () => text.trim() || "（无输出）";
+  }
+
+  /** 等待 status 文件；包装进程提前退出时立即带退出码与输出失败，不把崩溃误报成超时。 */
+  async function waitForStatus(file: string, child: ChildProcess, output: () => string): Promise<void> {
+    // CI 并行跑全量测试时 tsx 冷启动可能明显变慢；正常路径 1~2s 内返回，放宽预算只影响失败耗时，
+    // 进程一旦退出会立即带输出失败，不会把“启动即崩”拖成 25 秒。
+    const deadline = Date.now() + 25_000;
+    while (Date.now() < deadline) {
+      if (fs.existsSync(file)) return;
+      if (child.exitCode !== null || child.signalCode !== null) {
+        throw new Error(`包装进程在写 status 前退出（code=${child.exitCode}, signal=${child.signalCode}）\n${output()}`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    throw new Error(`25s 内未生成 status 文件\n${output()}`);
+  }
+
+  /** 等待退出；exit 事件可能早于监听器注册，先检查 exitCode/signalCode。 */
+  function waitForExit(child: ChildProcess): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
+    if (child.exitCode !== null || child.signalCode !== null) {
+      return Promise.resolve({ code: child.exitCode, signal: child.signalCode });
+    }
+    return new Promise((resolve) => child.once("exit", (code, signal) => resolve({ code, signal })));
+  }
+
+  /** 等待启动日志异步落盘并出现完整包装耗时行。 */
+  async function waitForLog(file: string, output: () => string): Promise<void> {
+    const pattern = /\[startup\] terminal-child identity=\d+ms status=\d+ms start=\d+ms spawn=\d+ms total=\d+ms/;
+    const deadline = Date.now() + 10_000;
+    while (Date.now() < deadline) {
+      if (fs.existsSync(file) && pattern.test(fs.readFileSync(file, "utf8"))) return;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    throw new Error(`10s 内未写入完整启动日志：${file}\n${output()}`);
+  }
+
+  // --terminal-child 只由系统终端路径拉起，而 SystemTerminalAdapter 明确拒绝 Linux，
+  // 所以成功路径只在 Windows/macOS 有意义；Linux 的入口接线由下面的非法请求用例覆盖。
+  // 真实子进程要冷启动 tsx 并加载入口模块，用例级超时放宽到 45s；内部等待仍是实际完成条件。
+  it.skipIf(process.platform === "linux").each(["src/index.ts", "src/tray.ts"])(
+    "%s 成功路径启用启动日志并按段记录包装耗时",
+    async (entry) => {
+      const work = fs.mkdtempSync(path.join(os.tmpdir(), "ccc-terminal-entry-log-"));
+      tempDirs.push(work);
+      const directory = path.join(work, "terminal");
+      fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+      const requestFile = path.join(directory, `${LEASE_ID}.request.json`);
+      fs.writeFileSync(requestFile, JSON.stringify({
+        leaseId: LEASE_ID,
+        cwd: work,
+        cliPath: process.execPath,
+        args: ["-e", "0"], // 本地 Node 立即成功退出，不启动真实 Claude
+        exitFile: path.join(directory, `${LEASE_ID}.exit.json`),
+        stopFile: path.join(directory, `${LEASE_ID}.stop`),
+      }), { encoding: "utf8", mode: 0o600 });
+      const running = spawn(process.execPath, [
+        path.resolve("node_modules", "tsx", "dist", "cli.mjs"),
+        path.resolve(entry), "--terminal-child", requestFile,
+      ], {
+        cwd: path.resolve("."),
+        env: { ...process.env, CCC_BRIDGE_HOME: work },
+        stdio: ["ignore", "pipe", "pipe"], // 捕获入口输出，失败时能区分“慢”与“启动即崩”
+        windowsHide: true,
+      });
+      const output = collectOutput(running);
+      try {
+        await waitForStatus(path.join(directory, `${LEASE_ID}.status.json`), running, output);
+        fs.writeFileSync(path.join(directory, `${LEASE_ID}.start`), "", "utf8");
+        const exit = await waitForExit(running);
+        expect(exit, `入口异常退出，输出：\n${output()}`).toMatchObject({ code: 0 });
+        await waitForLog(path.join(work, "startup.log"), output);
+      } finally {
+        // 失败时不要留下仍在等 .start 的包装进程。
+        if (running.exitCode === null && running.signalCode === null) {
+          running.kill();
+          await Promise.race([
+            waitForExit(running),
+            new Promise((resolve) => setTimeout(resolve, 2000)),
+          ]);
+        }
+      }
+    },
+    45_000,
+  );
 
   it.each(["src/index.ts", "src/tray.ts"])("%s 保留固定错误码且不泄露私有请求路径", (entry) => {
     const work = fs.mkdtempSync(path.join(os.tmpdir(), "ccc-terminal-entry-"));
