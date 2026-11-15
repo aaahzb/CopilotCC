@@ -19,6 +19,7 @@ export class BridgeClient {
   private queue: ClientMessage[] = [];
   private retries = 0;
   private closedByUser = false;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
   /**
    * @param opts 连接参数与回调
@@ -27,6 +28,11 @@ export class BridgeClient {
 
   /** 建立连接；断线自动重连直到 close() */
   connect(): void {
+    // 主动重连前先取消待定退避，避免旧定时器再建一条并行连接。
+    if (this.reconnectTimer !== null) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     this.closedByUser = false;
     this.opts.onState("connecting");
     const Impl = (this.opts.WebSocketImpl ?? WebSocket) as new (url: string) => NonNullable<BridgeClient["ws"]>;
@@ -52,7 +58,10 @@ export class BridgeClient {
       this.opts.onState("closed");
       if (!this.closedByUser) {
         const delay = Math.min(30_000, 1000 * 2 ** this.retries++);
-        setTimeout(() => this.connect(), delay);
+        this.reconnectTimer = setTimeout(() => {
+          this.reconnectTimer = null;
+          this.connect();
+        }, delay);
       }
     };
     ws.onerror = () => {
@@ -76,9 +85,13 @@ export class BridgeClient {
     }
   }
 
-  /** 主动关闭，不再重连 */
+  /** 主动关闭，不再重连（含取消已排定的退避定时器） */
   close(): void {
     this.closedByUser = true;
+    if (this.reconnectTimer !== null) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     this.ws?.close();
   }
 }

@@ -87,12 +87,20 @@ async function mountApp(): Promise<{ host: HTMLDivElement; ws: FakeWebSocket }> 
   document.body.append(host);
   const root = createRoot(host);
   roots.push(root);
+  const before = FakeWebSocket.instances.length;
   await act(async () => {
     root.render(<App />);
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
-  const ws = FakeWebSocket.instances[0];
-  if (!ws) throw new Error("App 未创建 WebSocket");
+  // 只认本次挂载后新建的实例。盲取 instances[0] 时，任何卸载后迟到的重连都会抢占它的位置，
+  // 后续帧全部打到已卸载 App 的 socket 上，表现为“快照卡同步断言 0、waitFor 等满超时也不出现”。
+  // 多实例同样视为缺陷直接报错：App 初始化只应建立一条连接。
+  const created = FakeWebSocket.instances.slice(before);
+  if (created.length === 0) throw new Error("App 未创建 WebSocket");
+  if (created.length > 1) {
+    throw new Error(`App 挂载期间创建了 ${created.length} 个 WebSocket，请检查是否有卸载后重连或重复 connect`);
+  }
+  const ws = created[0]!;
   await act(async () => ws.open());
   return { host, ws };
 }

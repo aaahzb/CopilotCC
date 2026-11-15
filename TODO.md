@@ -65,6 +65,17 @@
 - [x] 流程规则：以后每次修 CI，必须同步检查并修复 `.github/workflows/release.yml`（CD），不能只让 CI 绿。
 - [ ] 尚未推送；需下一次 tag 复验 CD 三平台门禁与后续构建/发布。
 
+### CD run 118322528105 回归修复（2026-11-15，Release 工作流）
+
+- [x] 该 run 是 tag `v2026.11.15.2`（提交 `525a105`）触发：三平台发布门禁生效，Windows 桥接 41 文件全过（含 `Get-Process` 身份修复）、Ubuntu/macOS 桥接与扩展全过；唯一失败是 Windows 扩展 `app-tool-flow.test.tsx` 两条快照恢复用例——`快照恢复挂起卡…elicitation_complete` 在同步断言处拿到 0 张 `.elicitation-card`（32ms），`快照恢复完整计划卡…` 的 `details.plan-detail` 等满 1s `vi.waitFor` 仍不存在。同文件其余 40 条（含 user_dialog 快照恢复）全过。
+- [x] 根因（产品缺陷，非测试断言问题）：`BridgeClient` 断线重连的 `setTimeout` 定时器在 `close()` 时未被取消，而 `connect()` 第一行又把 `closedByUser` 重置为 false。`app-tool-flow.test.tsx` 里两条模拟断线用例（“断线清除压缩提示”“断线立即清除请求中提示”）调用 `ws.close()` 排定 1s 后重连；`afterEach` 卸载只设 `closedByUser=true` 并关 socket，不取消已排定的 timer。1s 后 timer 照常执行 → 已卸载 App 的 client 新建一条幽灵连接并 push 进 `FakeWebSocket.instances`，占用后续 `mountApp` 盲取的 `instances[0]`，之后所有帧都打到已卸载组件（`setState` 无效），表现为“同步 0 元素、等待 1s 也不出现”。真实浏览器里同样的路径会在组件卸载后泄漏一条永不关闭的 WS。
+- [x] 为什么只在 Windows CI 出现：该文件本地约 0.8s 跑完，1s 定时器落在测试结束之后；Windows CI 上文件耗时 3.05s，幽灵重连正好落在测试执行窗口内并抢占后续用例。Ubuntu/macOS 更快，因此一直未见。
+- [x] 先 RED 后 GREEN：在 `extension/tests/ws-client.test.ts` 新增“断线重连已排定后 close() 仍要取消定时器”，旧实现 `expected 2 to be 1`（60s 推进后确实新建连接），其余 4 条通过；修复后 5/5 通过，原“断线后指数退避重连，close() 后不再重连”保持通过。
+- [x] 修复：`BridgeClient` 保存 `reconnectTimer`，`close()` 取消并置空；退避回调执行前先清引用；`connect()` 主动重连前也取消待定退避，避免并行连接。bridge 侧 `embedded-terminal.ts` 已有等价的 `unref` + close 清理，无需改动。
+- [x] 测试可诊断性：`app-tool-flow.test.tsx` 的 `mountApp` 不再盲取 `instances[0]`，改为只认本次挂载后新建的实例；出现 0 个或多于 1 个都直接抛出带原因的显式错误，避免同类幽灵连接再次表现为“神秘 0 元素”。
+- [x] 本地复验（Node 22.23.5，与 CI 同版本）：extension 25 文件 / 185 项通过（含一次性幽灵 socket 探针 1 文件 2 项，用于验证旧 harness 在实例抢占下的症状与新取值方式；探针待确认后删除）、`tsc --noEmit` 通过、production build 3.03 MB 通过；`ws-client.test.ts` 5/5、`app-tool-flow.test.tsx` 42/42。
+- [ ] 尚未提交/推送；需用户重新打 tag 复验 CD 三平台门禁与后续构建/发布。
+
 ## 2026-11-14 macOS 实机调试交接（总状态：未完成）
 
 > 下文各日期章节保留当时的历史状态；当前结论以本节和 [RETURN-REPORT](RETURN-REPORT.md) 为准。

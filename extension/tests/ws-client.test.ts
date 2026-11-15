@@ -77,6 +77,19 @@ describe("BridgeClient", () => {
     c.close();
   });
 
+  it("断线重连已排定后 close() 仍要取消定时器，不再建立幽灵连接", () => {
+    const { c } = makeClient();
+    c.connect();
+    const first = FakeWS.instances[0]!;
+    first.open();
+    first.close(); // 模拟断开并排定 1s 后重连
+    c.close(); // 组件卸载：必须取消已排定的重连
+    vi.advanceTimersByTime(60_000);
+    // 旧实现 close() 只设 closedByUser，不清定时器；connect() 又会把 closedByUser
+    // 重置为 false，于是卸载后凭空多出一条永不关闭的连接（CI 上会抢占后续用例的 WS 实例）。
+    expect(FakeWS.instances.length).toBe(1);
+  });
+
   it("断线后指数退避重连，close() 后不再重连", () => {
     const { c, states } = makeClient();
     c.connect();
