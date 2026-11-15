@@ -17,12 +17,14 @@ import { SystemTerminalAdapter } from "./system-terminal";
 import { createEmbeddedTerminalAdapter } from "./embedded-terminal";
 import { runPtySmoke } from "./pty-smoke";
 import { terminalChildCommand, terminalNativeDirectory } from "./runtime-entry";
+import { enableStartupTiming } from "./startup-timing";
 
 const cmd = process.argv[2] ?? "start";
 
 /** 打印配对信息并启动常驻服务 */
 async function cmdStart(): Promise<void> {
   const config = loadOrCreateConfig();
+  enableStartupTiming(configDir()); // 启动耗时写入 configDir/startup.log，异步且不阻塞启动
   claimInstance(configDir()); // 单实例守卫：已有活实例直接抛错退出，避免双桥抢端口
   const sessions = new SessionManager(path.join(configDir(), "sessions.json"));
   sessions.load();
@@ -148,6 +150,7 @@ if (cmd === "--pty-smoke") {
     process.exitCode = 1;
   });
 } else if (cmd === "--terminal-child") {
+  enableStartupTiming(configDir()); // 包装进程是独立入口，需单独启用才能记录身份查询与等待耗时
   const requestFile = path.resolve(process.argv[3] ?? "");
   const privateDir = path.resolve(configDir(), "terminal");
   if (path.dirname(requestFile) !== privateDir) {

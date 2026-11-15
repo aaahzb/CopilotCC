@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { readProcessIdentity } from "./process-identity";
 import { UUID_RE } from "./protocol";
+import { StartupTiming } from "./startup-timing";
 import type { ProcessIdentity } from "./terminal-lease";
 
 export interface TerminalChildRequest {
@@ -111,7 +112,10 @@ export async function runTerminalChild(
   }
   const request = parseTerminalChildRequest(raw, absoluteRequest);
   const directory = path.dirname(absoluteRequest);
+  // 包装进程的耗时同样只做内存计时并异步落盘；写日志失败绝不影响启动或退出。
+  const timing = new StartupTiming("terminal-child");
   const identity = await (deps.identity ?? readProcessIdentity)(process.pid);
+  timing.mark("identity");
   if (!identity || identity.pid !== process.pid && !deps.identity) {
     throw new Error("TERMINAL_CHILD_IDENTITY");
   }
@@ -121,6 +125,7 @@ export async function runTerminalChild(
     executable: identity.executable,
     startedAt: identity.startedAt,
   }), { encoding: "utf8", mode: 0o600 });
+  timing.mark("status");
 
   // 桥接确认 lease 后才写 .start；取消、停止或桥接消失都不得产生失控 CLI。
   const startFile = path.join(directory, `${request.leaseId}.start`);
@@ -131,6 +136,7 @@ export async function runTerminalChild(
     if (Date.now() >= startDeadline) throw new Error("TERMINAL_CHILD_START_TIMEOUT");
     await new Promise<void>((resolve) => setTimeout(resolve, 50));
   }
+  timing.mark("start");
 
   // token 只在包装进程内从私有文件进入子进程环境，不出现在请求或可见命令行。
   const hookToken = request.hookTokenFile
@@ -153,6 +159,8 @@ export async function runTerminalChild(
   } catch {
     throw new Error("TERMINAL_CHILD_SPAWN");
   }
+  timing.mark("spawn");
+  void timing.flush();
 
   await new Promise<void>((resolve, reject) => {
     const stopTimer = setInterval(() => {

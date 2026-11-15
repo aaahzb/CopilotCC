@@ -29,6 +29,7 @@ import type {
   TerminalStartContext,
 } from "./terminal-lease";
 import type { EmbeddedTerminalHandle } from "./embedded-terminal";
+import { StartupTiming } from "./startup-timing";
 
 /** 服务依赖。createSession 仅供测试注入假会话工厂。 */
 export interface ServerDeps {
@@ -1570,6 +1571,7 @@ function attachHandlers(wss: WebSocketServer, deps: ServerDeps, instanceId: stri
     };
     let pickSeq = 0; // folder.pick 代际号：新请求使旧请求的迟到结果作废（每连接独立）
     let ownedTerminalLease: string | null = null; // 系统终端不因视图断开而退出，只清除该连接的所有权
+    let terminalOpenTiming: StartupTiming | null = null; // 仅本连接的 terminal.open 请求→应答耗时
     let sawReady = false; // 旧客户端只在首个 ready 前发送无标记的自动完整设置
     let pendingLegacyHello: Extract<ClientMessage, { type: "settings.set" }> | null = null;
     let pendingLegacyTail: ClientMessage[] = []; // 候选后的交错帧：待候选身份判明后按原序释放
@@ -1637,18 +1639,25 @@ function attachHandlers(wss: WebSocketServer, deps: ServerDeps, instanceId: stri
             send({ type: "terminal.error", ...terminalFailure(new Error("START_FAILED")) });
             break;
           }
+          // 请求→opened 是用户点击“打开终端”后真正等待的桥接侧总时长，含 SDK 挂起与适配器启动。
+          const timing = new StartupTiming("terminal.open");
+          terminalOpenTiming = timing;
           const opening = m.mode === "embedded"
             ? terminal.openEmbedded(ws)
             : terminal.open(m.mode).then((state) => ({ state, attachToken: undefined }));
           const openingLease = terminal.publicState().leaseId;
           ownedTerminalLease = openingLease; // starting 即归属本连接，避免启动途中无法关闭
           void opening.then(({ state, attachToken }) => {
+            timing.mark("opened");
+            void timing.flush();
             if (!state.leaseId || !state.mode || !state.backend) throw new Error("START_FAILED");
             send({
               type: "terminal.opened", leaseId: state.leaseId, mode: state.mode, backend: state.backend,
               ...(attachToken ? { attachToken } : {}),
             });
           }).catch((error: unknown) => {
+            timing.mark("failed");
+            void timing.flush();
             if (ownedTerminalLease === openingLease) ownedTerminalLease = null;
             send({ type: "terminal.error", ...terminalFailure(error) });
           });
@@ -1661,6 +1670,11 @@ function attachHandlers(wss: WebSocketServer, deps: ServerDeps, instanceId: stri
           }
           try {
             const replay = terminal.attach(ws, m.leaseId, m.attachToken, m.afterSeq);
+            if (terminalOpenTiming) {
+              terminalOpenTiming.mark("attached"); // 只记首次 attach；后续重连不属于启动耗时
+              void terminalOpenTiming.flush();
+              terminalOpenTiming = null;
+            }
             ownedTerminalLease = m.leaseId;
             send({ type: "terminal.attached", leaseId: m.leaseId, replayGap: replay.gap, latestSeq: replay.latestSeq });
             if (replay.gap) {

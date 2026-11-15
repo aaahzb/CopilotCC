@@ -270,6 +270,35 @@ describe("TerminalApp 真实 xterm 接线", () => {
     expect(host.querySelector(".terminal-action-status")?.textContent).toContain("已发送导出");
   });
 
+  it("真实 transcript 页脚没有 ↑↓ scroll 时也识别并发送导出键", async () => {
+    const host = await mount();
+    const term = mocks.terminalInstances[0]!;
+    const client = mocks.clientInstances[0]!;
+    client.attached = true;
+    const history = Array.from(host.querySelectorAll<HTMLButtonElement>("button"))
+      .find((button) => button.textContent === "可滚历史");
+    await act(async () => history?.click());
+    // 2.1.323 窄窗口或 virtualScroll=false 时页脚只保留稳定段，没有 ↑↓ scroll。
+    term.lines = ["Showing detailed transcript · ctrl+o to toggle · ctrl+e to show all/collapse · ? for shortcuts"];
+    await act(async () => term.writeParsedCallback?.());
+    expect(client.input).toHaveBeenCalledWith("[");
+    expect(host.querySelector(".terminal-action-status")?.textContent).toContain("已发送导出");
+  });
+
+  it("普通画面只含 transcript 标题时不盲发导出键", async () => {
+    const host = await mount();
+    const term = mocks.terminalInstances[0]!;
+    const client = mocks.clientInstances[0]!;
+    client.attached = true;
+    const history = Array.from(host.querySelectorAll<HTMLButtonElement>("button"))
+      .find((button) => button.textContent === "可滚历史");
+    await act(async () => history?.click());
+    // 只剩标题、没有稳定的 ctrl+o 切换提示，不能当作 detailed viewer 盲发 `[`。
+    term.lines = ["Showing detailed transcript 导出进行中"];
+    await act(async () => term.writeParsedCallback?.());
+    expect(client.input).not.toHaveBeenCalledWith("[");
+  });
+
   it("transcript 超时未出现时不盲发导出键，并提示手动键序", async () => {
     const host = await mount();
     const client = mocks.clientInstances[0]!;

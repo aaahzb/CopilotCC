@@ -1,16 +1,18 @@
 import { EventEmitter } from "node:events";
-import { spawnSync, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { runTerminalChild, terminalChildErrorCode, type TerminalChildRequest } from "../src/terminal-child";
+import { enableStartupTiming } from "../src/startup-timing";
 
 const LEASE_ID = "33333333-3333-4333-8333-333333333333";
 const tempDirs: string[] = [];
 
 afterEach(() => {
   vi.useRealTimers();
+  enableStartupTiming(null);
   for (const dir of tempDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -59,6 +61,27 @@ describe("runTerminalChild", () => {
     expect(JSON.parse(fs.readFileSync(request.exitFile, "utf8"))).toEqual({
       leaseId: LEASE_ID, exitCode: 0, reason: "exit",
     });
+  });
+
+  it("启用启动日志后记录身份查询、等待准许与 CLI 启动耗时", async () => {
+    const { requestFile, request } = requestFixture();
+    enableStartupTiming(request.cwd);
+    const child = new EventEmitter() as ChildProcess;
+    const spawnImpl = vi.fn(() => {
+      queueMicrotask(() => child.emit("exit", 0, null));
+      return child;
+    });
+    const running = runTerminalChild(requestFile, {
+      spawn: spawnImpl as never,
+      identity: async () => ({ pid: 1234, executable: "C:/bridge/ccc-bridge.exe", startedAt: "2026-11-10T08:00:00.000Z" }),
+    });
+    await vi.waitFor(() => expect(fs.existsSync(path.join(request.cwd, `${LEASE_ID}.status.json`))).toBe(true));
+    fs.writeFileSync(path.join(request.cwd, `${LEASE_ID}.start`), "", "utf8");
+    await running;
+    const logFile = path.join(request.cwd, "startup.log");
+    await vi.waitFor(() => expect(fs.readFileSync(logFile, "utf8")).toMatch(
+      /\[startup\] terminal-child identity=\d+ms status=\d+ms start=\d+ms spawn=\d+ms total=\d+ms/,
+    ));
   });
 
   it("桥接最终失败写 cancel 后，包装进程不得启动 CLI", async () => {
@@ -132,6 +155,40 @@ describe("runTerminalChild", () => {
     const io = Object.assign(new Error("ENOENT: /private/request/token-content"), { code: "ENOENT" });
     expect(terminalChildErrorCode(io)).toBe("ENOENT");
     expect(terminalChildErrorCode(new Error("token=secret /private/request.json"))).toBe("TERMINAL_CHILD_UNKNOWN");
+  });
+
+  it.each(["src/index.ts", "src/tray.ts"])("%s 成功路径启用启动日志并按段记录包装耗时", async (entry) => {
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), "ccc-terminal-entry-log-"));
+    tempDirs.push(work);
+    const directory = path.join(work, "terminal");
+    fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+    const requestFile = path.join(directory, `${LEASE_ID}.request.json`);
+    fs.writeFileSync(requestFile, JSON.stringify({
+      leaseId: LEASE_ID,
+      cwd: work,
+      cliPath: process.execPath,
+      args: ["-e", "0"], // 本地 Node 立即成功退出，不启动真实 Claude
+      exitFile: path.join(directory, `${LEASE_ID}.exit.json`),
+      stopFile: path.join(directory, `${LEASE_ID}.stop`),
+    }), { encoding: "utf8", mode: 0o600 });
+    const running = spawn(process.execPath, [
+      path.resolve("node_modules", "tsx", "dist", "cli.mjs"),
+      path.resolve(entry), "--terminal-child", requestFile,
+    ], {
+      cwd: path.resolve("."),
+      env: { ...process.env, CCC_BRIDGE_HOME: work },
+      windowsHide: true,
+    });
+    await vi.waitFor(
+      () => expect(fs.existsSync(path.join(directory, `${LEASE_ID}.status.json`))).toBe(true),
+      { timeout: 15_000 },
+    );
+    fs.writeFileSync(path.join(directory, `${LEASE_ID}.start`), "", "utf8");
+    const exitCode = await new Promise<number | null>((resolve) => running.once("exit", resolve));
+    expect(exitCode).toBe(0);
+    await vi.waitFor(() => expect(fs.readFileSync(path.join(work, "startup.log"), "utf8")).toMatch(
+      /\[startup\] terminal-child identity=\d+ms status=\d+ms start=\d+ms spawn=\d+ms total=\d+ms/,
+    ));
   });
 
   it.each(["src/index.ts", "src/tray.ts"])("%s 保留固定错误码且不泄露私有请求路径", (entry) => {

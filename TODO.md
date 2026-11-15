@@ -25,6 +25,18 @@
 - [ ] 本地修复与复验已完成，并按用户授权提交到本地 main；推送和云端 CI 尚未执行，Ubuntu 与 Windows 的真实新 run 仍待验证。本轮未修改扩展或终端生产逻辑，也未重新执行真实双终端 E2E；原始 macOS“插件终端窗口创建失败，未启动 Claude”仍按下一节保持未复现、未定位，不能关闭。
 - **历史证据边界：**下文 CI #42–#51 的 Windows“通过/全绿”保留当时 job/step 运行结论，但修复前公共步骤可能吞掉测试退出码，不能再单独作为 Windows 测试全绿证明。除 CI #52 原始日志已明确证明两项隐藏失败外，不反向推定其他历史 run 必有失败；需要时应逐份读取原始日志复核。
 
+## 2026-11-15 “可滚历史”检测修复与启动耗时测量（本地完成，未提交）
+
+- [x] “可滚历史”误报根因：Claude Code 2.1.323 transcript 视图页脚稳定段是 `Showing detailed transcript · ctrl+o to toggle`，`↑↓ scroll` 只在 virtualScroll 为真且窗口够宽时出现；原判定强制要求 `↑↓ scroll`，窄窗口必然误报“未检测到历史视图，请手动按 Ctrl+O，再按 [”。现改为“标题 + `to toggle`”双条件，Windows/macOS 共用扩展判定，仍只在 detailed viewer 内发送 `[`，不扩大为盲发。
+- [x] 先 RED 后 GREEN：`extension/tests/terminal-page.test.tsx` 新增“真实 transcript 页脚没有 ↑↓ scroll 时也识别并发送导出键”及负控“普通画面只含 transcript 标题时不盲发导出键”；修复前新用例只收到 `\x0f` 未收到 `[`，修复后聚焦 10/10 通过。
+- [x] 启动耗时只测量、不改启动路径：新增 `bridge/src/startup-timing.ts`，计时全部是内存 `Date.now()` 差值，写盘用异步 `fs.promises.appendFile`，不等待、不抛错；测试与 selftest 默认关闭，只有常驻入口显式 `enableStartupTiming(configDir())` 才落盘。scope/tag 走安全字符白名单，非法值直接丢弃，避免伪造日志行或泄露敏感信息。
+- [x] 日志位置与格式：写入 `<configDir>/startup.log`（默认 `~/.ccc-bridge/startup.log`），GUI winexe 无可见控制台也能事后查看；每行形如 `2026-11-15T05:45:00.000Z [startup] embedded probe=49ms settings=12ms spawn=180ms identity=31ms total=272ms`，同一行内各阶段为“距上一阶段”，`total` 为“距本次启动开始”。首输出与首次 attach 以增量行补齐。
+- [x] 埋点范围：`server.ts` 记录 `terminal.open` 的 `opened`/`failed`/`attached`；`embedded-terminal.ts` 记录 `probe/settings/spawn/identity` 与 CLI `firstOutput`；`system-terminal.ts` 记录 `probe/settings/launch/status` 并标注 `backend=windows-terminal|console`；`terminal-child.ts` 记录包装进程 `identity/status/start/spawn`；`index.ts` 与 `tray.ts` 两个常驻入口及 `--terminal-child` 独立入口分别启用。
+- [x] 测试证据：`bridge/tests/startup-timing.test.ts` 5 项覆盖精确两行格式、未启用不建文件、无新标记不写空行、非法标签丢弃、目录不可写静默 resolve；四个适配器/服务集成测试加入真实临时目录日志断言，两个 CLI 入口用 tsx + 隔离 `CCC_BRIDGE_HOME` 走成功路径。实现前均取得 `Cannot find module` 或 `ENOENT startup.log` 的有效 RED。
+- [x] 最终本地全量（2026-11-15 复跑）：bridge 41 个测试文件、456 项通过 / 1 项跳过（457 项）；extension 24 个文件、182 项通过；两端 `tsc --noEmit` 与扩展 production build（3.03 MB）均通过。
+- [x] 用户文档同步：`docs/guide.md` FAQ 新增 `startup.log` 的位置、分段含义与“异步写入、不拖慢启动”说明，Release 用户可直接查看，不需要控制台或额外工具。
+- [ ] 未提交、未推送、未重建 Windows exe、未做真实 Chrome + 隔离假 CLI 的启动日志端到端验收；启动提速本身（probe 结果未复用、PowerShell 身份查询约 250ms、CLI 自身 TUI 启动）按用户要求留待后续研究，本轮只完成测量。
+
 ## 2026-11-14 macOS 实机调试交接（总状态：未完成）
 
 > 下文各日期章节保留当时的历史状态；当前结论以本节和 [RETURN-REPORT](RETURN-REPORT.md) 为准。

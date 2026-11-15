@@ -7,6 +7,7 @@ import { UUID_RE, type TerminalBackend } from "./protocol";
 import { terminalChildCommand, terminalHookCommand, type TerminalChildCommand } from "./runtime-entry";
 import type { TerminalChildRequest } from "./terminal-child";
 import { writeTerminalSettings } from "./terminal-hooks";
+import { StartupTiming } from "./startup-timing";
 import type {
   ProcessIdentity,
   TerminalLeaseRecord,
@@ -86,11 +87,15 @@ export class SystemTerminalAdapter {
       throw new Error("TERMINAL_PLATFORM_UNSUPPORTED");
     }
     fs.mkdirSync(context.privateDir, { recursive: true, mode: 0o700 });
+    // 启动耗时只做内存计时，flush 异步落盘；不得在启动链上等待写日志。
+    const timing = new StartupTiming("system");
     const transport = selectHookTransport(await this.probeVersion(context.cliPath));
+    timing.mark("probe");
     const helperCommand = transport === "command"
       ? terminalHookCommand(context.leaseId, this.childCommand)
       : undefined;
     const settingsFile = writeTerminalSettings(context, transport, helperCommand);
+    timing.mark("settings");
     const requestFile = path.join(context.privateDir, `${context.leaseId}.request.json`);
     const exitFile = path.join(context.privateDir, `${context.leaseId}.exit.json`);
     const stopFile = path.join(context.privateDir, `${context.leaseId}.stop`);
@@ -152,6 +157,8 @@ export class SystemTerminalAdapter {
       ], { detached: true, stdio: "ignore", windowsHide: false });
     }
 
+    timing.tag("backend", backend);
+    timing.mark("launch"); // 启动器只是拉起窗口，真正等待包装进程身份的是下一段 status。
     let status: ProcessIdentity;
     try {
       status = await this.waitForStatus(context);
@@ -170,7 +177,10 @@ export class SystemTerminalAdapter {
       }
       throw error;
     }
-    return this.createHandle(context, status, exitFile, stopFile, backend);
+    timing.mark("status");
+    const handle = this.createHandle(context, status, exitFile, stopFile, backend);
+    void timing.flush();
+    return handle;
   }
 
   /**

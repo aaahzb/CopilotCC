@@ -16,6 +16,7 @@ import type {
 } from "./terminal-lease";
 import { TerminalOutputBuffer, type ReplayPage, type TerminalOutputBufferLimits } from "./terminal-output-buffer";
 import { createPtyBackend, type PtyBackend, type PtyProcess } from "./pty-backend";
+import { StartupTiming } from "./startup-timing";
 
 /** EmbeddedSession 的可注入边界；生产只使用随机 token、真实 WS 和 3 秒默认值。 */
 export interface EmbeddedSessionOptions {
@@ -258,11 +259,15 @@ export class EmbeddedTerminalAdapter {
    * @throws 原生后端或 Hook 设置启动失败。
    */
   async start(context: TerminalStartContext): Promise<EmbeddedTerminalHandle> {
+    // 启动耗时只做内存计时，flush 异步落盘；不得在启动链上等待写日志。
+    const timing = new StartupTiming("embedded");
     const transport = selectHookTransport(await this.probeVersion(context.cliPath));
+    timing.mark("probe");
     const helperCommand = transport === "command"
       ? terminalHookCommand(context.leaseId, this.childCommand)
       : undefined;
     const settingsFile = writeTerminalSettings(context, transport, helperCommand);
+    timing.mark("settings");
     const args = [
       ...(context.initialSessionId
         ? ["--resume", context.initialSessionId]
@@ -277,7 +282,10 @@ export class EmbeddedTerminalAdapter {
     const pty = await this.deps.backend.spawn({
       file: context.cliPath, args, cwd: context.folder, cols: 120, rows: 32, env,
     });
+    timing.mark("spawn");
     const identity = await this.readIdentity(pty.pid);
+    timing.mark("identity");
+    void timing.flush();
     const session = new EmbeddedSession(context.leaseId, pty, () => {
       void handle.stop();
     }, {
@@ -313,7 +321,15 @@ export class EmbeddedTerminalAdapter {
         // backend 由 adapter 持有并可启动后续 lease；单次关窗不能关闭共享 helper。
       },
     };
-    pty.onData((data) => session.append(data));
+    let firstOutputSeen = false;
+    pty.onData((data) => {
+      if (!firstOutputSeen) {
+        firstOutputSeen = true;
+        timing.mark("firstOutput"); // CLI TUI 真正开始产出的时刻，是启动体验的主要剩余延迟。
+        void timing.flush();
+      }
+      session.append(data);
+    });
     pty.onExit(({ exitCode }) => {
       if (exitResult) return;
       exitResult = { exitCode, reason: "exit" };

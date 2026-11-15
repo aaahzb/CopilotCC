@@ -14,6 +14,7 @@ import type { PtyBackend, PtyExitEvent, PtyProcess, PtySpawnOptions } from "../s
 import { EmbeddedTerminalAdapter } from "../src/embedded-terminal";
 import { TerminalLeaseStore } from "../src/terminal-store";
 import type { TerminalLeaseRecord } from "../src/terminal-lease";
+import { enableStartupTiming } from "../src/startup-timing";
 
 const SID_1 = "11111111-1111-4111-8111-111111111111";
 const SID_2 = "22222222-2222-4222-8222-222222222222";
@@ -25,6 +26,7 @@ let previousConfigDir: string | undefined;
 
 afterEach(async () => {
   vi.useRealTimers();
+  enableStartupTiming(null);
   for (const ws of sockets.splice(0)) ws.close();
   // kill 的 Promise 不代表进程退出；夹具清理必须显式驱动真实退出回调，避免关闭屏障等待假进程。
   for (const pty of fakePtys.splice(0)) pty.emitExit(0);
@@ -342,6 +344,19 @@ describe("内嵌终端真实 WS 服务接线", () => {
     expect(output).toMatchObject({ leaseId: opened.leaseId, seq: 1, data: "before attach" });
     expect(f.view.inbox.inbox.indexOf(attached)).toBeLessThan(f.view.inbox.inbox.indexOf(output));
     expect(other.inbox.inbox.filter((message) => message.type === "terminal.output")).toHaveLength(0);
+  });
+
+  it("启用启动日志后 opened 与首次 attach 分段记录", async () => {
+    const f = await fixture();
+    enableStartupTiming(f.dir);
+    const opened = await openEmbedded(f);
+    attach(f.view, opened);
+    await f.view.inbox.waitFor("terminal.attached");
+    await vi.waitFor(() => {
+      const log = fs.readFileSync(path.join(f.dir, "startup.log"), "utf8");
+      expect(log).toMatch(/\[startup\] terminal\.open opened=\d+ms total=\d+ms/);
+      expect(log).toMatch(/\[startup\] terminal\.open attached=\d+ms total=\d+ms/);
+    });
   });
 
   it("input/resize 只接受 attached owner，普通聊天连接断开不影响 PTY", async () => {

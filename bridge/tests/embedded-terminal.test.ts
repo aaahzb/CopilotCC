@@ -6,6 +6,7 @@ import path from "node:path";
 import { createEmbeddedBackend, EmbeddedSession, EmbeddedTerminalAdapter } from "../src/embedded-terminal";
 import type { PtyExitEvent, PtyProcess } from "../src/pty-backend";
 import type { ServerMessage } from "../src/protocol";
+import { enableStartupTiming } from "../src/startup-timing";
 
 const LEASE_ID = "11111111-1111-4111-8111-111111111111";
 const TOKEN = "A".repeat(43);
@@ -52,6 +53,7 @@ function session(pty = fakePty(), onTimeout = vi.fn<() => void>()) {
 
 afterEach(() => {
   vi.useRealTimers();
+  enableStartupTiming(null);
   for (const dir of tempDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -281,5 +283,50 @@ describe("EmbeddedTerminalAdapter 正常关闭", () => {
     expect(() => f.session.attach(first as never, TOKEN, 0)).toThrow("NOT_OWNER");
     await vi.advanceTimersByTimeAsync(3000);
     expect(f.onTimeout).not.toHaveBeenCalled();
+  });
+});
+
+describe("内嵌终端启动耗时日志", () => {
+  it("启动按 probe/settings/spawn/identity 分段，首输出再补记 firstOutput", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ccc-embedded-timing-"));
+    tempDirs.push(dir);
+    enableStartupTiming(dir);
+    let emitData: ((data: string) => void) | undefined;
+    const pty: PtyProcess = {
+      pid: 4321,
+      onData: vi.fn((callback: (data: string) => void) => { emitData = callback; }),
+      onExit: vi.fn(),
+      write: vi.fn(),
+      resize: vi.fn(),
+      kill: vi.fn(async () => {}),
+    };
+    const adapter = new EmbeddedTerminalAdapter({
+      backend: { kind: "bun-node-pty", spawn: vi.fn(async () => pty), close: vi.fn(async () => {}) },
+      probeVersion: async () => "2.1.323",
+      childCommand: { executable: "C:/bridge/ccc-terminal.exe", prefixArgs: [] },
+      readIdentity: async () => ({
+        pid: 4321, executable: "C:/cli/claude.exe", startedAt: "2026-11-10T08:00:00.000Z",
+      }),
+    });
+    await adapter.start({
+      leaseId: LEASE_ID,
+      hookToken: "H".repeat(43),
+      mode: "embedded",
+      folder: dir,
+      initialSessionId: LEASE_ID,
+      resumeSessionId: LEASE_ID,
+      cliPath: path.join(dir, "fake-claude.exe"),
+      port: 19280,
+      privateDir: path.join(dir, "terminal"),
+    });
+    const logFile = path.join(dir, "startup.log");
+    await vi.waitFor(() => expect(fs.readFileSync(logFile, "utf8")).toMatch(
+      /\[startup\] embedded probe=\d+ms settings=\d+ms spawn=\d+ms identity=\d+ms total=\d+ms/,
+    ));
+    expect(emitData).toBeTypeOf("function");
+    emitData!("首帧输出");
+    await vi.waitFor(() => expect(fs.readFileSync(logFile, "utf8")).toMatch(
+      /\[startup\] embedded firstOutput=\d+ms total=\d+ms/,
+    ));
   });
 });

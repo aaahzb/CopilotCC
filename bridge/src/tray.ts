@@ -30,6 +30,7 @@ import { SystemTerminalAdapter } from "./system-terminal";
 import { createEmbeddedTerminalAdapter } from "./embedded-terminal";
 import { runPtySmoke } from "./pty-smoke";
 import { terminalChildCommand, terminalNativeDirectory } from "./runtime-entry";
+import { enableStartupTiming } from "./startup-timing";
 
 /** systray2 的 MenuItem 没有 click 字段（那是它的自定义扩展属性），本地扩一个 */
 type TrayItem = MenuItem & { click?: () => void };
@@ -133,6 +134,7 @@ function openUrl(url: string): void {
 /** 托盘主流程：读配置 → 起 WS 桥（含 /config 设置页）→ 定位托盘二进制 → 建托盘菜单 */
 async function main(): Promise<void> {
   const config = loadOrCreateConfig();
+  enableStartupTiming(configDir()); // 启动耗时写入 configDir/startup.log；异步写盘，不影响托盘启动
   claimInstance(configDir()); // 单实例守卫：已有活实例直接抛错（落 tray-error.log）
   const sessions = new SessionManager(path.join(configDir(), "sessions.json"));
   sessions.load();
@@ -267,6 +269,7 @@ if (process.argv[2] === "--pty-smoke") {
     process.exitCode = 1;
   });
 } else if (process.argv[2] === "--terminal-child") {
+  enableStartupTiming(configDir()); // 包装进程是独立入口，需单独启用才能记录身份查询与等待耗时
   const requestFile = path.resolve(process.argv[3] ?? "");
   const privateDir = path.resolve(configDir(), "terminal");
   if (path.dirname(requestFile) !== privateDir) {

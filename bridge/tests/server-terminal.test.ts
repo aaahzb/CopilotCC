@@ -13,6 +13,7 @@ import type { ServerMessage } from "../src/protocol";
 import type { TerminalRuntimeHandle, TerminalStartContext, TerminalLeaseRecord } from "../src/terminal-lease";
 import { TerminalLeaseStore } from "../src/terminal-store";
 import { SystemTerminalAdapter } from "../src/system-terminal";
+import { enableStartupTiming } from "../src/startup-timing";
 
 const SID_1 = "11111111-1111-4111-8111-111111111111";
 const SID_2 = "22222222-2222-4222-8222-222222222222";
@@ -22,6 +23,7 @@ const sockets: WebSocket[] = [];
 let previousConfigDir: string | undefined;
 
 afterEach(async () => {
+  enableStartupTiming(null);
   for (const ws of sockets.splice(0)) ws.close();
   for (const server of servers.splice(0)) await server.close();
   if (previousConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
@@ -328,6 +330,15 @@ describe("系统终端生产 WS 接线", () => {
     expect(restoreIndex).toBeGreaterThan(mirrorIndex);
     expect(idleIndex).toBeGreaterThan(restoreIndex);
     expect(f.createdSessions.at(-1)?.opts.resumeId).toBe(SID_2);
+  });
+
+  it("启用启动日志后记录 terminal.open 从请求到应答的总耗时", async () => {
+    const f = await fixture();
+    enableStartupTiming(f.dir);
+    await openTerminal(f);
+    await vi.waitFor(() => expect(fs.readFileSync(path.join(f.dir, "startup.log"), "utf8")).toMatch(
+      /\[startup\] terminal\.open opened=\d+ms total=\d+ms/,
+    ));
   });
 
   it("活动 lease 原子保存并在真实退出后按同一 leaseId 清除", async () => {

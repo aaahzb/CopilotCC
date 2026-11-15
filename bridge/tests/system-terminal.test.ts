@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { SystemTerminalAdapter, shellQuote } from "../src/system-terminal";
 import type { TerminalStartContext } from "../src/terminal-lease";
 import { ensureShellEnvFallback, resolveClaudeExecutable } from "../src/claude-session";
+import { enableStartupTiming } from "../src/startup-timing";
 
 const LEASE_ID = "33333333-3333-4333-8333-333333333333";
 const SID_1 = "11111111-1111-4111-8111-111111111111";
@@ -37,6 +38,7 @@ function fakeLaunch(): { spawnImpl: ReturnType<typeof vi.fn>; childCommand: { ex
 
 afterEach(() => {
   vi.useRealTimers();
+  enableStartupTiming(null);
   for (const dir of tempDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -173,6 +175,21 @@ describe("SystemTerminalAdapter", () => {
     expect(spawnImpl.mock.calls[0]?.[1]?.join(" ")).toContain('tell application "Terminal"');
     expect(spawnImpl.mock.calls[0]?.[1]?.join(" ")).toContain("'\"'\"'");
     expect(shellQuote("a'b")).toBe("'a'\"'\"'b'");
+  });
+
+  it("启用启动日志后记录 probe/settings/launch/status 与真实后端", async () => {
+    privateDir = fs.mkdtempSync(path.join(os.tmpdir(), "ccc-system-timing-"));
+    tempDirs.push(privateDir);
+    enableStartupTiming(privateDir);
+    const { spawnImpl, childCommand } = fakeLaunch();
+    const adapter = new SystemTerminalAdapter({
+      platform: "win32", spawn: spawnImpl as never, which: () => "C:/WindowsTerminal/wt.exe",
+      childCommand, probeVersion: async () => "2.1.323",
+    });
+    await adapter.start(context());
+    await vi.waitFor(() => expect(fs.readFileSync(path.join(privateDir, "startup.log"), "utf8")).toMatch(
+      /\[startup\] system backend=windows-terminal probe=\d+ms settings=\d+ms launch=\d+ms status=\d+ms total=\d+ms/,
+    ));
   });
 
   it("CLI 路径和 shell 环境解析复用现有生产函数", () => {

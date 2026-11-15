@@ -14,8 +14,10 @@ const INITIAL_VIEW: TerminalClientView = {
 
 /**
  * 检查当前可见 xterm 行是否为 Claude Code 的 transcript 视图。
+ * 页脚稳定段是 “Showing detailed transcript · ctrl+o to toggle”；“↑↓ scroll”只在
+ * virtualScroll 为真且窗口够宽时出现，不能作为判定条件，否则窄窗口必然误报未打开。
  * @param terminal 真实 xterm 实例
- * @returns 看见 CLI 详细历史及其上下滚动提示时返回 true
+ * @returns 看见 CLI 详细历史及其 ctrl+o 切换提示时返回 true
  */
 function hasVisibleTranscript(terminal: Terminal): boolean {
   const buffer = terminal.buffer.active;
@@ -24,7 +26,7 @@ function hasVisibleTranscript(terminal: Terminal): boolean {
   for (let index = buffer.viewportY; index < end; index += 1) {
     visible += `${buffer.getLine(index)?.translateToString(true) ?? ""}\n`;
   }
-  return /Showing detailed transcript/i.test(visible) && visible.includes("↑↓ scroll");
+  return /Showing detailed transcript/i.test(visible) && /to toggle/i.test(visible);
 }
 
 /** 独立 Chrome 终端页：xterm 只负责显示与输入，真实进程由桥接 PTY 持有。 */
