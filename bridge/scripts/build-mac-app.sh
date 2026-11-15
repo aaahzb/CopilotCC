@@ -98,7 +98,22 @@ echo "DMG 打包前磁盘与舞台占用："
 df -h "$REPO" /Volumes
 du -sh "$STAGE"
 find "$STAGE" -type f -exec ls -ls {} \;
-hdiutil create -volname "CopilotCC Bridge" -srcfolder "$STAGE" -ov -format UDZO "$REPO/ccc-bridge-darwin-arm64.dmg"
+# hdiutil -srcfolder 会按源目录估算临时镜像容量，runner 上偶发低估或文件系统元数据空间不足，
+# 报 "No space left on device" 并中断复制（2026-11-15 CI 复现：主机仍有 95Gi，舞台仅 198M）。
+# 显式给舞台占用 + 64MiB 余量；并对已知偶发失败做 3 次有界重试，保留每次输出供排查。
+DMG_SIZE_KB="$(( $(du -sk "$STAGE" | awk '{print $1}') + 65536 ))"
+dmg_ok=0
+for attempt in 1 2 3; do
+  if hdiutil create -volname "CopilotCC Bridge" -srcfolder "$STAGE" -ov -format UDZO \
+    -size "${DMG_SIZE_KB}k" "$REPO/ccc-bridge-darwin-arm64.dmg"; then
+    dmg_ok=1
+    break
+  fi
+  echo "hdiutil 第 ${attempt} 次失败；清理半成品后重试" >&2
+  rm -f "$REPO/ccc-bridge-darwin-arm64.dmg"
+  if [ "$attempt" -lt 3 ]; then sleep 2; fi
+done
+[ "$dmg_ok" -eq 1 ] || { echo "✘ hdiutil 连续 3 次失败"; exit 1; }
 rm -rf "$STAGE" "$ROOT/dist/ccc.iconset"
 # 教训：变量后紧跟全角标点（，。（等）时，mac runner 的 bash 会把标点首字节吞进变量名 → 一律 ${} 花括号
 echo "✔ $REPO/ccc-bridge-darwin-arm64.dmg（${APP}，ad-hoc 预签，版本 ${VER}）"

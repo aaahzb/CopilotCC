@@ -157,6 +157,8 @@ describe("runTerminalChild", () => {
     expect(terminalChildErrorCode(new Error("token=secret /private/request.json"))).toBe("TERMINAL_CHILD_UNKNOWN");
   });
 
+  // 真实子进程用例要冷启动 tsx 并加载入口模块；CI 并行跑全量测试时可能超过 Vitest 默认 5s 上限，
+  // 这里显式放宽到 30s。用例内部的 vi.waitFor(15s) 仍是实际完成条件，不会把挂死误判为通过。
   it.each(["src/index.ts", "src/tray.ts"])("%s 成功路径启用启动日志并按段记录包装耗时", async (entry) => {
     const work = fs.mkdtempSync(path.join(os.tmpdir(), "ccc-terminal-entry-log-"));
     tempDirs.push(work);
@@ -189,7 +191,7 @@ describe("runTerminalChild", () => {
     await vi.waitFor(() => expect(fs.readFileSync(path.join(work, "startup.log"), "utf8")).toMatch(
       /\[startup\] terminal-child identity=\d+ms status=\d+ms start=\d+ms spawn=\d+ms total=\d+ms/,
     ));
-  });
+  }, 30_000);
 
   it.each(["src/index.ts", "src/tray.ts"])("%s 保留固定错误码且不泄露私有请求路径", (entry) => {
     const work = fs.mkdtempSync(path.join(os.tmpdir(), "ccc-terminal-entry-"));

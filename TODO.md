@@ -25,7 +25,7 @@
 - [ ] 本地修复与复验已完成，并按用户授权提交到本地 main；推送和云端 CI 尚未执行，Ubuntu 与 Windows 的真实新 run 仍待验证。本轮未修改扩展或终端生产逻辑，也未重新执行真实双终端 E2E；原始 macOS“插件终端窗口创建失败，未启动 Claude”仍按下一节保持未复现、未定位，不能关闭。
 - **历史证据边界：**下文 CI #42–#51 的 Windows“通过/全绿”保留当时 job/step 运行结论，但修复前公共步骤可能吞掉测试退出码，不能再单独作为 Windows 测试全绿证明。除 CI #52 原始日志已明确证明两项隐藏失败外，不反向推定其他历史 run 必有失败；需要时应逐份读取原始日志复核。
 
-## 2026-11-15 “可滚历史”检测修复与启动耗时测量（本地完成，未提交）
+## 2026-11-15 “可滚历史”检测修复与启动耗时测量（已提交，CI 回归修复中）
 
 - [x] “可滚历史”误报根因：Claude Code 2.1.323 transcript 视图页脚稳定段是 `Showing detailed transcript · ctrl+o to toggle`，`↑↓ scroll` 只在 virtualScroll 为真且窗口够宽时出现；原判定强制要求 `↑↓ scroll`，窄窗口必然误报“未检测到历史视图，请手动按 Ctrl+O，再按 [”。现改为“标题 + `to toggle`”双条件，Windows/macOS 共用扩展判定，仍只在 detailed viewer 内发送 `[`，不扩大为盲发。
 - [x] 先 RED 后 GREEN：`extension/tests/terminal-page.test.tsx` 新增“真实 transcript 页脚没有 ↑↓ scroll 时也识别并发送导出键”及负控“普通画面只含 transcript 标题时不盲发导出键”；修复前新用例只收到 `\x0f` 未收到 `[`，修复后聚焦 10/10 通过。
@@ -35,7 +35,16 @@
 - [x] 测试证据：`bridge/tests/startup-timing.test.ts` 5 项覆盖精确两行格式、未启用不建文件、无新标记不写空行、非法标签丢弃、目录不可写静默 resolve；四个适配器/服务集成测试加入真实临时目录日志断言，两个 CLI 入口用 tsx + 隔离 `CCC_BRIDGE_HOME` 走成功路径。实现前均取得 `Cannot find module` 或 `ENOENT startup.log` 的有效 RED。
 - [x] 最终本地全量（2026-11-15 复跑）：bridge 41 个测试文件、456 项通过 / 1 项跳过（457 项）；extension 24 个文件、182 项通过；两端 `tsc --noEmit` 与扩展 production build（3.03 MB）均通过。
 - [x] 用户文档同步：`docs/guide.md` FAQ 新增 `startup.log` 的位置、分段含义与“异步写入、不拖慢启动”说明，Release 用户可直接查看，不需要控制台或额外工具。
-- [ ] 未提交、未推送、未重建 Windows exe、未做真实 Chrome + 隔离假 CLI 的启动日志端到端验收；启动提速本身（probe 结果未复用、PowerShell 身份查询约 250ms、CLI 自身 TUI 启动）按用户要求留待后续研究，本轮只完成测量。
+- [x] 已提交到本地 main（`d50c533 修复可滚历史检测并记录终端启动耗时`），并由用户推送到远端；云端 CI 复验发现两处回归，见下节。
+- [ ] 未重建 Windows exe、未做真实 Chrome + 隔离假 CLI 的启动日志端到端验收；启动提速本身（probe 结果未复用、PowerShell 身份查询约 250ms、CLI 自身 TUI 启动）按用户要求留待后续研究，本轮只完成测量。
+
+### CI run 118271964493 回归修复（2026-11-15）
+
+- [x] 云端 run `118271964493`（提交 `d50c533`）三平台矩阵：macOS 桥接 41 文件、39 通过 / 2 跳过，终端子进程 11/11 通过；Ubuntu 2 项失败、Windows 1 项失败，均为 `terminal-child.test.ts` 新增“两个 CLI 入口成功路径”真实子进程用例在 Vitest 默认 5s 处超时（Ubuntu 文件耗时 11s，两项各占 5s；Windows 只挂 `src/index.ts`，`src/tray.ts` 同次通过）。用例内部 `vi.waitFor` 为 15s，说明是 CI 并行冷启动 tsx 超过默认上限，不是断言失败。
+- [x] 修复：两个入口用例显式设置 30s 超时；内部 15s `vi.waitFor` 仍是实际完成条件，不会把挂死当成通过。用 `--testTimeout=1000` 复跑证明用例级 30s 覆盖全局默认，两个入口用例分别 593ms / 679ms 通过，文件 11/11。
+- [x] macOS 唯一失败是 DMG 阶段 `hdiutil: create failed - No space left on device`；失败前日志显示主机仍有 95Gi 可用、舞台仅 198M，287 个文件逻辑总量 207,111,424 bytes、分配 207,790,080 bytes，无稀疏文件，更符合 runner 上 hdiutil 临时镜像容量估算/偶发故障，不能归因于应用代码体积变化。
+- [x] 修复：`build-mac-app.sh` 给 hdiutil 显式 `-size`（舞台 `du -sk` + 64MiB 元数据余量），并对该已知偶发失败做 3 次有界重试、每次清理半成品；`bash -n` 通过。本机无 macOS，新命令的真实 hdiutil 执行仍待下一次云端 macOS job 验证。
+- [ ] 本轮修复尚未提交、未推送；需要重新触发 CI 才能确认 Ubuntu/Windows 超时与 macOS DMG 均恢复。
 
 ## 2026-11-14 macOS 实机调试交接（总状态：未完成）
 
