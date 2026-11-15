@@ -111,6 +111,19 @@ function lastState(inbox: ServerMessage[]): FastState | undefined {
   return inbox.filter((message): message is FastState => message.type === "settings.state").at(-1);
 }
 
+/**
+ * 等待 settings.state 广播真正到达客户端并满足期望。
+ * 只等服务端本地 mock（如 setFastMode）被调用无法证明广播已送达：CI 高负载下客户端收帧
+ * 可能晚于 mock 调用，直接断言 inbox 会读到上一帧（2026-11-15 Release 门禁 ubuntu 实测）。
+ * @param ca 客户端消息收集器
+ * @param expected settings.state 必须匹配的字段子集
+ * @returns 匹配帧到达后 resolve
+ * @throws 5s 内无匹配帧时抛断言错误
+ */
+async function waitState(ca: Collector, expected: Partial<FastState>): Promise<void> {
+  await vi.waitFor(() => expect(lastState(ca.inbox)).toMatchObject(expected), { timeout: 5000 });
+}
+
 /** 读取测试工作区的权威执行设置。 */
 function execution(file: string): WorkspaceExecutionSettings {
   return (JSON.parse(fs.readFileSync(file, "utf-8")) as { execution: WorkspaceExecutionSettings }).execution;
@@ -133,11 +146,11 @@ describe("fast 模型提升与恢复", () => {
     a.ws.send(JSON.stringify({ type: "settings.set", permissionMode: "auto", fastMode: true, fastOnly: true }));
     await vi.waitFor(() => expect(setFast).toHaveBeenCalledTimes(1));
     expect(setFast).toHaveBeenLastCalledWith(true, "opus");
-    expect(lastState(ca.inbox)).toMatchObject({ model: "opus", fastMode: true });
+    await waitState(ca, { model: "opus", fastMode: true });
     a.ws.send(JSON.stringify({ type: "settings.set", permissionMode: "auto", fastMode: false, fastOnly: true }));
     await vi.waitFor(() => expect(setFast).toHaveBeenCalledTimes(2));
     expect(setFast).toHaveBeenLastCalledWith(false, "sonnet");
-    expect(lastState(ca.inbox)).toMatchObject({ model: "sonnet", fastMode: false });
+    await waitState(ca, { model: "sonnet", fastMode: false });
     expect(close).not.toHaveBeenCalled();
     expect(abort).not.toHaveBeenCalled();
     expect(ca.inbox.some((message) => message.type === "chat.aborted")).toBe(false);
@@ -167,7 +180,7 @@ describe("fast 模型提升与恢复", () => {
     await vi.waitFor(() => expect(setFast).toHaveBeenCalledTimes(2));
     await settle();
     expect(setFast).toHaveBeenLastCalledWith(false, FABLE);
-    expect(lastState(ca.inbox)).toMatchObject({ model: FABLE, fastMode: false });
+    await waitState(ca, { model: FABLE, fastMode: false });
     expect(execution(storeFile).fastRestore).toBeUndefined();
     expect(lastState(ca.inbox)?.runtime?.model).toBeUndefined();
     a.ws.close();
@@ -201,7 +214,7 @@ describe("fast 模型提升与恢复", () => {
     await settle();
     expect(setFast).toHaveBeenCalledWith(false, FABLE);
     expect(auto).not.toHaveBeenCalled();
-    expect(lastState(cb.inbox)).toMatchObject({ model: FABLE, fastMode: false });
+    await waitState(cb, { model: FABLE, fastMode: false });
     b.ws.close();
     await second.server.close();
   });
@@ -212,13 +225,13 @@ describe("fast 模型提升与恢复", () => {
     a.ws.send(JSON.stringify({ type: "settings.set", permissionMode: "auto", fastMode: true, fastOnly: true }));
     await vi.waitFor(() => expect(setFast).toHaveBeenCalledTimes(1));
     await settle();
-    expect(lastState(ca.inbox)).toMatchObject({ model: "opus", fastMode: true });
+    await waitState(ca, { model: "opus", fastMode: true });
     const before = ca.inbox.length;
     a.ws.send(JSON.stringify({ type: "settings.set", permissionMode: "auto", fastMode: false, fastOnly: true }));
     const warning = await ca.waitFor("settings.error", before);
     expect(warning).toMatchObject({ message: expect.stringContaining("未猜测恢复模型") });
     expect(setFast.mock.calls).toEqual([[true, "opus"], [false, null]]);
-    expect(lastState(ca.inbox)).toMatchObject({ model: "opus", fastMode: false });
+    await waitState(ca, { model: "opus", fastMode: false });
     expect(ca.inbox.some((message) => message.type === "chat.aborted")).toBe(false);
     a.ws.close();
     await booted.server.close();
@@ -233,7 +246,7 @@ describe("fast 模型提升与恢复", () => {
     let before = ca.inbox.length;
     a.ws.send(JSON.stringify({ type: "settings.set", permissionMode: "auto", fastMode: true, fastOnly: true }));
     await ca.waitFor("settings.state", before);
-    expect(lastState(ca.inbox)).toMatchObject({ model: "opus", fastMode: true });
+    await waitState(ca, { model: "opus", fastMode: true });
     before = ca.inbox.length;
     a.ws.send(JSON.stringify({ type: "settings.set", permissionMode: "auto", fastMode: false, fastOnly: true }));
     await vi.waitFor(() => expect(lastState(ca.inbox)?.fastMode).toBe(false));
@@ -256,11 +269,11 @@ describe("fast 模型提升与恢复", () => {
     await settle();
     expect(setFast).toHaveBeenCalledTimes(1);
     expect(sent.filter((message) => message.cwd !== "SEND")).toHaveLength(2);
-    expect(lastState(ca.inbox)).toMatchObject({ model: "fable", fastMode: true });
+    await waitState(ca, { model: "fable", fastMode: true });
     a.ws.send(JSON.stringify({ type: "settings.set", permissionMode: "auto", fastMode: false, fastOnly: true }));
     await vi.waitFor(() => expect(setFast).toHaveBeenCalledTimes(2));
     expect(setFast).toHaveBeenLastCalledWith(false);
-    expect(lastState(ca.inbox)).toMatchObject({ model: "fable", fastMode: false });
+    await waitState(ca, { model: "fable", fastMode: false });
     a.ws.close();
     await booted.server.close();
   });
@@ -276,7 +289,7 @@ describe("fast 模型提升与恢复", () => {
     a.ws.send(JSON.stringify({ type: "settings.set", permissionMode: "auto", fastMode: false, fastOnly: true }));
     await vi.waitFor(() => expect(setFast).toHaveBeenCalledTimes(2));
     expect(setFast).toHaveBeenLastCalledWith(false);
-    expect(lastState(ca.inbox)).toMatchObject({ model: "opus", fastMode: false });
+    await waitState(ca, { model: "opus", fastMode: false });
     a.ws.close();
     await booted.server.close();
   });
@@ -292,6 +305,7 @@ describe("fast 模型提升与恢复", () => {
     a.ws.send(JSON.stringify({ type: "settings.set", permissionMode: "auto", fastMode: false, fastOnly: true }));
     await vi.waitFor(() => expect(setFast).toHaveBeenCalledTimes(2));
     expect(setFast).toHaveBeenLastCalledWith(false);
+    await waitState(ca, { fastMode: false });
     expect(lastState(ca.inbox)?.model).toBeUndefined();
     expect(ca.inbox.some((message) => message.type === "settings.error")).toBe(false);
     a.ws.close();
@@ -331,7 +345,7 @@ describe("fast 模型提升与恢复", () => {
     a.ws.send(JSON.stringify({ type: "settings.set", permissionMode: "auto", fastMode: false, fastOnly: true }));
     await vi.waitFor(() => expect(fakeHandle.setFastMode).toHaveBeenCalledTimes(1));
     expect(fakeHandle.setFastMode).toHaveBeenCalledWith(false);
-    expect(lastState(ca.inbox)).toMatchObject({ model: "sonnet", fastMode: false });
+    await waitState(ca, { model: "sonnet", fastMode: false });
     a.ws.close();
     await booted.server.close();
   });
@@ -347,19 +361,19 @@ describe("fast 模型提升与恢复", () => {
     fakeHandle.setFastMode = setFast;
     a.ws.send(JSON.stringify({ type: "settings.set", permissionMode: "auto", fastMode: true, fastOnly: true }));
     await ca.waitFor("settings.error");
-    expect(lastState(ca.inbox)).toMatchObject({ model: "sonnet", fastMode: false });
+    await waitState(ca, { model: "sonnet", fastMode: false });
     expect(execution(storeFile)).toMatchObject({ model: "sonnet", fastMode: false });
     expect(execution(storeFile).fastRestore).toBeUndefined();
     a.ws.send(JSON.stringify({ type: "settings.set", permissionMode: "auto", fastMode: true, fastOnly: true }));
     await vi.waitFor(() => expect(setFast).toHaveBeenCalledTimes(2));
     await settle();
-    expect(lastState(ca.inbox)).toMatchObject({ model: "opus", fastMode: true });
+    await waitState(ca, { model: "opus", fastMode: true });
     expect(execution(storeFile).fastRestore).toEqual({ request: "sonnet" });
     const before = ca.inbox.length;
     a.ws.send(JSON.stringify({ type: "settings.set", permissionMode: "auto", fastMode: false, fastOnly: true }));
     await ca.waitFor("settings.error", before);
     expect(setFast).toHaveBeenLastCalledWith(false, "sonnet");
-    expect(lastState(ca.inbox)).toMatchObject({ model: "opus", fastMode: true });
+    await waitState(ca, { model: "opus", fastMode: true });
     expect(execution(storeFile)).toMatchObject({ model: "opus", fastMode: true, fastRestore: { request: "sonnet" } });
     a.ws.close();
     await booted.server.close();
@@ -381,13 +395,13 @@ describe("fast 模型提升与恢复", () => {
     release();
     await settle();
     expect(setFast.mock.calls).toEqual([[true, "opus"], [false, null], [true, "opus"]]);
-    expect(lastState(ca.inbox)).toMatchObject({ model: "opus", fastMode: true });
+    await waitState(ca, { model: "opus", fastMode: true });
     expect(execution(storeFile)).toMatchObject({ model: "opus", fastMode: true, fastRestore: { request: null, actualModel: FABLE } });
     a.ws.send(JSON.stringify({ type: "settings.set", permissionMode: "auto", fastMode: false, fastOnly: true }));
     await vi.waitFor(() => expect(setFast).toHaveBeenCalledTimes(4));
     await settle();
     expect(setFast).toHaveBeenLastCalledWith(false, FABLE);
-    expect(lastState(ca.inbox)).toMatchObject({ model: FABLE, fastMode: false });
+    await waitState(ca, { model: FABLE, fastMode: false });
     a.ws.close();
     await booted.server.close();
   });
@@ -415,7 +429,7 @@ describe("fast 模型提升与恢复", () => {
     await vi.waitFor(() => expect(creates).toBe(2));
     release();
     await settle();
-    expect(lastState(ca.inbox)).toMatchObject({ model: "sonnet", fastMode: true });
+    await waitState(ca, { model: "sonnet", fastMode: true });
     expect(execution(storeFile).fastRestore).toEqual({ request: "sonnet" });
     a.ws.close();
     await booted.server.close();
@@ -433,9 +447,13 @@ describe("fast 模型提升与恢复", () => {
     expect(sent.filter((message) => message.cwd !== "SEND")).toHaveLength(1);
     const before = ca.inbox.length;
     rejectOn(new Error("pending on denied"));
-    await settle();
-    expect(ca.inbox.slice(before).some((message) => message.type === "settings.error")).toBe(true);
-    expect(lastState(ca.inbox)).toMatchObject({ model: "sonnet", fastMode: false });
+    // 失败路径先广播回滚后的 settings.state、再广播 settings.error；等错误帧真正到达客户端，
+    // 而不是只等 reject 后的 30ms 定时器（CI 高负载下收帧可能更晚）。
+    await vi.waitFor(
+      () => expect(ca.inbox.slice(before).some((message) => message.type === "settings.error")).toBe(true),
+      { timeout: 5000 },
+    );
+    await waitState(ca, { model: "sonnet", fastMode: false });
     expect(execution(storeFile).fastRestore).toBeUndefined();
     a.ws.close();
     await booted.server.close();
@@ -460,7 +478,7 @@ describe("fast 模型提升与恢复", () => {
     await vi.waitFor(() => expect(fakeHandle.setFastMode).toHaveBeenCalledTimes(2));
     await settle();
     expect(fakeHandle.setFastMode).toHaveBeenLastCalledWith(false);
-    expect(lastState(ca.inbox)).toMatchObject({ model: "opus", fastMode: false });
+    await waitState(ca, { model: "opus", fastMode: false });
     expect(execution(storeFile).fastRestore).toBeUndefined();
     a.ws.close();
     await booted.server.close();

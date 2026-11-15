@@ -55,6 +55,16 @@
 - [x] 本地复验：bridge 41 文件 / 458 通过 / 1 跳过（macOS 专项），`tsc --noEmit` 通过；Windows 专属 CI 等价步骤全部通过——原生布局 SHA-256、fake CLI 编译、发行包 PTY smoke（initialSize/inputEcho/continuousTicks/chinese/resize/exitCode7 全 true，bun-node-pty）、启动器 8/8、绿色单 exe 构建、项目树外生命周期验收 `ok=true`（15 项 required 全 true）；extension 24 文件 / 182 通过、typecheck、production build 3.03 MB。本机 Node 25 会触发 PTY 探针的“必须 Node 22”守卫，构建使用此前同一台机器成功、六项行为全过的 `ci43-win-after-01/pty-route.json`；探针脚本本身未改动，留待云端 Node 22 复跑。
 - [ ] 尚未推送；需要下一次云端 CI 三平台同时复验。
 
+### CD run 118316274047 回归修复（2026-11-15，Release 工作流）
+
+- [x] 该 run 是 tag `v2026.11.15.1`（提交 `b5fa91b`）触发的 Release 工作流；唯一已执行的 job「发布前测试门禁」（ubuntu-26.04）在 `bridge/tests/server-fast-model.test.ts` 的 “seeding 的 Sonnet/on 不提升…” 失败：期望 `settings.state {model:'sonnet', fastMode:false}`，实际仍是上一帧 `fastMode:true`。同提交 CI 三平台只挂过 terminal-child，说明这是跨平台时序竞态，不是 CD 独有逻辑。
+- [x] 根因：用例只等 `fakeHandle.setFastMode` 被调用（服务端本地 mock），而 `settings.state` 广播要经 WS 送达客户端 inbox；CI 高负载下 mock 调用先返回、广播后到，紧接着断言 lastState 就读到上一帧。同类写法在本文件共 13 处（含失败路径里 `settings.error` 的到达判断，30ms `settle()` 同样不能证明收帧）。
+- [x] 先 RED 后 GREEN：临时把客户端 `collect` 的收帧延迟 150ms 模拟竞态，原测试 15 条里 13 条失败、覆盖 13 个断言行；随后新增 `waitState(ca, expected)`（5s 内容等待）替换所有“等 mock 后立刻读 inbox”的断言，同一延迟下 15/15 通过；移除延迟后真实时序 15/15 通过。
+- [x] CD 与 CI 同步：`release.yml` 的发布前测试门禁原先只在 ubuntu 单平台跑桥接/扩展单测，Windows/macOS 的平台专属测试（终端身份查询、入口接线等）根本不在发布门禁里。现改为与 `ci.yml` 相同的三平台矩阵、`fail-fast: false`、npm 缓存，并补上 CI 里已有的 `check-arch.mjs` 预编译件架构审计；build-win/build-mac/build-ext `needs: test` 与 publish 汇总链不变。PyYAML 解析校验通过。
+- [x] 本地复验：bridge 41 文件 / 458 通过 / 1 跳过、`tsc --noEmit` 通过；workflow YAML 结构断言（三平台矩阵、依赖链）通过。
+- [x] 流程规则：以后每次修 CI，必须同步检查并修复 `.github/workflows/release.yml`（CD），不能只让 CI 绿。
+- [ ] 尚未推送；需下一次 tag 复验 CD 三平台门禁与后续构建/发布。
+
 ## 2026-11-14 macOS 实机调试交接（总状态：未完成）
 
 > 下文各日期章节保留当时的历史状态；当前结论以本节和 [RETURN-REPORT](RETURN-REPORT.md) 为准。

@@ -14,20 +14,31 @@ defaults:
     shell: bash
 
 jobs:
+  # 门禁必须与 ci.yml 同平台、同核心步骤：此前只跑 ubuntu，Windows/macOS 的桥接单测
+  # （如终端身份查询、入口接线）不在发布门禁内，平台回归可随 tag 直接发布（2026-11-15 教训）。
   test:
-    name: 发布前测试门禁
-    runs-on: ubuntu-latest
+    name: 发布前测试门禁 (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: 桥接：类型检查 + 单测
+          cache: npm
+          cache-dependency-path: |
+            bridge/package-lock.json
+            extension/package-lock.json
+      - name: 桥接：类型检查 + 单测 + 预编译件架构审计
         working-directory: bridge
         run: |
           npm ci
           npm run typecheck
           npm test
+          node scripts/check-arch.mjs node_modules/systray2/traybin/tray_windows_release.exe x64
       - name: 扩展：类型检查 + 单测
         working-directory: extension
         run: |
