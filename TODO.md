@@ -76,6 +76,15 @@
 - [x] 本地复验（Node 22.23.5，与 CI 同版本）：extension 25 文件 / 185 项通过（含一次性幽灵 socket 探针 1 文件 2 项，用于验证旧 harness 在实例抢占下的症状与新取值方式；探针待确认后删除）、`tsc --noEmit` 通过、production build 3.03 MB 通过；`ws-client.test.ts` 5/5、`app-tool-flow.test.tsx` 42/42。
 - [ ] 尚未提交/推送；需用户重新打 tag 复验 CD 三平台门禁与后续构建/发布。
 
+### 插件终端滚轮必须先点「可滚历史」修复（2026-11-15）
+
+- [x] 用户实测（Windows，d50c533 之后重新构建）：插件终端打开后滚轮完全没有反应，必须点「可滚历史」导出一次才有可滚内容；导出后即使取消历史视图也一直能滚；macOS 同一构建打开即可滚。历史 E2E 只在点过「可滚历史」之后用 `Input.dispatchMouseEvent` 验证过滚轮，因此没有覆盖“未导出前”的真实场景。
+- [x] 根因：Claude Code 主画面原地重绘，不会把完整对话留在 xterm scrollback；normal 缓冲区 `baseY === 0` 表示视口上方没有任何历史行，xterm 收到滚轮也无处可滚。导出把 transcript 打印进正常缓冲区后才产生 scrollback，所以表现为“点按钮才能滚”。alternate 缓冲区（CLI 自带详细历史视图）由 xterm 转成方向键交给 CLI，不受影响。
+- [x] 先 RED 后 GREEN：`extension/tests/terminal-page.test.tsx` 新增 4 条用例——无原生历史时上滚自动发 Ctrl+O 并吞掉该次滚轮；已有历史/向下滚/alternate 缓冲区仍交回 xterm；滚轮导出成功后等到 `baseY` 增长再 `scrollPages(-1)`（按钮导出不自动翻页）；导出超时后 8s 冷却，滚轮不连续打断 CLI。修复前 4 条均因 `attachCustomWheelEventHandler` 从未接线而失败，修复后 14/14。
+- [x] 最小修复：`TerminalApp` 注册 `attachCustomWheelEventHandler`，仅在「上滚 + 已连接 + 非导出中 + normal 缓冲区 + `baseY === 0`」时执行与按钮相同的 `exportScrollback(true)` 并返回 false；失败记录冷却时间；成功后最多轮询 3s 等 transcript 落进 scrollback，再向上翻一页，让第一次滚轮就有可见反馈。按钮路径行为不变；“可滚历史”按钮改为显式 `() => exportScrollback()`，避免 click 事件被当作 `fromWheel` 参数。
+- [x] 本地复验：extension 25 文件 / 189 项通过（含一次性幽灵 socket 探针 2 项，待确认后删除）、`tsc --noEmit` 通过、production build 3.03 MB 通过。`docs/guide.md` 与终端页脚同步为“直接向上滚轮自动导出”。
+- [ ] 未在真实 Chrome + 真实 CLI 的 Windows 环境复验“打开即滚”；需要用户用新构建实测，若自动导出被 CLI 快捷键拦截需回报实际画面。尚未提交/推送。
+
 ## 2026-11-14 macOS 实机调试交接（总状态：未完成）
 
 > 下文各日期章节保留当时的历史状态；当前结论以本节和 [RETURN-REPORT](RETURN-REPORT.md) 为准。

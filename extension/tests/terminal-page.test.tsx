@@ -18,12 +18,19 @@ const mocks = vi.hoisted(() => {
     focus: ReturnType<typeof vi.fn>;
     onSelectionChange: ReturnType<typeof vi.fn>;
     attachCustomKeyEventHandler: ReturnType<typeof vi.fn>;
+    attachCustomWheelEventHandler: ReturnType<typeof vi.fn>;
+    scrollPages: ReturnType<typeof vi.fn>;
     onWriteParsed: ReturnType<typeof vi.fn>;
     selection: string;
     lines: string[];
+    buffer: {
+      active: { type: "normal" | "alternate"; baseY: number; viewportY: number; length: number;
+        getLine(index: number): { translateToString(trim: boolean): string } | undefined };
+    };
     dataCallback?: (data: string) => void;
     selectionCallback?: () => void;
     keyHandler?: (event: KeyboardEvent) => boolean;
+    wheelHandler?: (event: WheelEvent) => boolean;
     writeParsedCallback?: () => void;
   }> = [];
   const clientInstances: Array<{
@@ -50,11 +57,14 @@ vi.mock("@xterm/xterm", () => ({
     dataCallback?: (data: string) => void;
     selectionCallback?: () => void;
     keyHandler?: (event: KeyboardEvent) => boolean;
+    wheelHandler?: (event: WheelEvent) => boolean;
     writeParsedCallback?: () => void;
     selection = "";
     lines: string[] = [];
-    buffer = {
+    buffer: (typeof mocks.terminalInstances)[number]["buffer"] = {
       active: {
+        type: "normal",
+        baseY: 0,
         viewportY: 0,
         length: 24,
         getLine: (index: number) => ({ translateToString: () => this.lines[index] ?? "" }),
@@ -75,6 +85,10 @@ vi.mock("@xterm/xterm", () => ({
     attachCustomKeyEventHandler = vi.fn((callback: (event: KeyboardEvent) => boolean) => {
       this.keyHandler = callback;
     });
+    attachCustomWheelEventHandler = vi.fn((callback: (event: WheelEvent) => boolean) => {
+      this.wheelHandler = callback;
+    });
+    scrollPages = vi.fn();
     onWriteParsed = vi.fn((callback: () => void) => { this.writeParsedCallback = callback; });
   },
 }));
@@ -311,6 +325,80 @@ describe("TerminalApp 真实 xterm 接线", () => {
     expect(client.input).toHaveBeenCalledWith("\x0f");
     expect(client.input).not.toHaveBeenCalledWith("[");
     expect(host.textContent).toContain("请手动按 Ctrl+O，再按 [");
+  });
+
+  it("视口上方没有任何原生历史时，向上滚轮自动执行可滚历史导出", async () => {
+    const host = await mount();
+    const term = mocks.terminalInstances[0]!;
+    const client = mocks.clientInstances[0]!;
+    client.attached = true;
+    // Claude Code 主画面原地重绘，buffer.baseY 为 0 时 xterm 无处可滚；
+    // 旧实现只让用户点「可滚历史」，滚轮本身没有任何反应（Windows 实测）。
+    let swallowed = true;
+    await act(async () => { swallowed = term.wheelHandler?.(new WheelEvent("wheel", { deltaY: -120 })) ?? true; });
+    expect(swallowed).toBe(false);
+    expect(client.input).toHaveBeenCalledWith("\x0f");
+    expect(host.querySelector(".terminal-action-status")?.textContent).toContain("正在打开 CLI 历史视图");
+  });
+
+  it("已有原生历史、向下滚动或 alternate 缓冲区时滚轮仍交给 xterm", async () => {
+    await mount();
+    const term = mocks.terminalInstances[0]!;
+    const client = mocks.clientInstances[0]!;
+    client.attached = true;
+    term.buffer.active.baseY = 120;
+    expect(term.wheelHandler?.(new WheelEvent("wheel", { deltaY: -120 }))).toBe(true);
+    term.buffer.active.baseY = 0;
+    expect(term.wheelHandler?.(new WheelEvent("wheel", { deltaY: 120 }))).toBe(true);
+    term.buffer.active.type = "alternate";
+    expect(term.wheelHandler?.(new WheelEvent("wheel", { deltaY: -120 }))).toBe(true);
+    expect(client.input).not.toHaveBeenCalledWith("\x0f");
+  });
+
+  it("滚轮触发导出成功后自动向上翻一页；按钮导出不改动用户视口", async () => {
+    const host = await mount();
+    const term = mocks.terminalInstances[0]!;
+    const client = mocks.clientInstances[0]!;
+    client.attached = true;
+    vi.useFakeTimers();
+    expect(term.wheelHandler?.(new WheelEvent("wheel", { deltaY: -120 }))).toBe(false);
+    term.lines = ["Showing detailed transcript · ctrl+o to toggle"];
+    await act(async () => { term.writeParsedCallback?.(); });
+    expect(client.input).toHaveBeenCalledWith("[");
+    // CLI 把整段 transcript 打印进正常缓冲区后才出现原生历史（baseY 增长）。
+    term.buffer.active.baseY = 600;
+    await act(async () => { await vi.advanceTimersByTimeAsync(600); });
+    expect(term.scrollPages).toHaveBeenCalledWith(-1);
+
+    term.scrollPages.mockClear();
+    client.input.mockClear();
+    const history = Array.from(host.querySelectorAll<HTMLButtonElement>("button"))
+      .find((button) => button.textContent === "可滚历史");
+    await act(async () => history?.click());
+    expect(client.input).toHaveBeenCalledWith("\x0f");
+    term.lines = ["Showing detailed transcript · ctrl+o to toggle"];
+    await act(async () => { term.writeParsedCallback?.(); });
+    expect(client.input).toHaveBeenCalledWith("[");
+    await act(async () => { await vi.advanceTimersByTimeAsync(600); });
+    expect(term.scrollPages).not.toHaveBeenCalled();
+  });
+
+  it("自动导出超时后短暂冷却，滚轮不会连续打断 CLI", async () => {
+    const host = await mount();
+    const term = mocks.terminalInstances[0]!;
+    const client = mocks.clientInstances[0]!;
+    client.attached = true;
+    vi.useFakeTimers();
+    expect(term.wheelHandler?.(new WheelEvent("wheel", { deltaY: -120 }))).toBe(false);
+    expect(client.input.mock.calls.filter((call) => call[0] === "\x0f")).toHaveLength(1);
+    await act(async () => { await vi.advanceTimersByTimeAsync(3100); });
+    expect(host.textContent).toContain("请手动按 Ctrl+O，再按 [");
+    // 超时后继续滚轮不得反复发送 Ctrl+O。
+    expect(term.wheelHandler?.(new WheelEvent("wheel", { deltaY: -120 }))).toBe(false);
+    expect(client.input.mock.calls.filter((call) => call[0] === "\x0f")).toHaveLength(1);
+    await act(async () => { await vi.advanceTimersByTimeAsync(8000); });
+    expect(term.wheelHandler?.(new WheelEvent("wheel", { deltaY: -120 }))).toBe(false);
+    expect(client.input.mock.calls.filter((call) => call[0] === "\x0f")).toHaveLength(2);
   });
 
   it("pagehide 只 closePage 一次；React 卸载随后 close 且 observer/term 被清理", async () => {
