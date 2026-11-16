@@ -251,7 +251,13 @@ describe("镜像工作区（多视图广播与快照）", () => {
       ];
       fs.writeFileSync(path.join(projDir, `${sessionId}.jsonl`), entries.map((entry) => JSON.stringify(entry)).join("\n") + "\n", "utf8");
       events.onCompact({ phase: "done", result: "success", preTokens: 167008, postTokens: 5893 });
-      const live = await ca.waitFor("chat.timeline") as Extract<ServerMessage, { type: "chat.timeline" }>;
+      // 压缩记录先上屏，摘要详情由异步历史读取补到同一 ID 的下一帧。
+      const live = await vi.waitFor(() => {
+        const found = ca.inbox.find((message): message is Extract<ServerMessage, { type: "chat.timeline" }> =>
+          message.type === "chat.timeline" && Boolean(message.item.detail));
+        expect(found).toBeTruthy();
+        return found!;
+      }, { timeout: 3000 });
       expect(live.item.text).toBe("🗜 已压缩上下文 167k → 6k tokens（-96%）");
       expect(live.item.detail).toBe(summary);
       expect(live.item.role).toBe("tool");
@@ -1367,6 +1373,38 @@ describe("别名会话恢复与工作区持久化（升级/重启不丢聊天记
     expect(list.currentId).toBe(aliasId); // 别名也恢复
     c2.ws.close();
     await b2.server.close();
+  });
+
+  it("启动期后台预热上次绑定会话的转录，视图到达时不再打开文件", async () => {
+    process.env.CCC_FAKE_HOME = dir;
+    const work = path.join(dir, "warm-work");
+    const sessionId = "sid-warm";
+    const transcriptDir = path.join(dir, ".claude", "projects", slugifyPath(path.resolve(work)));
+    const transcript = path.join(transcriptDir, `${sessionId}.jsonl`);
+    fs.mkdirSync(work, { recursive: true });
+    fs.mkdirSync(transcriptDir, { recursive: true });
+    fs.writeFileSync(transcript, `${JSON.stringify({ type: "user", message: { content: "预热问题" } })}\n`, "utf-8");
+    sessions.set(work, { sessionId, title: "预热问题", updatedAt: new Date().toISOString() });
+    const storeFile = path.join(dir, "workspace.json");
+    new WorkspaceStore(storeFile).save({ folder: work, aliasId: null });
+
+    const open = vi.spyOn(fs.promises, "open");
+    const { server, url } = await boot({ workspaceStore: new WorkspaceStore(storeFile) });
+    const { ws } = await connect(url);
+    try {
+      // 启动即后台预热：目标转录被打开（扫描发生在这里，而不是视图接入时）。
+      await vi.waitFor(() => expect(open.mock.calls.some(([file]) => file === transcript)).toBe(true));
+      const { waitFor } = collect(ws);
+      ws.send(JSON.stringify({ type: "client.ready" }));
+      const history = (await waitFor("session.history.data")) as Extract<ServerMessage, { type: "session.history.data" }>;
+      expect(history.messages.map((item) => item.text)).toEqual(["预热问题"]);
+      // 视图接入后的历史回放命中预热句柄，不再对同一转录第二次 open。
+      expect(open.mock.calls.filter(([file]) => file === transcript)).toHaveLength(1);
+    } finally {
+      ws.close();
+      delete process.env.CCC_FAKE_HOME;
+      await server.close();
+    }
   });
 
   it("持久化的文件夹已失效：放弃恢复，工作区保持未绑定", async () => {

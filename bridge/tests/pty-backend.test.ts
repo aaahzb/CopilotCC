@@ -22,20 +22,21 @@ class FakePty {
   readonly resize = vi.fn();
   readonly kill = vi.fn();
   private dataCallback: ((data: string) => void) | undefined;
-  private exitCallback: ((event: { exitCode: number; signal?: number }) => void) | undefined;
+  // node-pty 的类型声明写 number，但 Windows 强杀后运行时会给 undefined，替身必须能复现这一真实情况。
+  private exitCallback: ((event: { exitCode: number | undefined; signal?: number }) => void) | undefined;
 
   onData(callback: (data: string) => void): { dispose: () => void } {
     this.dataCallback = callback;
     return { dispose: () => { this.dataCallback = undefined; } };
   }
 
-  onExit(callback: (event: { exitCode: number; signal?: number }) => void): { dispose: () => void } {
+  onExit(callback: (event: { exitCode: number | undefined; signal?: number }) => void): { dispose: () => void } {
     this.exitCallback = callback;
     return { dispose: () => { this.exitCallback = undefined; } };
   }
 
   emitData(data: string): void { this.dataCallback?.(data); }
-  emitExit(exitCode: number, signal?: number): void { this.exitCallback?.({ exitCode, signal }); }
+  emitExit(exitCode: number | undefined, signal?: number): void { this.exitCallback?.({ exitCode, signal }); }
 }
 
 class FakeHelper extends EventEmitter {
@@ -66,7 +67,7 @@ describe("BunPtyBackend", () => {
     });
     const proc = await backend.spawn(OPTIONS);
     const data: string[] = [];
-    const exits: Array<{ exitCode: number; signal: number | null }> = [];
+    const exits: Array<{ exitCode: number | null; signal: number | null }> = [];
     proc.onData((chunk) => data.push(chunk));
     proc.onExit((event) => exits.push(event));
 
@@ -87,10 +88,14 @@ describe("BunPtyBackend", () => {
 
   it("kill 幂等，迟到 data 被丢弃而 exit 仍分发一次", async () => {
     const fake = new FakePty();
-    const backend = new BunPtyBackend({ executableDir: "C:/native", require: () => ({ spawn: () => fake }) as never });
+    const backend = new BunPtyBackend({
+      executableDir: "C:/native",
+      platform: "linux",
+      require: () => ({ spawn: () => fake }) as never,
+    });
     const proc = await backend.spawn(OPTIONS);
     const data: string[] = [];
-    const exits: number[] = [];
+    const exits: Array<number | null> = [];
     proc.onData((chunk) => data.push(chunk));
     proc.onExit(({ exitCode }) => exits.push(exitCode));
     await Promise.all([proc.kill(), proc.kill()]);
@@ -100,6 +105,77 @@ describe("BunPtyBackend", () => {
     fake.emitExit(7);
     await vi.waitFor(() => expect(exits).toEqual([7]));
     expect(data).toEqual([]);
+  });
+
+  it("Windows 关闭前先强杀客户端进程树，避免 ClosePseudoConsole 等满 5 秒宽限期", async () => {
+    const fake = new FakePty();
+    const order: string[] = [];
+    fake.kill.mockImplementation(() => { order.push("raw.kill"); });
+    const killTree = vi.fn(async (pid: number): Promise<void> => { order.push(`killTree:${pid}`); });
+    const backend = new BunPtyBackend({
+      executableDir: "C:/native",
+      platform: "win32",
+      killTree,
+      require: () => ({ spawn: () => fake }) as never,
+    });
+    const proc = await backend.spawn(OPTIONS);
+
+    await proc.kill();
+
+    expect(killTree).toHaveBeenCalledWith(4321);
+    expect(order).toEqual(["killTree:4321", "raw.kill"]);
+  });
+
+  it("Windows 强杀后缺失的退出码归一为 null，界面不再显示 undefined", async () => {
+    const fake = new FakePty();
+    const backend = new BunPtyBackend({
+      executableDir: "C:/native",
+      platform: "win32",
+      killTree: async () => {},
+      require: () => ({ spawn: () => fake }) as never,
+    });
+    const proc = await backend.spawn(OPTIONS);
+    const exits: Array<{ exitCode: number | null; signal: number | null }> = [];
+    proc.onExit((event) => exits.push(event));
+    await proc.kill();
+    fake.emitExit(undefined); // ConPTY 被 taskkill 强杀后 node-pty 实际给出的退出码
+    await vi.waitFor(() => expect(exits).toEqual([{ exitCode: null, signal: null }]));
+  });
+
+  it("进程树强杀失败仍回退到原生关闭", async () => {
+    const fake = new FakePty();
+    const killTree = vi.fn(async (): Promise<void> => {
+      throw new Error("taskkill failed");
+    });
+    const backend = new BunPtyBackend({
+      executableDir: "C:/native",
+      platform: "win32",
+      killTree,
+      require: () => ({ spawn: () => fake }) as never,
+    });
+    const proc = await backend.spawn(OPTIONS);
+
+    await proc.kill();
+
+    expect(killTree).toHaveBeenCalledWith(4321);
+    expect(fake.kill).toHaveBeenCalledTimes(1);
+  });
+
+  it("非 Windows 关闭不执行进程树强杀", async () => {
+    const fake = new FakePty();
+    const killTree = vi.fn(async (): Promise<void> => {});
+    const backend = new BunPtyBackend({
+      executableDir: "C:/native",
+      platform: "darwin",
+      killTree,
+      require: () => ({ spawn: () => fake }) as never,
+    });
+    const proc = await backend.spawn(OPTIONS);
+
+    await proc.kill();
+
+    expect(killTree).not.toHaveBeenCalled();
+    expect(fake.kill).toHaveBeenCalledTimes(1);
   });
 
   it("Windows 长路径 ConPTY 加载失败时使用扩展路径并只重试一次", async () => {
@@ -168,7 +244,7 @@ describe("NodePtyBackend", () => {
     helper.respond({ type: "started", id: 1, pid: 99 });
     const proc = await pending;
     const data: string[] = [];
-    const exits: number[] = [];
+    const exits: Array<number | null> = [];
     proc.onData((chunk) => data.push(chunk));
     proc.onExit(({ exitCode }) => exits.push(exitCode));
     helper.respond({ type: "data", id: 1, data: "第一行\r\n第二行" });
@@ -178,6 +254,20 @@ describe("NodePtyBackend", () => {
     helper.emit("error", new Error("helper exited"));
     await vi.waitFor(() => expect(backend.closed()).toBe(true));
     expect(exits).toEqual([1]);
+    await backend.close();
+  });
+
+  it("helper 退出帧缺退出码时按 null 分发，不把整个后端判废", async () => {
+    const helper = new FakeHelper();
+    const backend = new NodePtyBackend({ nodePath: "node", helperPath: "helper.cjs", spawn: () => helper as never });
+    const pending = backend.spawn(OPTIONS);
+    helper.respond({ type: "started", id: 1, pid: 99 });
+    const proc = await pending;
+    const exits: Array<number | null> = [];
+    proc.onExit(({ exitCode }) => exits.push(exitCode));
+    helper.respond({ type: "exit", id: 1 });
+    await vi.waitFor(() => expect(exits).toEqual([null]));
+    expect(backend.closed()).toBe(false);
     await backend.close();
   });
 

@@ -1,8 +1,11 @@
-import * as fs from "node:fs";
+import fs from "node:fs";
+import type { Stats } from "node:fs";
+import type { FileHandle } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { EffortLevelSetting, HistoryMessage, SessionInfo, AskQuestion, InteractionRecord, TimelineItem } from "./protocol";
 import { GUARD_PREFIX, summarizeTool } from "./claude-session";
+import { diagSlow } from "./startup-diagnostics";
 
 /**
  * Claude 项目转录根目录。测试可用 CCC_FAKE_HOME 环境变量替换 home。
@@ -57,6 +60,208 @@ function parseUserText(raw: string): { text: string; sentText?: string; attachKi
         ? "selection"
         : undefined;
   return { text, sentText: sent, ...(attachKind ? { attachKind } : {}) };
+}
+
+/** 会话标题占位：文件头部还没有可展示的用户问题，或大文件标题尚未异步补全 */
+const EMPTY_SESSION_TITLE = "(空会话)";
+
+/** 标题同步读取上限：超过该大小的转录不在同步列表路径打开，避免杀软扫描大文件冻结事件循环 */
+const SESSION_TITLE_SYNC_LIMIT = 4 * 1024 * 1024;
+
+/** 标题只存在于转录头部，最多读 64KB（首条用户消息远小于该值） */
+const SESSION_TITLE_HEAD_BYTES = 64 * 1024;
+
+/** 文件绝对路径 → 已解析标题（标题由首条用户消息决定，后续追加不会改变） */
+const sessionTitles = new Map<string, string>();
+
+/** 文件绝对路径 → 读到标题时的文件大小；当前文件更小说明被重建，缓存必须失效 */
+const sessionTitleSizes = new Map<string, number>();
+
+/** 文件绝对路径 → 上次读取时的文件大小；同一大小确认无标题后不重复打开 */
+const sessionTitleMisses = new Map<string, number>();
+
+/** 标题磁盘缓存文件；null 表示未启用（测试或未接线时只保留内存缓存） */
+let sessionTitleCacheFile: string | null = null;
+
+/**
+ * 配置标题磁盘缓存并加载已有条目。桥接重启后直接复用，避免再次打开大转录。
+ * @param file 缓存 JSON 文件绝对路径；null 清空内存缓存并停用磁盘持久化
+ */
+export function configureSessionTitleCache(file: string | null): void {
+  sessionTitleCacheFile = file;
+  sessionTitles.clear();
+  sessionTitleSizes.clear();
+  sessionTitleMisses.clear();
+  if (!file) return;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, "utf-8")) as unknown;
+    if (!parsed || typeof parsed !== "object") return;
+    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof value === "string" && value) {
+        sessionTitles.set(key, value); // 兼容早期纯字符串缓存
+        continue;
+      }
+      if (!value || typeof value !== "object") continue;
+      const entry = value as { title?: unknown; size?: unknown };
+      if (typeof entry.title === "string" && entry.title) {
+        sessionTitles.set(key, entry.title);
+        if (typeof entry.size === "number" && Number.isFinite(entry.size)) sessionTitleSizes.set(key, entry.size);
+      }
+    }
+  } catch {
+    // 首次运行或缓存损坏：按未缓存处理，后续异步补全
+  }
+}
+
+/** 把当前标题缓存写回磁盘；写失败只退化为内存缓存，不影响会话列表 */
+function persistSessionTitles(): void {
+  if (!sessionTitleCacheFile) return;
+  try {
+    fs.mkdirSync(path.dirname(sessionTitleCacheFile), { recursive: true });
+    const data: Record<string, { title: string; size: number }> = {};
+    for (const [file, title] of sessionTitles) {
+      data[file] = { title, size: sessionTitleSizes.get(file) ?? 0 };
+    }
+    fs.writeFileSync(sessionTitleCacheFile, JSON.stringify(data), "utf-8");
+  } catch {
+    // 缓存不可写时忽略
+  }
+}
+
+/**
+ * 从转录头部文本提取首条真实用户问题作为会话标题。
+ * 跳过压缩摘要、任务通知与内部元数据；桥接包装只取用户实际输入。
+ * @param head 转录头部文本（可含半行，半行解析失败自动跳过）
+ * @returns 前 30 字标题；没有可用用户消息返回空串
+ */
+function extractTitleFromHead(head: string): string {
+  for (const line of head.split("\n")) {
+    if (!line.includes('"user"')) continue; // 粗筛，减少 JSON.parse 次数
+    try {
+      const e = JSON.parse(line) as TranscriptEntry;
+      if (e.type !== "user" || e.isCompactSummary === true || isTaskNotification(e)) continue;
+      const content = e.message?.content;
+      let text = "";
+      if (typeof content === "string") {
+        text = content;
+      } else if (Array.isArray(content)) {
+        text = content
+          .filter((b: { type?: string }) => b?.type === "text")
+          .map((b: { text?: string }) => b.text ?? "")
+          .join("\n");
+      }
+      const t = parseUserText(text).text.replace(/\s+/g, " ").trim(); // 拆桥接包装，标题只留真实问题
+      if (t) return t.slice(0, 30);
+    } catch {
+      // 跳过坏行
+    }
+  }
+  return "";
+}
+
+/**
+ * 同步读取小转录头部的标题。只允许小于同步上限的文件调用。
+ * @param file 转录文件绝对路径
+ * @returns 标题；读取失败或无标题返回空串
+ */
+function readTitleSync(file: string): string {
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(file, "r");
+    const buf = Buffer.alloc(SESSION_TITLE_HEAD_BYTES);
+    const n = fs.readSync(fd, buf, 0, buf.length, 0);
+    return extractTitleFromHead(buf.subarray(0, n).toString("utf-8"));
+  } catch {
+    return "";
+  } finally {
+    if (fd !== undefined) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        // close 失败无需处理
+      }
+    }
+  }
+}
+
+/**
+ * 异步读取转录头部标题，让大文件的杀软扫描发生在 libuv 线程池而非主线程。
+ * @param file 转录文件绝对路径
+ * @param size 文件大小（由 stat 得到）
+ * @returns 标题；读取失败或无标题返回空串
+ */
+async function readTitleAsync(file: string, size: number): Promise<string> {
+  const length = Math.min(size, SESSION_TITLE_HEAD_BYTES);
+  if (length <= 0) return "";
+  // 与分页共用句柄缓存：标题之后的历史请求不会再次 open 触发杀软整文件扫描。
+  const acquired = await acquireTranscriptHandle(file);
+  if (!acquired) return "";
+  try {
+    const readLength = Math.min(length, acquired.size);
+    if (readLength <= 0) return "";
+    const buf = Buffer.alloc(readLength);
+    const { bytesRead } = await acquired.entry.handle.read(buf, 0, readLength, 0);
+    return extractTitleFromHead(buf.subarray(0, bytesRead).toString("utf-8"));
+  } catch {
+    return "";
+  } finally {
+    releaseTranscriptHandle(acquired.entry);
+  }
+}
+
+/**
+ * 异步补全某文件夹下所有未缓存会话的标题（大转录不在同步列表路径打开）。
+ * 存储目录里已有标题缓存则跳过；同一文件大小确认无标题后不重复读取。
+ * @param cwd 会话工作目录
+ * @returns 是否有标题被补全（调用方可据此刷新会话列表）
+ */
+export async function refreshSessionTitles(cwd: string): Promise<boolean> {
+  const startedAt = Date.now();
+  const dir = path.join(projectsDir(), slugifyPath(path.resolve(cwd)));
+  let names: string[];
+  try {
+    names = await fs.promises.readdir(dir);
+  } catch {
+    return false;
+  }
+  let changed = false;
+  let opened = 0;
+  for (const name of names) {
+    if (!name.endsWith(".jsonl")) continue;
+    const sessionId = name.slice(0, -".jsonl".length);
+    if (!SAFE_SESSION_ID.test(sessionId)) continue; // 与会话列表同一安全校验
+    const file = path.join(dir, name);
+    let size: number;
+    try {
+      size = (await fs.promises.stat(file)).size;
+    } catch {
+      continue;
+    }
+    const cachedSize = sessionTitleSizes.get(file) ?? 0;
+    if (sessionTitles.has(file) && size >= cachedSize) continue; // 缓存仍然有效（转录只会追加）
+    if (sessionTitles.has(file)) {
+      // 文件比缓存记录更小：同路径转录被重建，旧标题作废。
+      sessionTitles.delete(file);
+      sessionTitleSizes.delete(file);
+      changed = true;
+    }
+    if (sessionTitleMisses.get(file) === size) continue; // 头部无标题且大小未变，不再打开
+    opened++;
+    const tOpen = Date.now();
+    const title = await readTitleAsync(file, size);
+    if (Date.now() - tOpen >= 1000) diagSlow("refreshTitles.open", tOpen, `size=${size}`);
+    if (title) {
+      sessionTitles.set(file, title);
+      sessionTitleSizes.set(file, size);
+      sessionTitleMisses.delete(file);
+      changed = true;
+    } else {
+      sessionTitleMisses.set(file, size);
+    }
+  }
+  if (changed) persistSessionTitles();
+  if (Date.now() - startedAt >= 500) diagSlow("refreshTitles", startedAt, `names=${names.length} opened=${opened} changed=${Number(changed)}`);
+  return changed;
 }
 
 interface TranscriptBlock {
@@ -317,10 +522,29 @@ function findAskResults(entries: TranscriptEntry[]): Map<string, { questions?: A
  * @returns 历史消息列表；文件不存在返回空数组
  */
 function readTranscriptTimeline(cwd: string, sessionId: string): TimelineItem[] {
-  const file = path.join(projectsDir(), slugifyPath(path.resolve(cwd)), `${sessionId}.jsonl`);
+  const file = transcriptFilePath(cwd, sessionId);
   if (!fs.existsSync(file)) return [];
+  return buildTimeline(parseTranscriptEntries(fs.readFileSync(file, "utf-8")));
+}
+
+/**
+ * 计算会话转录文件绝对路径。
+ * @param cwd 会话工作目录
+ * @param sessionId 会话 ID
+ * @returns 转录 jsonl 绝对路径
+ */
+function transcriptFilePath(cwd: string, sessionId: string): string {
+  return path.join(projectsDir(), slugifyPath(path.resolve(cwd)), `${sessionId}.jsonl`);
+}
+
+/**
+ * 把转录文本解析为参与历史回放的条目（用户、助手、压缩边界）。
+ * @param text 完整转录或行边界对齐的尾部窗口文本
+ * @returns 按文件原顺序的条目；坏行跳过
+ */
+function parseTranscriptEntries(text: string): TranscriptEntry[] {
   const entries: TranscriptEntry[] = [];
-  for (const line of fs.readFileSync(file, "utf-8").split("\n")) {
+  for (const line of text.split("\n")) {
     if (!line.trim()) continue;
     try {
       const e = JSON.parse(line) as TranscriptEntry;
@@ -330,7 +554,15 @@ function readTranscriptTimeline(cwd: string, sessionId: string): TimelineItem[] 
       // 跳过坏行
     }
   }
+  return entries;
+}
 
+/**
+ * 由转录条目构建按原顺序排列的历史时间线。
+ * @param entries 转录条目
+ * @returns 用户/助手正文、工具活动、提问与压缩记录行
+ */
+function buildTimeline(entries: TranscriptEntry[]): TimelineItem[] {
   const askResults = findAskResults(entries);
   const toolResults = findToolResults(entries);
   const { activities, consumed } = findLocalCommands(entries);
@@ -566,6 +798,311 @@ export function readTranscriptPage(
   };
 }
 
+/** 异步最新页的初始尾部窗口：覆盖普通会话最近数百条，避免读取整个大转录 */
+const ASYNC_PAGE_TAIL_BYTES = 8 * 1024 * 1024;
+
+/** 尾部窗口上限：条目很少时继续扩大，但不为翻最新页读取几百 MB */
+const ASYNC_PAGE_TAIL_MAX_BYTES = 64 * 1024 * 1024;
+
+/**
+ * 从已打开的转录文件读取指定字节区间，循环补齐短读。
+ * @param handle 已打开的只读文件句柄
+ * @param position 起始字节偏移
+ * @param length 期望读取字节数
+ * @returns 实际读到的缓冲区（可能短于 length）
+ */
+async function readRange(handle: FileHandle, position: number, length: number): Promise<Buffer> {
+  const buf = Buffer.alloc(length);
+  let offset = 0;
+  while (offset < length) {
+    const { bytesRead } = await handle.read(buf, offset, length - offset, position + offset);
+    if (bytesRead <= 0) break;
+    offset += bytesRead;
+  }
+  return offset === length ? buf : buf.subarray(0, offset);
+}
+
+/** 缓存转录句柄上限：每个句柄只占一个 fd，超限后淘汰最久未用者 */
+const MAX_TRANSCRIPT_HANDLES = 32;
+
+/** 一条缓存的转录只读句柄；size/dev/ino 是上次打开时观察到的身份，用于识别追加与重建 */
+interface CachedTranscriptHandle {
+  handle: FileHandle;
+  size: number;
+  dev: number;
+  ino: number;
+  /** 创建时间：同路径重建会换新值；部分平台为 0 时退化为只看大小 */
+  birthtimeMs: number;
+  /** 并发读取计数：使用中的句柄即使被淘汰也等释放后再关闭 */
+  busy: number;
+  /** 已移出缓存：busy 归零后关闭 */
+  retired: boolean;
+  /** 已发起关闭，防止重复 close */
+  closed: boolean;
+}
+
+/** 转录绝对路径 → 已打开句柄。Map 迭代顺序即 LRU 顺序（命中后移到末尾）。 */
+const transcriptHandles = new Map<string, CachedTranscriptHandle>();
+
+/**
+ * 幂等关闭一条缓存句柄。
+ * @param entry 缓存条目
+ * @returns 句柄关闭完成（失败也被吞掉）
+ */
+async function closeCachedHandle(entry: CachedTranscriptHandle): Promise<void> {
+  if (entry.closed) return;
+  entry.closed = true;
+  try {
+    await entry.handle.close();
+  } catch {
+    // 关闭失败无需处理
+  }
+}
+
+/**
+ * 把句柄移出缓存并安排关闭；仍有并发读取时由 release 在最后一个使用者退出后关闭。
+ * @param entry 缓存条目
+ * @returns 无
+ */
+function retireCachedHandle(entry: CachedTranscriptHandle): void {
+  entry.retired = true;
+  if (entry.busy === 0) void closeCachedHandle(entry);
+}
+
+/**
+ * 关闭并清空所有缓存的转录句柄。
+ * 删除转录、测试清理或 Windows 上重建同名文件前必须等待本函数完成：
+ * 句柄未真正关闭时文件会停留在 delete-pending，导致同名创建失败。
+ * @returns 全部空闲句柄关闭后完成；仍在读取的句柄退役后由 release 关闭
+ */
+export async function closeTranscriptHandles(): Promise<void> {
+  // 进行中的打开先完成，避免清空后又被插入。
+  const opening = [...openingTranscripts.values()];
+  if (opening.length > 0) await Promise.all(opening.map((pending) => pending.catch(() => null)));
+  const entries = [...transcriptHandles.values()];
+  transcriptHandles.clear();
+  const closing: Promise<void>[] = [];
+  for (const entry of entries) {
+    entry.retired = true;
+    if (entry.busy === 0) closing.push(closeCachedHandle(entry));
+  }
+  await Promise.all(closing);
+}
+
+/** 正在打开中的转录：并发请求合并到同一次 open，避免对同一版本重复触发杀软扫描 */
+const openingTranscripts = new Map<string, Promise<CachedTranscriptHandle | null>>();
+
+/**
+ * 打开转录并放入缓存（不计使用中），供 acquire 与并发合并共用。
+ * @param file 转录绝对路径
+ * @returns 新缓存条目；文件不存在、不可读或 stat 失败时返回 null
+ */
+async function openAndCacheTranscript(file: string): Promise<CachedTranscriptHandle | null> {
+  let handle: FileHandle;
+  try {
+    handle = await fs.promises.open(file, "r");
+  } catch {
+    return null;
+  }
+  let stat: Stats;
+  try {
+    stat = await handle.stat();
+  } catch {
+    try {
+      await handle.close();
+    } catch {
+      // 关闭失败无需处理
+    }
+    return null;
+  }
+  // 超限时淘汰最久未使用的空闲句柄；全部使用中时允许短暂超限，避免中断并发读取。
+  while (transcriptHandles.size >= MAX_TRANSCRIPT_HANDLES) {
+    let victimKey: string | undefined;
+    let victim: CachedTranscriptHandle | undefined;
+    for (const [key, candidate] of transcriptHandles) {
+      if (candidate.busy === 0) {
+        victimKey = key;
+        victim = candidate;
+        break;
+      }
+    }
+    if (!victim || victimKey === undefined) break;
+    transcriptHandles.delete(victimKey);
+    retireCachedHandle(victim);
+  }
+  const entry: CachedTranscriptHandle = {
+    handle, size: stat.size, dev: stat.dev, ino: stat.ino,
+    birthtimeMs: stat.birthtimeMs, busy: 0, retired: false, closed: false,
+  };
+  transcriptHandles.set(file, entry);
+  return entry;
+}
+
+/**
+ * 获取转录只读句柄，优先复用缓存。
+ * Windows 杀软在 open 时按文件版本整文件扫描；复用句柄后追加读取不再触发扫描，
+ * 所以命中缓存时只用 fstat 校验身份与大小，绝不重新 open。
+ * @param file 转录绝对路径
+ * @returns 句柄条目与当前大小；文件不存在、不可读或 stat 失败时返回 undefined
+ */
+async function acquireTranscriptHandle(
+  file: string,
+): Promise<{ entry: CachedTranscriptHandle; size: number } | undefined> {
+  const cached = transcriptHandles.get(file);
+  if (cached) {
+    let stat: Stats | undefined;
+    try {
+      stat = await cached.handle.stat();
+    } catch {
+      stat = undefined; // 句柄已失效（例如文件被替换）：重新打开
+    }
+    // 转录只会追加：大小不减且身份不变即可复用；变小或换文件都说明内容已作废。
+    const sameIdentity = stat !== undefined
+      && stat.ino === cached.ino && stat.dev === cached.dev
+      && (cached.birthtimeMs === 0 || stat.birthtimeMs === cached.birthtimeMs);
+    if (stat && stat.size >= cached.size && sameIdentity) {
+      cached.size = stat.size;
+      // 命中后移到 Map 末尾，维持 LRU 顺序。
+      transcriptHandles.delete(file);
+      transcriptHandles.set(file, cached);
+      cached.busy++;
+      return { entry: cached, size: stat.size };
+    }
+    transcriptHandles.delete(file);
+    retireCachedHandle(cached);
+  }
+  // 已有打开在途：等它完成并共享句柄，而不是再发一次可能触发扫描的 open。
+  const inFlight = openingTranscripts.get(file);
+  if (inFlight) {
+    const shared = await inFlight.catch(() => null);
+    if (shared && !shared.retired && !shared.closed) {
+      shared.busy++;
+      return { entry: shared, size: shared.size };
+    }
+  }
+  const pending = openAndCacheTranscript(file);
+  openingTranscripts.set(file, pending);
+  let entry: CachedTranscriptHandle | null;
+  try {
+    entry = await pending;
+  } finally {
+    openingTranscripts.delete(file);
+  }
+  if (!entry) return undefined;
+  entry.busy++;
+  return { entry, size: entry.size };
+}
+
+/**
+ * 释放一次 acquire 的引用；已被淘汰的句柄在最后一个使用者释放后关闭。
+ * @param entry acquire 返回的缓存条目
+ * @returns 无
+ */
+function releaseTranscriptHandle(entry: CachedTranscriptHandle): void {
+  if (entry.busy > 0) entry.busy--;
+  if (entry.retired && entry.busy === 0) void closeCachedHandle(entry);
+}
+
+/**
+ * 后台预热某会话转录的句柄：把杀软整文件扫描提前到桥接启动期，
+ * 视图接入后的历史回放直接命中已打开句柄。调用方不应等待它。
+ * @param cwd 会话工作目录
+ * @param sessionId 会话 ID
+ * @returns 预热完成；ID 非法、文件不存在或读取失败时静默结束
+ */
+export async function warmTranscriptHandle(cwd: string, sessionId: string): Promise<void> {
+  if (!SAFE_SESSION_ID.test(sessionId)) return; // 与 deleteTranscript 同一安全校验
+  try {
+    const acquired = await acquireTranscriptHandle(transcriptFilePath(cwd, sessionId));
+    if (acquired) releaseTranscriptHandle(acquired.entry);
+  } catch {
+    // 预热失败不影响任何真实请求
+  }
+}
+
+/**
+ * 异步读取最新一页。所有文件 IO 走 libuv 线程池，大转录被扫描时不再冻结桥接主线程。
+ * 无 before 时只读尾部窗口（必要时扩大），有 before 时全量异步读取以保证与同步分页一致。
+ * @param cwd 会话工作目录
+ * @param sessionId 会话 ID
+ * @param options.limit 每页条数，限制在 1-200
+ * @param options.before 只返回该稳定 ID 之前的项目；缺省取最新一页
+ * @param options.additional CLI 未落盘的侧车事实，合并后统一分页
+ * @returns 按原顺序排列的一页及更早记录游标
+ */
+export async function readTranscriptPageAsync(
+  cwd: string,
+  sessionId: string,
+  options: { limit?: number; before?: string; additional?: TimelineItem[] } = {},
+): Promise<TranscriptPage> {
+  const file = transcriptFilePath(cwd, sessionId);
+  const startedAt = Date.now();
+  const limit = Math.max(1, Math.min(200, Math.floor(options.limit ?? 100)));
+  let readMs = 0;
+  let parseMs = 0;
+  let windowBytesUsed = 0;
+  const tOpen = Date.now();
+  // 复用句柄：同一转录版本只在首次请求时 open，后续分页不再触发杀软整文件扫描。
+  const acquired = await acquireTranscriptHandle(file); // 转录尚未落盘（新会话）或不可读时为 undefined
+  const openMs = Date.now() - tOpen;
+  const handle = acquired?.entry.handle;
+  const size = acquired?.size ?? -1;
+  let items: TimelineItem[] = [];
+  let truncatedHead = false;
+  try {
+    if (acquired && options.before !== undefined) {
+      // 游标可能落在任意位置，全量异步读取才能找到它并保持与同步分页完全一致。
+      const tRead = Date.now();
+      const buf = await readRange(acquired.entry.handle, 0, size);
+      readMs += Date.now() - tRead;
+      const tParse = Date.now();
+      items = buildTimeline(parseTranscriptEntries(buf.toString("utf-8")));
+      parseMs += Date.now() - tParse;
+      windowBytesUsed = -1; // 全量读取
+    } else if (handle) {
+      let windowBytes = ASYNC_PAGE_TAIL_BYTES;
+      for (;;) {
+        const start = Math.max(0, size - windowBytes);
+        truncatedHead = start > 0;
+        const tRead = Date.now();
+        const buf = await readRange(handle, start, size - start);
+        readMs += Date.now() - tRead;
+        let text = buf.toString("utf-8");
+        if (truncatedHead) {
+          // 窗口从行中间开始：丢掉首个半行，避免解析出半个 JSON。
+          const newline = text.indexOf("\n");
+          text = newline < 0 ? "" : text.slice(newline + 1);
+        }
+        const tParse = Date.now();
+        items = buildTimeline(parseTranscriptEntries(text));
+        parseMs += Date.now() - tParse;
+        windowBytesUsed = windowBytes;
+        // 条目够填满一页（多一条用于判断 hasMore）或已到文件头/窗口上限即停止扩大。
+        if (items.length >= limit + 1 || start === 0 || windowBytes >= ASYNC_PAGE_TAIL_MAX_BYTES) break;
+        windowBytes = Math.min(windowBytes * 2, ASYNC_PAGE_TAIL_MAX_BYTES);
+      }
+    }
+  } finally {
+    if (acquired) releaseTranscriptHandle(acquired.entry);
+  }
+  const all = mergeTimelineItems(items, options.additional ?? []).map(normalizeLegacyTask);
+  const cursorIndex = options.before === undefined ? all.length : all.findIndex((item) => item.id === options.before);
+  const pageDetail = `before=${options.before === undefined ? 0 : 1} size=${size} window=${windowBytesUsed} items=${items.length} open=${openMs} read=${readMs} parse=${parseMs}`;
+  // 失效游标不冒充最新页：返回空页，调用方可重新从最新快照恢复。
+  if (cursorIndex < 0) {
+    diagSlow("pageAsync", startedAt, `${pageDetail} staleCursor=1`);
+    return { messages: [], hasMore: false };
+  }
+  const start = Math.max(0, cursorIndex - limit);
+  const messages = all.slice(start, cursorIndex);
+  diagSlow("pageAsync", startedAt, `${pageDetail} out=${messages.length}`);
+  return {
+    messages,
+    hasMore: start > 0 || (start === 0 && truncatedHead),
+    ...(start > 0 && messages[0] ? { nextCursor: messages[0].id } : {}),
+  };
+}
+
 /** 会话 ID 安全字符：防路径穿越，只允许字母数字、连字符、下划线 */
 const SAFE_SESSION_ID = /^[a-zA-Z0-9_-]+$/;
 
@@ -576,53 +1113,53 @@ const SAFE_SESSION_ID = /^[a-zA-Z0-9_-]+$/;
  * @returns 会话列表；目录不存在返回空数组
  */
 export function listSessions(cwd: string): SessionInfo[] {
+  const startedAt = Date.now();
   const dir = path.join(projectsDir(), slugifyPath(path.resolve(cwd)));
   if (!fs.existsSync(dir)) return [];
   const out: SessionInfo[] = [];
+  let titlesChanged = false;
+  let scanned = 0;
+  let opened = 0;
   for (const name of fs.readdirSync(dir)) {
     if (!name.endsWith(".jsonl")) continue;
     const sessionId = name.slice(0, -".jsonl".length);
     if (!SAFE_SESSION_ID.test(sessionId)) continue; // 跳过非会话文件与可疑名字
     const file = path.join(dir, name);
+    scanned++;
     try {
       const st = fs.statSync(file);
-      let title = "";
-      // 只读文件头 64KB 找首条用户文本消息，避免整读大转录
-      const fd = fs.openSync(file, "r");
-      const buf = Buffer.alloc(64 * 1024);
-      const n = fs.readSync(fd, buf, 0, buf.length, 0);
-      fs.closeSync(fd);
-      for (const line of buf.subarray(0, n).toString("utf-8").split("\n")) {
-        if (!line.includes('"user"')) continue; // 粗筛，减少 JSON.parse 次数
-        try {
-          const e = JSON.parse(line);
-          if (e.type !== "user" || e.isCompactSummary === true || isTaskNotification(e)) continue;
-          const content = e.message?.content;
-          let text = "";
-          if (typeof content === "string") {
-            text = content;
-          } else if (Array.isArray(content)) {
-            text = content
-              .filter((b: { type?: string }) => b?.type === "text")
-              .map((b: { text?: string }) => b.text ?? "")
-              .join("\n");
+      const cachedSize = sessionTitleSizes.get(file) ?? 0;
+      let title = sessionTitles.get(file) ?? "";
+      if (title && st.size < cachedSize) {
+        // 文件比缓存记录更小说明被重建，不能继续复用旧标题。
+        sessionTitles.delete(file);
+        sessionTitleSizes.delete(file);
+        title = "";
+        titlesChanged = true;
+      }
+      if (!title && sessionTitleMisses.get(file) !== st.size) {
+        if (st.size <= SESSION_TITLE_SYNC_LIMIT) {
+          // 小文件同步读 64KB 头部；大文件留给 refreshSessionTitles 异步补全，
+          // 避免杀软在同步路径扫描几百 MB 文件冻结桥接事件循环。
+          opened++;
+          title = readTitleSync(file);
+          if (title) {
+            sessionTitles.set(file, title);
+            sessionTitleSizes.set(file, st.size);
+            titlesChanged = true;
+          } else {
+            sessionTitleMisses.set(file, st.size);
           }
-          const p = parseUserText(text); // 拆桥接包装，标题只留真实问题
-          const t = p.text.replace(/\s+/g, " ").trim();
-          if (t) {
-            title = t.slice(0, 30);
-            break;
-          }
-        } catch {
-          // 跳过坏行
         }
       }
-      out.push({ sessionId, title: title || "(空会话)", updatedAt: Math.round(st.mtimeMs) });
+      out.push({ sessionId, title: title || EMPTY_SESSION_TITLE, updatedAt: Math.round(st.mtimeMs) });
     } catch {
       // 跳过不可读文件
     }
   }
+  if (titlesChanged) persistSessionTitles();
   out.sort((a, b) => b.updatedAt - a.updatedAt);
+  diagSlow("listSessions", startedAt, `files=${scanned} opened=${opened} out=${out.length}`);
   return out;
 }
 
@@ -635,8 +1172,19 @@ export function listSessions(cwd: string): SessionInfo[] {
 export function deleteTranscript(cwd: string, sessionId: string): boolean {
   if (!SAFE_SESSION_ID.test(sessionId)) return false;
   const file = path.join(projectsDir(), slugifyPath(path.resolve(cwd)), `${sessionId}.jsonl`);
+  // 缓存的打开句柄必须退役：Windows 上留在 delete-pending 会阻止同 ID 会话被重建。
+  const cached = transcriptHandles.get(file);
+  if (cached) {
+    transcriptHandles.delete(file);
+    retireCachedHandle(cached);
+  }
   try {
     fs.unlinkSync(file);
+    // 会话删除后同 ID 若被重建，旧标题不能继续命中。
+    sessionTitles.delete(file);
+    sessionTitleSizes.delete(file);
+    sessionTitleMisses.delete(file);
+    persistSessionTitles();
     return true;
   } catch {
     return false;
@@ -645,6 +1193,12 @@ export function deleteTranscript(cwd: string, sessionId: string): boolean {
 
 /** 只读转录末尾窗口大小（最近一次 api-request-blob 必在末尾附近；8MB 足以覆盖巨型工具输出） */
 const TAIL_BYTES = 8 * 1024 * 1024;
+
+/**
+ * effort 同步读取的文件上限。超过后放弃转录证据（返回 undefined，沿用 init 上报值）：
+ * 打开超大转录会触发杀软同步扫描数秒甚至分钟，每轮 result 都同步打开不能接受。
+ */
+const EFFORT_SYNC_READ_LIMIT = 64 * 1024 * 1024;
 
 /**
  * 从转录文本提取最近一次 API 请求实际携带的 effort。
@@ -673,19 +1227,27 @@ export function extractEffortFromTranscript(text: string): EffortLevelSetting | 
  */
 export function readTranscriptEffort(cwd: string, sessionId: string): EffortLevelSetting | null | undefined {
   if (!SAFE_SESSION_ID.test(sessionId)) return undefined; // 与 deleteTranscript 同一防穿越校验
+  const startedAt = Date.now();
   const file = path.join(projectsDir(), slugifyPath(path.resolve(cwd)), `${sessionId}.jsonl`);
   try {
     const size = fs.statSync(file).size;
+    if (size > EFFORT_SYNC_READ_LIMIT) {
+      diagSlow("effort", startedAt, `size=${size} skipped=1`);
+      return undefined; // 超大转录不做同步尾部读取，沿用 init 值
+    }
     const start = Math.max(0, size - TAIL_BYTES);
     const fd = fs.openSync(file, "r");
     try {
       const buf = Buffer.alloc(size - start);
       fs.readSync(fd, buf, 0, buf.length, start);
-      return extractEffortFromTranscript(buf.toString("utf-8"));
+      const result = extractEffortFromTranscript(buf.toString("utf-8"));
+      diagSlow("effort", startedAt, `size=${size} skipped=0`);
+      return result;
     } finally {
       fs.closeSync(fd);
     }
   } catch {
+    diagSlow("effort", startedAt, "failed=1");
     return undefined;
   }
 }

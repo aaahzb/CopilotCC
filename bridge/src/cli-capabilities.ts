@@ -32,3 +32,17 @@ export function selectHookTransport(_version: string): TerminalHookTransport {
   // 2.1.316 的 HTTP 探针在本机超时，command 对照探针成功；不能按文档或 semver 猜测能力。
   return "command";
 }
+
+/**
+ * 判断 CLI 是否支持 CLAUDE_CODE_NO_FLICKER：强制渲染全屏且不参与全屏启动失败计数。
+ * @param version probeCliVersion 返回的版本号，无法识别时为 unknown
+ * @returns 首个支持的版本 2.1.236 及以上为 true；无法解析时 false，不猜测能力
+ */
+export function supportsNoFlicker(version: string): boolean {
+  const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(version.trim());
+  if (!match) return false;
+  const major = Number(match[1]);
+  const minor = Number(match[2]);
+  const patch = Number(match[3]);
+  return major > 2 || (major === 2 && (minor > 1 || (minor === 1 && patch >= 236)));
+}

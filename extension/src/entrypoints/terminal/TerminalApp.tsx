@@ -38,6 +38,20 @@ function hasVisibleTranscript(terminal: Terminal): boolean {
   return /Showing detailed transcript/i.test(visible) && /to toggle/i.test(visible);
 }
 
+/**
+ * 检查当前视口是否已经出现真实可见字符，用于区分“CLI 还在启动”和“画面已渲染”。
+ * @param terminal 真实 xterm 实例
+ * @returns 视口内至少有一行非空文本时返回 true
+ */
+function hasVisibleText(terminal: Terminal): boolean {
+  const buffer = terminal.buffer.active;
+  const end = Math.min(buffer.length, buffer.viewportY + terminal.rows);
+  for (let index = buffer.viewportY; index < end; index += 1) {
+    if ((buffer.getLine(index)?.translateToString(true) ?? "").length > 0) return true;
+  }
+  return false;
+}
+
 /** 独立 Chrome 终端页：xterm 只负责显示与输入，真实进程由桥接 PTY 持有。 */
 export default function TerminalApp(): React.ReactElement {
   const hostRef = useRef<HTMLDivElement>(null);
@@ -229,13 +243,16 @@ export default function TerminalApp(): React.ReactElement {
         return true;
       });
       terminal.attachCustomWheelEventHandler((event) => {
-        const buffer = terminal?.buffer.active;
+        const current = terminal;
+        const buffer = current?.buffer.active;
         // 普通画面上滚、且视口上方没有任何原生历史（baseY 为 0）时 xterm 无处可滚：
         // Claude Code 原地重绘不会把完整历史留在 scrollback。这里自动执行与「可滚历史」
         // 按钮相同的导出，用户不必先点按钮。alternate 缓冲区（CLI 自带详细历史视图）
         // 必须交回 xterm 转成方向键，不能抢占。
-        if (event.deltaY < 0 && client?.isAttached() && !historyActiveRef.current
-          && buffer?.type === "normal" && buffer.baseY === 0) {
+        // 画面还没有任何可见字符时 CLI 尚未就绪，提前发 Ctrl+O 必然超时并触发冷却，
+        // 反而把首字出现后的正常滚轮吞掉；启动阶段的滚轮不启动导出。
+        if (event.deltaY < 0 && current && hasVisibleText(current) && client?.isAttached()
+          && !historyActiveRef.current && buffer?.type === "normal" && buffer.baseY === 0) {
           if (Date.now() - historyFailedAtRef.current < AUTO_HISTORY_COOLDOWN_MS) return false;
           exportScrollback(true);
           return false; // 本次滚轮用于触发导出，交给 xterm 也没有可滚内容

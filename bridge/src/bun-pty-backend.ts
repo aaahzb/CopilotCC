@@ -1,6 +1,8 @@
+import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import * as path from "node:path";
 import type { IPty } from "node-pty";
+import { diagLog } from "./startup-diagnostics";
 import {
   validatePtySpawnOptions,
   type NodePtyModule,
@@ -25,6 +27,53 @@ export interface BunPtyBackendOptions {
   dlopen?: NativeDlopen;
   platform?: NodeJS.Platform;
   arch?: string;
+  /** Windows 关闭前强制结束 PTY 客户端进程树；默认 taskkill，测试可注入 */
+  killTree?: (pid: number) => Promise<void>;
+}
+
+/**
+ * Windows 下强制结束 PTY 客户端进程树。
+ * ClosePseudoConsole 会同步等待控制台客户端响应关闭事件；客户端来不及退出时
+ * 系统会等满约 5 秒宽限期才强杀，这段时间会冻结调用线程。提前 taskkill 可消除等待。
+ * @param pid PTY 客户端进程 PID（已由 lease 身份核对）
+ * @returns taskkill 退出、失败或 3 秒超时后完成；始终 resolve，不阻塞关闭流程
+ */
+export function killProcessTree(pid: number): Promise<void> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (): void => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+    try {
+      const child = spawn("taskkill", ["/PID", String(pid), "/T", "/F"], {
+        windowsHide: true,
+        stdio: "ignore",
+      });
+      const timer = setTimeout(() => {
+        // taskkill 自身卡住时立即回退；后面的原生关闭仍会结束终端。
+        try {
+          child.kill();
+        } catch {
+          // 已经退出时忽略。
+        }
+        done();
+      }, 3000);
+      timer.unref?.();
+      child.once("exit", () => {
+        clearTimeout(timer);
+        done();
+      });
+      child.once("error", () => {
+        clearTimeout(timer);
+        done();
+      });
+    } catch {
+      // spawn 同步失败（例如 taskkill 不存在）时回退到原生关闭。
+      done();
+    }
+  });
 }
 
 /**
@@ -53,8 +102,13 @@ class BunPtyProcess implements PtyProcess {
    * 包装一个真实 node-pty 进程。
    * @param raw 原生进程。
    * @param onExit 用于后端移除已退出进程。
+   * @param killTree Windows 关闭前强杀客户端进程树；其它平台为 undefined。
    */
-  constructor(private readonly raw: IPty, onExit: () => void) {
+  constructor(
+    private readonly raw: IPty,
+    onExit: () => void,
+    private readonly killTree?: (pid: number) => Promise<void>,
+  ) {
     this.pid = raw.pid;
     raw.onData((data) => {
       // kill 后的迟到输出只属于旧进程，不能进入后续屏幕。
@@ -65,7 +119,9 @@ class BunPtyProcess implements PtyProcess {
     raw.onExit(({ exitCode, signal }) => {
       if (this.exited) return;
       this.exited = true;
-      this.exitEvent = { exitCode, signal: signal ?? null };
+      // Windows ConPTY 被 taskkill 强杀后运行时可能不给退出码（类型声明与真实行为不符），
+      // 统一归一为 null，协议与界面都按“无退出码”处理，不能漏出 undefined。
+      this.exitEvent = { exitCode: typeof exitCode === "number" ? exitCode : null, signal: signal ?? null };
       this.exitCallback?.(this.exitEvent);
       onExit();
     });
@@ -93,12 +149,131 @@ class BunPtyProcess implements PtyProcess {
     if (!this.killed && !this.exited) this.raw.resize(cols, rows);
   }
 
+  private diagCloseWrapped = false;
+
+  /**
+   * 临时诊断：包装 node-pty 内部 kill 阶段，定位关闭终端时约 5s 的同步阻塞。
+   * 只在第一次 kill 前执行；任何内部结构缺失都静默跳过。
+   */
+  private diagnoseKill(): void {
+    try {
+      const raw = this.raw as unknown as {
+        _agent?: {
+          __cccDiag?: boolean;
+          _getConsoleProcessList?: () => Promise<number[]>;
+          _ptyNative?: { kill?: (...args: unknown[]) => void };
+          _conoutSocketWorker?: { dispose?: () => void };
+        };
+        _isReady?: boolean;
+        _close?: () => void;
+      };
+      diagLog(`pty.diag ready=${Number(raw._isReady)} agent=${Number(Boolean(raw._agent))}`);
+      // WindowsTerminal.kill 先同步调用实例 _close 销毁 conout 套接字，单独计时。
+      if (!this.diagCloseWrapped && typeof raw._close === "function") {
+        this.diagCloseWrapped = true;
+        const rawClose = raw._close;
+        raw._close = function diagClose(this: unknown): void {
+          const startedAt = Date.now();
+          rawClose.call(this);
+          diagLog(`pty.close ${Date.now() - startedAt}ms`);
+        };
+      }
+      const agent = raw._agent;
+      if (!agent || agent.__cccDiag) return;
+      agent.__cccDiag = true;
+      const list = agent._getConsoleProcessList;
+      if (list) {
+        agent._getConsoleProcessList = function diagList(): Promise<number[]> {
+          const startedAt = Date.now();
+          diagLog("pty.consoleList call");
+          const pending = list.call(agent);
+          void pending.then(
+            (pids) => diagLog(`pty.consoleList ${Date.now() - startedAt}ms pids=${pids.length}`),
+            (error: unknown) => diagLog(
+              `pty.consoleList.reject ${Date.now() - startedAt}ms ${error instanceof Error ? error.message : ""}`,
+            ),
+          );
+          return pending;
+        };
+      }
+      const native = agent._ptyNative;
+      if (native?.kill) {
+        const killNative = native.kill;
+        native.kill = function diagNativeKill(this: typeof native, ...args: unknown[]): void {
+          const startedAt = Date.now();
+          killNative.apply(this, args);
+          diagLog(`pty.nativeKill ${Date.now() - startedAt}ms`);
+        };
+      }
+      const worker = agent._conoutSocketWorker;
+      if (worker?.dispose) {
+        const dispose = worker.dispose;
+        worker.dispose = function diagDispose(this: typeof worker): void {
+          const startedAt = Date.now();
+          dispose.call(this);
+          diagLog(`pty.conoutDispose ${Date.now() - startedAt}ms`);
+        };
+      }
+    } catch {
+      // 诊断包装失败不影响真实 kill。
+    }
+  }
+
+  /**
+   * 临时诊断：包装 child_process.fork，测量 console-list agent 的派生耗时与子进程存活期。
+   * 仅用于判断 5s 阻塞是否发生在 fork 调用本身。
+   */
+  private diagnoseFork(): void {
+    try {
+      const cp = createRequire(import.meta.url)("child_process") as {
+        fork?: (...args: unknown[]) => unknown;
+        __cccForkDiag?: boolean;
+      };
+      if (typeof cp.fork !== "function" || cp.__cccForkDiag) return;
+      cp.__cccForkDiag = true;
+      const original = cp.fork;
+      cp.fork = function diagFork(this: unknown, ...args: unknown[]): unknown {
+        const startedAt = Date.now();
+        const child = original.apply(cp, args) as {
+          pid?: number;
+          on?: (event: string, listener: (...values: unknown[]) => void) => void;
+        } | undefined;
+        diagLog(`pty.fork call ${Date.now() - startedAt}ms pid=${child?.pid ?? -1}`);
+        try {
+          child?.on?.("exit", (code: unknown, signal: unknown) => {
+            diagLog(`pty.fork child exit code=${String(code)} signal=${String(signal)} after=${Date.now() - startedAt}ms`);
+          });
+          child?.on?.("error", (error: unknown) => {
+            diagLog(`pty.fork child error ${error instanceof Error ? error.message : String(error)}`);
+          });
+        } catch {
+          // 子进程事件包装失败不影响真实 fork。
+        }
+        return child;
+      };
+    } catch {
+      // 诊断包装失败不影响真实 kill。
+    }
+  }
+
   /** @returns 首次调用终止原生进程，后续调用直接完成。 */
   async kill(): Promise<void> {
     if (this.killed || this.exited) return;
     this.killed = true;
     this.earlyData = [];
+    this.diagnoseKill();
+    this.diagnoseFork();
+    if (this.killTree) {
+      try {
+        // 先结束控制台客户端，ClosePseudoConsole 才不会同步等满系统 5 秒宽限期。
+        await this.killTree(this.pid);
+      } catch {
+        // 强杀失败时仍走原生关闭，最坏退化为原先的等待。
+      }
+    }
+    const startedAt = Date.now();
     this.raw.kill();
+    diagLog(`pty.raw.kill ${Date.now() - startedAt}ms`);
   }
 }
 
@@ -170,7 +345,12 @@ export class BunPtyBackend implements PtyBackend {
       }
     }
     let proc: BunPtyProcess;
-    proc = new BunPtyProcess(raw, () => this.processes.delete(proc));
+    proc = new BunPtyProcess(
+      raw,
+      () => this.processes.delete(proc),
+      // 只有 Windows ConPTY 的同步关闭会等满控制台客户端退出宽限期。
+      platform === "win32" ? this.options.killTree ?? killProcessTree : undefined,
+    );
     this.processes.add(proc);
     return proc;
   }

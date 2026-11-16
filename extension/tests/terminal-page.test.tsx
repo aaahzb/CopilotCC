@@ -334,9 +334,31 @@ describe("TerminalApp 真实 xterm 接线", () => {
     client.attached = true;
     // Claude Code 主画面原地重绘，buffer.baseY 为 0 时 xterm 无处可滚；
     // 旧实现只让用户点「可滚历史」，滚轮本身没有任何反应（Windows 实测）。
+    term.lines = ["Claude Code 主界面已渲染"];
     let swallowed = true;
     await act(async () => { swallowed = term.wheelHandler?.(new WheelEvent("wheel", { deltaY: -120 })) ?? true; });
     expect(swallowed).toBe(false);
+    expect(client.input).toHaveBeenCalledWith("\x0f");
+    expect(host.querySelector(".terminal-action-status")?.textContent).toContain("正在打开 CLI 历史视图");
+  });
+
+  it("首个字符出现前滚轮不启动自动导出，出现后滚轮立即可用", async () => {
+    const host = await mount();
+    const term = mocks.terminalInstances[0]!;
+    const client = mocks.clientInstances[0]!;
+    client.attached = true;
+    // 启动阶段画面还是空的：此时滚轮不能提前向 CLI 发送 Ctrl+O。CLI 尚未就绪时导出必然
+    // 超时并进入 8 秒冷却，首字出现后的正常滚轮反而被冷却吞掉（真实机器复现）。
+    let early = false;
+    await act(async () => { early = term.wheelHandler?.(new WheelEvent("wheel", { deltaY: -120 })) ?? true; });
+    expect(early).toBe(true);
+    expect(client.input).not.toHaveBeenCalledWith("\x0f");
+    expect(host.querySelector(".terminal-action-status")).toBeNull();
+    // 首字出现后的第一次滚轮必须能立即自动导出，不受启动阶段的干扰。
+    term.lines = ["Claude Code 主界面已渲染"];
+    let afterRender = true;
+    await act(async () => { afterRender = term.wheelHandler?.(new WheelEvent("wheel", { deltaY: -120 })) ?? true; });
+    expect(afterRender).toBe(false);
     expect(client.input).toHaveBeenCalledWith("\x0f");
     expect(host.querySelector(".terminal-action-status")?.textContent).toContain("正在打开 CLI 历史视图");
   });
@@ -361,6 +383,8 @@ describe("TerminalApp 真实 xterm 接线", () => {
     const client = mocks.clientInstances[0]!;
     client.attached = true;
     vi.useFakeTimers();
+    // 画面已渲染（有可见字符）时滚轮才进入自动导出，见“首字未出现”回归用例。
+    term.lines = ["Claude Code 主界面已渲染"];
     expect(term.wheelHandler?.(new WheelEvent("wheel", { deltaY: -120 }))).toBe(false);
     term.lines = ["Showing detailed transcript · ctrl+o to toggle"];
     await act(async () => { term.writeParsedCallback?.(); });
@@ -389,6 +413,7 @@ describe("TerminalApp 真实 xterm 接线", () => {
     const client = mocks.clientInstances[0]!;
     client.attached = true;
     vi.useFakeTimers();
+    term.lines = ["Claude Code 主界面已渲染"];
     expect(term.wheelHandler?.(new WheelEvent("wheel", { deltaY: -120 }))).toBe(false);
     expect(client.input.mock.calls.filter((call) => call[0] === "\x0f")).toHaveLength(1);
     await act(async () => { await vi.advanceTimersByTimeAsync(3100); });

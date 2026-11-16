@@ -15,6 +15,7 @@ export interface TerminalChildRequest {
   stopFile: string;
   hookUrl?: string;
   hookTokenFile?: string;
+  noFlicker?: boolean;
 }
 
 export interface TerminalChildDeps {
@@ -80,6 +81,9 @@ export function parseTerminalChildRequest(input: unknown, requestFile: string): 
   if ((value.hookUrl === undefined) !== (value.hookTokenFile === undefined)) {
     throw new Error("TERMINAL_CHILD_REQUEST");
   }
+  if (value.noFlicker !== undefined && typeof value.noFlicker !== "boolean") {
+    throw new Error("TERMINAL_CHILD_REQUEST");
+  }
   return {
     leaseId: value.leaseId,
     cwd: value.cwd,
@@ -89,6 +93,7 @@ export function parseTerminalChildRequest(input: unknown, requestFile: string): 
     stopFile: value.stopFile,
     ...(typeof value.hookUrl === "string" ? { hookUrl: value.hookUrl } : {}),
     ...(typeof value.hookTokenFile === "string" ? { hookTokenFile: value.hookTokenFile } : {}),
+    ...(typeof value.noFlicker === "boolean" ? { noFlicker: value.noFlicker } : {}),
   };
 }
 
@@ -142,9 +147,13 @@ export async function runTerminalChild(
   const hookToken = request.hookTokenFile
     ? fs.readFileSync(request.hookTokenFile, "utf8")
     : null;
-  const childEnv = hookToken && request.hookUrl
-    ? { ...process.env, CCC_TERMINAL_HOOK_URL: request.hookUrl, CCC_TERMINAL_HOOK_TOKEN: hookToken }
-    : process.env;
+  const childEnv: NodeJS.ProcessEnv = { ...process.env };
+  if (hookToken && request.hookUrl) {
+    childEnv.CCC_TERMINAL_HOOK_URL = request.hookUrl;
+    childEnv.CCC_TERMINAL_HOOK_TOKEN = hookToken;
+  }
+  // 桥接已按真实版本确认支持后才标记：强制全屏且不计入启动失败，快速关窗不回退经典渲染。
+  if (request.noFlicker) childEnv.CLAUDE_CODE_NO_FLICKER = "1";
   const spawnImpl = deps.spawn ?? spawn;
   // start 到达后仍可能在读取 token 时发生 cancel/stop，spawn 前必须再次核对。
   if (fs.existsSync(cancelFile) || fs.existsSync(request.stopFile) || !fs.existsSync(startFile)) return;

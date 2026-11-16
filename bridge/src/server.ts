@@ -9,7 +9,10 @@ import type { ClientMessage, AskRequest, InteractionRequest, InteractionRecord, 
 import { isValidFolder, normalizeFolder, SessionManager } from "./session-manager";
 import { createClaudeSession, resolveClaudeExecutable, type ClaudeSessionLike } from "./claude-session";
 import type { SessionRuntimeInfo } from "./claude-session";
-import { readTranscriptPage, listSessions, deleteTranscript, compactBoundaryText } from "./transcript";
+import {
+  readTranscriptPageAsync, listSessions, deleteTranscript, compactBoundaryText,
+  configureSessionTitleCache, refreshSessionTitles, warmTranscriptHandle, type TranscriptPage,
+} from "./transcript";
 import { saveConfig, type BridgeConfig } from "./config";
 import { encodePairing } from "./pairing";
 import { AliasManager } from "./alias-manager";
@@ -30,6 +33,7 @@ import type {
 } from "./terminal-lease";
 import type { EmbeddedTerminalHandle } from "./embedded-terminal";
 import { StartupTiming } from "./startup-timing";
+import { diagLog, diagSlow } from "./startup-diagnostics";
 
 /** 服务依赖。createSession 仅供测试注入假会话工厂。 */
 export interface ServerDeps {
@@ -215,13 +219,13 @@ interface HandlerCtx {
     clearConversation?: boolean,
   ) => void;
   /** client.ready 快照推送（只发请求方） */
-  pushSnapshot: (send: (m: ServerMessage) => void) => void;
-  /** 转录与侧车合并后的历史分页 */
+  pushSnapshot: (send: (m: ServerMessage) => void) => Promise<void>;
+  /** 转录与侧车合并后的历史分页（异步读取，避免大文件冻结事件循环） */
   readHistoryPage: (
     folder: string,
     sessionId: string,
     options?: { limit?: number; before?: string },
-  ) => ReturnType<typeof readTranscriptPage>;
+  ) => Promise<TranscriptPage>;
   /** folder.open 处理（只回请求方） */
   handleFolderOpen: (send: (m: ServerMessage) => void) => Promise<void>;
   /** 删除会话时同步删除其桥接侧车 */
@@ -574,6 +578,24 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
   const persistedExecution = deps.workspaceStore?.loadExecutionSettings() ?? null;
   const openFolderImpl = deps.openFolder ?? defaultOpenFolder;
   const interactionStore = deps.configDir ? new InteractionStore(path.join(deps.configDir, "interactions")) : undefined;
+  // 标题缓存落在配置目录：桥接重启后不必再次打开几百 MB 转录补标题。
+  if (deps.configDir) configureSessionTitleCache(path.join(deps.configDir, "session-titles.json"));
+  /**
+   * 后台预热上次绑定会话的转录句柄（不阻塞启动）。
+   * 杀软按文件版本在 open 时整文件扫描；提前到启动期打开，视图接入时的历史回放
+   * 直接命中缓存句柄，不再等这次扫描。绑定解析与 restoreWorkspaceIfIdle 一致：
+   * 别名优先，其次 sessions.json 映射。
+   */
+  const warmLastBoundTranscript = (): void => {
+    const b = deps.workspaceStore?.load();
+    if (!b) return;
+    const alias = b.aliasId && aliases ? aliases.get(b.aliasId) : undefined;
+    const folder = alias?.folder ?? b.folder;
+    if (!folder || !isValidFolder(folder)) return;
+    const sessionId = alias?.sessionId ?? sessions.get(folder)?.sessionId;
+    if (sessionId) void warmTranscriptHandle(folder, sessionId); // 失败静默，不影响启动
+  };
+  warmLastBoundTranscript();
   let current: Running; // 当前监听着的服务（在线改端口会整体替换）
 
   /** 唯一工作区：全部视图共享的会话与在途状态 */
@@ -631,9 +653,16 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
   const clients = new Set<WebSocket>();
 
   function broadcast(m: ServerMessage, except?: WebSocket): void {
+    const startedAt = Date.now();
     const frame = encode(m);
+    const encodeMs = Date.now() - startedAt;
+    const tSend = Date.now();
     for (const c of clients) {
       if (c !== except && c.readyState === WebSocket.OPEN) c.send(frame);
+    }
+    const sendMs = Date.now() - tSend;
+    if (encodeMs >= 100 || sendMs >= 100) {
+      diagLog(`broadcast type=${m.type} chars=${frame.length} clients=${clients.size} encode=${encodeMs}ms send=${sendMs}ms`);
     }
   }
 
@@ -669,15 +698,18 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
   }
 
   /** CLI 转录与桥接侧车先合并，再按同一稳定游标分页。 */
-  function readHistoryPage(
+  async function readHistoryPage(
     folder: string,
     sessionId: string,
     options: { limit?: number; before?: string } = {},
-  ): ReturnType<typeof readTranscriptPage> {
-    return readTranscriptPage(folder, sessionId, {
+  ): Promise<TranscriptPage> {
+    const startedAt = Date.now();
+    const page = await readTranscriptPageAsync(folder, sessionId, {
       ...options,
       additional: interactionStore?.read(folder, sessionId) ?? [],
     });
+    diagSlow("historyPage", startedAt, `before=${options.before === undefined ? 0 : 1} out=${page.messages.length}`);
+    return page;
   }
 
   /** 删除会话时同步清理仅供该会话使用的侧车。 */
@@ -808,9 +840,31 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
     return { type: "alias.list.data", aliases: aliases.all(), currentId };
   }
 
+  /** 正在异步补全标题的文件夹，避免同一批 push 重复打开同一批转录 */
+  const titleRefreshes = new Set<string>();
+
+  /**
+   * 后台补全大转录标题；有新标题时补发一次列表。
+   * refreshSessionTitles 自身只做异步 IO，不阻塞终端启动与会话列表响应。
+   * @param folder 需要补全标题的工作目录
+   */
+  function scheduleTitleRefresh(folder: string): void {
+    if (titleRefreshes.has(folder)) return;
+    titleRefreshes.add(folder);
+    void refreshSessionTitles(folder)
+      .then((changed) => {
+        if (changed && workspace.folder === folder) pushSessionList(); // 标题已进缓存，本次列表直接带上
+      })
+      .catch(() => {
+        // 标题补全是尽力而为，失败不影响会话列表
+      })
+      .finally(() => titleRefreshes.delete(folder));
+  }
+
   function pushSessionList(): void {
     const m = sessionListMsg();
     if (m) broadcast(m);
+    if (workspace.folder) scheduleTitleRefresh(workspace.folder);
   }
 
   function pushAliasList(): void {
@@ -986,21 +1040,28 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
         onCompact: (ev) => {
           if (!isCurrent()) return;
           workspace.compacting = ev.phase === "start";
-          if (ev.phase === "done") {
-            const text = ev.result === "failed"
-              ? `⚠️ 上下文压缩失败${ev.error ? `：${ev.error}` : ""}，继续使用当前上下文`
-              : compactBoundaryText(ev);
-            const sessionId = sessions.get(f)?.sessionId;
-            // 复用转录按 anchorUuid 关联的摘要，让实时记录与重载后的同一压缩保留相同折叠详情。
-            const detail = ev.result === "success" && sessionId
-              ? readHistoryPage(f, sessionId, { limit: 200 }).messages
-                .filter((item) => item.text === text && item.detail).at(-1)?.detail
-              : undefined;
-            pushTimelineStatus(text, { ...(detail ? { detail } : {}) });
-            broadcast({ type: "chat.compact", ...ev, recorded: true });
-          } else {
+          if (ev.phase !== "done") {
             broadcast({ type: "chat.compact", ...ev });
+            return;
           }
+          const text = ev.result === "failed"
+            ? `⚠️ 上下文压缩失败${ev.error ? `：${ev.error}` : ""}，继续使用当前上下文`
+            : compactBoundaryText(ev);
+          // 压缩记录先按原顺序上屏，摘要详情异步补到同一条记录上，避免大转录读取推迟事件。
+          const itemId = `status-compact-${randomBytes(4).toString("hex")}`;
+          pushTimelineStatus(text, { id: itemId });
+          broadcast({ type: "chat.compact", ...ev, recorded: true });
+          const sessionId = sessions.get(f)?.sessionId;
+          if (ev.result !== "success" || !sessionId) return;
+          // 复用转录按 anchorUuid 关联的摘要，让实时记录与重载后的同一压缩保留相同折叠详情。
+          void readHistoryPage(f, sessionId, { limit: 200 }).then((page) => {
+            if (!isCurrent()) return;
+            if (!workspace.timeline.some((item) => item.id === itemId)) return; // 轮次已结束清空，迟到详情不再复活记录
+            const detail = page.messages.filter((item) => item.text === text && item.detail).at(-1)?.detail;
+            if (detail) pushTimelineStatus(text, { id: itemId, detail });
+          }).catch(() => {
+            // 摘要详情是增强信息，读取失败保留已上屏的压缩记录
+          });
         },
         onRuntime: (info) => {
           if (!isCurrent()) return;
@@ -1135,6 +1196,7 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
    * @param sessionId 最后 Hook 会话；从未确认时回退初始会话，可为 null
    */
   function restoreSdk(sessionId: string | null): void {
+    const startedAt = Date.now();
     const folder = workspace.folder;
     if (!folder) return;
     const existing = sessions.get(folder);
@@ -1165,6 +1227,7 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
     pushSessionList();
     refreshAliasScript();
     persistWorkspace();
+    diagSlow("restoreSdk", startedAt, `sid=${sessionId === null ? 0 : 1}`);
   }
 
   /**
@@ -1243,24 +1306,29 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
    * chat.sync 最后到达，在途用户气泡与流式文本追加在回放之上，不被回放替换抹掉。
    * @param send 目标连接的发送函数（快照只发请求方，不广播）
    */
-  function pushSnapshot(send: (m: ServerMessage) => void): void {
+  async function pushSnapshot(send: (m: ServerMessage) => void): Promise<void> {
     let snapshotTimeline = workspace.timeline;
     if (workspace.folder) {
-      const rec = sessions.get(workspace.folder);
-      send({ type: "folder.bound", path: workspace.folder, resumed: Boolean(rec), title: rec?.title ?? "", sessionId: rec?.sessionId ?? null });
+      const folder = workspace.folder;
+      const rec = sessions.get(folder);
+      send({ type: "folder.bound", path: folder, resumed: Boolean(rec), title: rec?.title ?? "", sessionId: rec?.sessionId ?? null });
       if (rec) {
-        const history = readHistoryPage(workspace.folder, rec.sessionId);
-        send({ type: "session.history.data", ...history });
-        // 用户转录可能已落盘但在途轮尚未结束；用发送内容与时间证据去重，保留下一轮同文提问。
-        const persistedUsers = history.messages.filter((item) => item.role === "user");
-        snapshotTimeline = workspace.timeline.filter((item) => item.role !== "user" || !persistedUsers.some((old) =>
-          old.text === item.text
-          && (old.sentText ?? old.text) === (item.sentText ?? item.text)
-          && old.createdAt >= item.createdAt
-        ));
+        const history = await readHistoryPage(folder, rec.sessionId);
+        // 异步读取期间视图可能已切走：旧文件夹的历史不再回放，后续广播会纠正新绑定。
+        if (workspace.folder === folder) {
+          send({ type: "session.history.data", ...history });
+          // 用户转录可能已落盘但在途轮尚未结束；用发送内容与时间证据去重，保留下一轮同文提问。
+          const persistedUsers = history.messages.filter((item) => item.role === "user");
+          snapshotTimeline = workspace.timeline.filter((item) => item.role !== "user" || !persistedUsers.some((old) =>
+            old.text === item.text
+            && (old.sentText ?? old.text) === (item.sentText ?? item.text)
+            && old.createdAt >= item.createdAt
+          ));
+        }
       }
       const sl = sessionListMsg();
       if (sl) send(sl);
+      scheduleTitleRefresh(folder);
     }
     // 别名列表是全局数据（不依附文件夹绑定）：未绑定也必须下发，否则空工作区时别名下拉永空
     const al = aliasListMsg();
@@ -1567,7 +1635,11 @@ function attachHandlers(wss: WebSocketServer, deps: ServerDeps, instanceId: stri
     clients.add(ws); // 自探测连接也会进集合：它从不发 client.ready 不拿快照，随即 terminate 由 close 摘除
 
     const send = (m: ServerMessage): void => {
-      if (ws.readyState === WebSocket.OPEN) ws.send(encode(m));
+      const startedAt = Date.now();
+      const frame = encode(m);
+      if (ws.readyState === WebSocket.OPEN) ws.send(frame);
+      const ms = Date.now() - startedAt;
+      if (ms >= 100) diagLog(`send type=${m.type} chars=${frame.length} ${ms}ms`);
     };
     let pickSeq = 0; // folder.pick 代际号：新请求使旧请求的迟到结果作废（每连接独立）
     let ownedTerminalLease: string | null = null; // 系统终端不因视图断开而退出，只清除该连接的所有权
@@ -1582,6 +1654,11 @@ function attachHandlers(wss: WebSocketServer, deps: ServerDeps, instanceId: stri
       try {
       const parsed = parseClientMessage(raw.toString());
       if (!parsed) return;
+      if (["client.ready", "session.history", "session.list", "folder.bind", "terminal.open", "terminal.close", "terminal.attach"]
+        .includes(parsed.type)) {
+        const before = (parsed as { before?: unknown }).before !== undefined ? 1 : 0;
+        diagLog(`wsIn type=${parsed.type} before=${before}`);
+      }
       const messages: ClientMessage[] = [];
       // 未初始化桥的首个完整帧直接播种；已初始化桥只有 ready 前最后一个旧完整帧可能是自动 hello。
       // 候选后的交错帧先排队：再出现候选时，前一个候选及尾巴都是离线显式流量，按原序释放。
@@ -1614,7 +1691,7 @@ function attachHandlers(wss: WebSocketServer, deps: ServerDeps, instanceId: stri
           break; // auth 已在握手完成
         case "client.ready":
           restoreWorkspaceIfIdle(); // 桥接重启后的首个接入视图：先恢复上次的工作区绑定再发快照
-          pushSnapshot(send); // 镜像快照：新视图/重连视图一次性补齐工作区现状
+          void pushSnapshot(send); // 镜像快照：新视图/重连视图一次性补齐工作区现状（历史异步读取）
           break;
         case "folder.bind": {
           if (!isValidFolder(m.path)) {
@@ -1717,7 +1794,12 @@ function attachHandlers(wss: WebSocketServer, deps: ServerDeps, instanceId: stri
             send({ type: "terminal.error", ...terminalFailure(new Error("NOT_FOUND")), leaseId: m.leaseId });
             break;
           }
-          void terminal.close(m.leaseId).catch((error: unknown) => {
+          const closeStartedAt = Date.now();
+          diagLog("terminal.close start");
+          void terminal.close(m.leaseId).then(() => {
+            diagLog(`terminal.close returned ${Date.now() - closeStartedAt}ms`);
+          }).catch((error: unknown) => {
+            diagLog(`terminal.close failed ${Date.now() - closeStartedAt}ms`);
             send({ type: "terminal.error", ...terminalFailure(error), leaseId: m.leaseId });
           });
           break;
@@ -1861,14 +1943,26 @@ function attachHandlers(wss: WebSocketServer, deps: ServerDeps, instanceId: stri
         }
         case "session.history": {
           if (!workspace.folder) break;
-          const rec = sessions.get(workspace.folder);
-          const page = rec ? readHistoryPage(workspace.folder, rec.sessionId, {
-            ...(m.before !== undefined ? { before: m.before } : {}),
+          const folder = workspace.folder;
+          const rec = sessions.get(folder);
+          const before = m.before;
+          const historyOptions = {
+            ...(before !== undefined ? { before } : {}),
             ...(m.limit !== undefined ? { limit: m.limit } : {}),
-          }) : { messages: [], hasMore: false };
-          send({
-            type: "session.history.data", ...page,
-            ...(m.before !== undefined ? { before: m.before } : {}),
+          };
+          const reply = (page: TranscriptPage): void => {
+            send({
+              type: "session.history.data", ...page,
+              ...(before !== undefined ? { before } : {}),
+            });
+          };
+          if (!rec) {
+            reply({ messages: [], hasMore: false });
+            break;
+          }
+          // 异步读取：大转录被系统扫描时不再阻塞整个桥接；请求方按 before 关联本页。
+          void readHistoryPage(folder, rec.sessionId, historyOptions).then(reply).catch(() => {
+            reply({ messages: [], hasMore: false });
           });
           break;
         }

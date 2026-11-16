@@ -350,9 +350,11 @@ describe("系统终端生产 WS 接线", () => {
     expect(new TerminalLeaseStore(leaseFile).load()).toMatchObject({
       leaseId, currentSessionId: SID_2, confirmedSessionId: SID_2, phase: "active",
     });
+    const from = f.view.inbox.inbox.length;
     f.exit(0);
+    // 只认退出之后的新 idle：client.ready 快照里还有一条早期的 idle。
     await f.view.inbox.waitWhere((message) => message.type === "terminal.state"
-      && message.state.phase === "idle", "退出后 idle");
+      && message.state.phase === "idle" && f.view.inbox.inbox.indexOf(message) >= from, "退出后 idle");
     expect(fs.existsSync(leaseFile)).toBe(false);
   });
 });

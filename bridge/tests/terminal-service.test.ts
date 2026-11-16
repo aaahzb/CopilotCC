@@ -25,7 +25,7 @@ function fixture(overrides: Partial<TerminalServiceDeps> = {}): {
     }),
     suspendSdk: async () => {},
     restoreSdk: () => {},
-    readHistoryPage: (_folder, sessionId) => ({
+    readHistoryPage: async (_folder, sessionId) => ({
       messages: [{ id: `history-${sessionId}`, createdAt: 1, role: "user", text: sessionId }],
       hasMore: false,
     }),
@@ -63,14 +63,14 @@ describe("TerminalService 镜像", () => {
     }, async () => ({
       pid: 1234, backend: "windows-terminal", onExit: () => {}, stop: async () => {},
     }));
-    service.pushMirror(SID_1);
+    await service.pushMirror(SID_1);
     service.leases.confirmSession(state.leaseId!, {
       event: "SessionStart", sessionId: SID_2, cwd: "D:/notes",
       transcriptPath: "D:/home/projects/D--notes/" + SID_2 + ".jsonl", source: "clear",
     });
-    service.pushMirror(SID_1); // 旧会话即使刚写文件也不能抢占当前镜像
-    service.pushMirror(SID_2);
-    service.pushMirror(SID_2);
+    await service.pushMirror(SID_1); // 旧会话即使刚写文件也不能抢占当前镜像
+    await service.pushMirror(SID_2);
+    await service.pushMirror(SID_2);
     const mirrors = sent.filter((m) => m.type === "session.mirror.data");
     // Hook 切会话本身先推一次 SID_2，随后两次显式推送继续递增；旧 SID_1 没有第二包。
     expect(mirrors.map((m) => m.type === "session.mirror.data" ? [m.sessionId, m.revision] : null))

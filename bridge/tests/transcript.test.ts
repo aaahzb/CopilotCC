@@ -1,9 +1,20 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import * as fs from "node:fs";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { slugifyPath, readTranscript, readTranscriptPage, listSessions, deleteTranscript, extractEffortFromTranscript, readTranscriptEffort } from "../src/transcript";
+import {
+  slugifyPath, readTranscript, readTranscriptPage, listSessions, deleteTranscript,
+  extractEffortFromTranscript, readTranscriptEffort, configureSessionTitleCache,
+  refreshSessionTitles, readTranscriptPageAsync, closeTranscriptHandles, warmTranscriptHandle,
+} from "../src/transcript";
 import { GUARD_PREFIX } from "../src/claude-session";
+
+// 标题缓存与转录句柄缓存都是模块级状态：每个用例从干净状态开始，避免不同用例复用同一路径时互相污染。
+// Windows 上缓存的打开句柄会让删除/重建同名文件停留在 delete-pending，必须等句柄真正关闭。
+beforeEach(async () => {
+  await closeTranscriptHandles();
+  configureSessionTitleCache(null);
+});
 
 describe("slugifyPath", () => {
   it("Windows 路径转为 Claude 项目目录名", () => {
@@ -579,5 +590,197 @@ describe("readTranscriptEffort", () => {
   it("会话不存在 / 非法 sessionId 返回 undefined", () => {
     expect(readTranscriptEffort(cwd, "no-such")).toBeUndefined();
     expect(readTranscriptEffort(cwd, "../evil")).toBeUndefined(); // 路径穿越被拒
+  });
+
+  it("超大转录不做同步打开，直接沿用 init 上报值", () => {
+    const file = path.join(fakeHome, ".claude", "projects", slugifyPath(path.resolve(cwd)), `${sid}.jsonl`);
+    fs.truncateSync(file, 65 * 1024 * 1024); // 稀疏扩展到同步上限之上
+    const openSync = vi.spyOn(fs, "openSync").mockImplementation(() => {
+      throw new Error("超大转录不应同步打开");
+    });
+    try {
+      expect(readTranscriptEffort(cwd, sid)).toBeUndefined();
+    } finally {
+      openSync.mockRestore();
+    }
+  });
+});
+
+describe("会话标题缓存与大文件异步读取", () => {
+  const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ccc-title-home-"));
+  const cwd = path.join("proj", "大文件标题");
+  const sid = "sid-big-title";
+  const cacheFile = path.join(fakeHome, "session-titles.json");
+  const projectDir = path.join(fakeHome, ".claude", "projects", slugifyPath(path.resolve(cwd)));
+
+  /** 写一个超过同步读取上限（4MB）的转录，首行是真实用户问题 */
+  function writeBigTranscript(title: string): void {
+    const lines = [JSON.stringify({ type: "user", message: { content: title } })];
+    const pad = JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "x".repeat(64 * 1024) }] } });
+    for (let i = 0; i < 80; i++) lines.push(pad);
+    fs.writeFileSync(path.join(projectDir, `${sid}.jsonl`), lines.join("\n"), "utf-8");
+  }
+
+  beforeEach(() => {
+    process.env.CCC_FAKE_HOME = fakeHome;
+    fs.mkdirSync(projectDir, { recursive: true });
+    fs.rmSync(path.join(projectDir, `${sid}.jsonl`), { force: true });
+    fs.rmSync(cacheFile, { force: true });
+    configureSessionTitleCache(cacheFile);
+  });
+
+  afterEach(() => {
+    configureSessionTitleCache(null);
+    delete process.env.CCC_FAKE_HOME;
+    vi.restoreAllMocks();
+  });
+
+  it("超过同步上限的转录先返回占位标题，异步补全后再给真实标题", async () => {
+    writeBigTranscript("大文件标题");
+    expect(listSessions(cwd).find((item) => item.sessionId === sid)?.title).toBe("(空会话)");
+    await refreshSessionTitles(cwd);
+    expect(listSessions(cwd).find((item) => item.sessionId === sid)?.title).toBe("大文件标题");
+  });
+
+  it("标题已落盘时重新加载缓存即可命中，卸载后不再同步打开文件", async () => {
+    writeBigTranscript("缓存命中标题");
+    await refreshSessionTitles(cwd);
+    configureSessionTitleCache(cacheFile); // 模拟桥接重启：内存清空，从磁盘恢复
+    const openSync = vi.spyOn(fs, "openSync").mockImplementation(() => {
+      throw new Error("标题已缓存，不应再同步打开转录");
+    });
+    const list = listSessions(cwd);
+    openSync.mockRestore();
+    expect(list.find((item) => item.sessionId === sid)?.title).toBe("缓存命中标题");
+  });
+
+  it("标题异步补全与分页共用同一句柄，不再重复打开文件", async () => {
+    writeBigTranscript("复用句柄标题");
+    const open = vi.spyOn(fs.promises, "open");
+    await refreshSessionTitles(cwd);
+    expect(open).toHaveBeenCalledTimes(1);
+    await readTranscriptPageAsync(cwd, sid, { limit: 2 });
+    expect(open).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("readTranscriptPageAsync", () => {
+  const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ccc-async-home-"));
+  const cwd = path.join("proj", "异步分页");
+  const sid = "sid-async";
+  const projectDir = path.join(fakeHome, ".claude", "projects", slugifyPath(path.resolve(cwd)));
+
+  /** 写指定条数的助手消息转录 */
+  function writeTranscript(count: number, text: (i: number) => string): void {
+    const lines: string[] = [];
+    for (let i = 0; i < count; i++) {
+      lines.push(JSON.stringify({ type: "assistant", uuid: `u${i}`, message: { content: [{ type: "text", text: text(i) }] } }));
+    }
+    fs.writeFileSync(path.join(projectDir, `${sid}.jsonl`), lines.join("\n"), "utf-8");
+  }
+
+  beforeEach(() => {
+    process.env.CCC_FAKE_HOME = fakeHome;
+    fs.mkdirSync(projectDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    delete process.env.CCC_FAKE_HOME;
+    vi.restoreAllMocks();
+  });
+
+  it("最新页完全走异步 fs，不调用同步打开/读取", async () => {
+    writeTranscript(2, (i) => ["问题", "回答"][i]);
+    const openSync = vi.spyOn(fs, "openSync").mockImplementation(() => {
+      throw new Error("禁止同步打开");
+    });
+    const readFileSync = vi.spyOn(fs, "readFileSync").mockImplementation(() => {
+      throw new Error("禁止同步读取");
+    });
+    try {
+      const page = await readTranscriptPageAsync(cwd, sid, { limit: 2 });
+      expect(page.messages.map((item) => item.text)).toEqual(["问题", "回答"]);
+    } finally {
+      openSync.mockRestore();
+      readFileSync.mockRestore();
+    }
+  });
+
+  it("大文件最新页只读尾部窗口也按顺序返回最后几条", async () => {
+    writeTranscript(1200, (i) => `回复${i}-${"y".repeat(2048)}`);
+    const page = await readTranscriptPageAsync(cwd, sid, { limit: 3 });
+    expect(page.messages.map((item) => item.text.split("-")[0])).toEqual(["回复1197", "回复1198", "回复1199"]);
+    expect(page.hasMore).toBe(true);
+  });
+
+  it("before 分页与同步实现结果一致", async () => {
+    writeTranscript(10, (i) => `消息${i}`);
+    const latest = readTranscriptPage(cwd, sid, { limit: 3 });
+    const syncEarlier = readTranscriptPage(cwd, sid, { limit: 3, before: latest.nextCursor });
+    const asyncEarlier = await readTranscriptPageAsync(cwd, sid, { limit: 3, before: latest.nextCursor });
+    expect(asyncEarlier).toEqual(syncEarlier);
+  });
+
+  it("同一转录追加后翻页复用缓存句柄，不再第二次打开文件", async () => {
+    writeTranscript(2, (i) => ["问题", "回答"][i]);
+    const open = vi.spyOn(fs.promises, "open");
+    const first = await readTranscriptPageAsync(cwd, sid, { limit: 2 });
+    // 模拟 CLI 往同一文件追加一条新消息：文件变大，句柄仍有效。
+    fs.appendFileSync(
+      path.join(projectDir, `${sid}.jsonl`),
+      `\n${JSON.stringify({ type: "assistant", uuid: "u-new", message: { content: [{ type: "text", text: "追加" }] } })}`,
+      "utf-8",
+    );
+    const second = await readTranscriptPageAsync(cwd, sid, { limit: 2 });
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(first.messages.map((item) => item.text)).toEqual(["问题", "回答"]);
+    expect(second.messages.map((item) => item.text)).toEqual(["回答", "追加"]);
+  });
+
+  it("转录被覆盖成更小的新文件时重新打开并返回新内容", async () => {
+    writeTranscript(10, (i) => `消息${i}`);
+    const open = vi.spyOn(fs.promises, "open");
+    await readTranscriptPageAsync(cwd, sid, { limit: 3 });
+    writeTranscript(2, (i) => `新${i}`); // 同路径重建：大小变小，旧句柄指向的内容已作废
+    const page = await readTranscriptPageAsync(cwd, sid, { limit: 3 });
+    expect(open).toHaveBeenCalledTimes(2);
+    expect(page.messages.map((item) => item.text)).toEqual(["新0", "新1"]);
+  });
+
+  it("before 分页复用缓存句柄，不再整文件重新打开", async () => {
+    writeTranscript(10, (i) => `消息${i}`);
+    const open = vi.spyOn(fs.promises, "open");
+    const latest = await readTranscriptPageAsync(cwd, sid, { limit: 3 });
+    const asyncEarlier = await readTranscriptPageAsync(cwd, sid, { limit: 3, before: latest.nextCursor });
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(asyncEarlier).toEqual(readTranscriptPage(cwd, sid, { limit: 3, before: latest.nextCursor }));
+  });
+
+  it("启动预热打开转录后，首次分页不再打开文件", async () => {
+    writeTranscript(5, (i) => `消息${i}`);
+    const open = vi.spyOn(fs.promises, "open");
+    await warmTranscriptHandle(cwd, sid);
+    const page = await readTranscriptPageAsync(cwd, sid, { limit: 3 });
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(page.messages.map((item) => item.text)).toEqual(["消息2", "消息3", "消息4"]);
+  });
+
+  it("并发分页合并到同一次打开，不重复触发扫描", async () => {
+    writeTranscript(5, (i) => `消息${i}`);
+    const open = vi.spyOn(fs.promises, "open");
+    const [a, b] = await Promise.all([
+      readTranscriptPageAsync(cwd, sid, { limit: 3 }),
+      readTranscriptPageAsync(cwd, sid, { limit: 3 }),
+    ]);
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(a.messages.map((item) => item.text)).toEqual(b.messages.map((item) => item.text));
+  });
+
+  it("预热缺失转录静默结束，非法 sessionId 不打开文件", async () => {
+    const open = vi.spyOn(fs.promises, "open");
+    await expect(warmTranscriptHandle(cwd, "no-such-session")).resolves.toBeUndefined();
+    const callsAfterMissing = open.mock.calls.length;
+    await expect(warmTranscriptHandle(cwd, "../evil")).resolves.toBeUndefined();
+    expect(open.mock.calls.length).toBe(callsAfterMissing); // 路径穿越在 open 之前被拒
   });
 });

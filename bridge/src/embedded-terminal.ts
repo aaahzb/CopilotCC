@@ -4,10 +4,11 @@ import path from "node:path";
 import type { WebSocket } from "ws";
 import { WebSocket as WebSocketState } from "ws";
 import { encode, type ServerMessage } from "./protocol";
-import { probeCliVersion, selectHookTransport } from "./cli-capabilities";
+import { probeCliVersion, selectHookTransport, supportsNoFlicker } from "./cli-capabilities";
 import { terminalChildCommand, terminalHookCommand, terminalNativeDirectory, type TerminalChildCommand } from "./runtime-entry";
 import { safeTokenEqual, writeTerminalSettings } from "./terminal-hooks";
 import { readProcessIdentity } from "./process-identity";
+import { diagLog } from "./startup-diagnostics";
 import type {
   ProcessIdentity,
   TerminalLeaseRecord,
@@ -204,7 +205,10 @@ export class EmbeddedSession {
     this.clearReconnectTimer();
     if (this.ended || this.closed || this.stopping) return;
     this.stopping = true;
+    diagLog("pty.stop start");
+    const startedAt = Date.now();
     await this.pty.kill();
+    diagLog(`pty.stop done ${Date.now() - startedAt}ms`);
   }
 
   /**
@@ -261,7 +265,8 @@ export class EmbeddedTerminalAdapter {
   async start(context: TerminalStartContext): Promise<EmbeddedTerminalHandle> {
     // 启动耗时只做内存计时，flush 异步落盘；不得在启动链上等待写日志。
     const timing = new StartupTiming("embedded");
-    const transport = selectHookTransport(await this.probeVersion(context.cliPath));
+    const version = await this.probeVersion(context.cliPath);
+    const transport = selectHookTransport(version);
     timing.mark("probe");
     const helperCommand = transport === "command"
       ? terminalHookCommand(context.leaseId, this.childCommand)
@@ -274,11 +279,14 @@ export class EmbeddedTerminalAdapter {
         : ["--session-id", context.resumeSessionId]),
       "--settings", settingsFile,
     ];
-    const env = transport === "command" ? {
+    const env: NodeJS.ProcessEnv = transport === "command" ? {
       ...process.env,
       CCC_TERMINAL_HOOK_URL: `http://127.0.0.1:${context.port}/terminal-hook/${context.leaseId}`,
       CCC_TERMINAL_HOOK_TOKEN: context.hookToken,
-    } : process.env;
+    } : { ...process.env };
+    // 支持该变量的版本强制渲染全屏：桥接快速关闭不再被计为一次全屏启动失败，
+    // 避免两次关窗后 CLI 回退经典渲染并打印提示；旧版本保持环境原样。
+    if (supportsNoFlicker(version)) env.CLAUDE_CODE_NO_FLICKER = "1";
     const pty = await this.deps.backend.spawn({
       file: context.cliPath, args, cwd: context.folder, cols: 120, rows: 32, env,
     });
@@ -332,6 +340,7 @@ export class EmbeddedTerminalAdapter {
     });
     pty.onExit(({ exitCode }) => {
       if (exitResult) return;
+      diagLog(`pty.exit event code=${exitCode}`);
       exitResult = { exitCode, reason: "exit" };
       fs.mkdirSync(context.privateDir, { recursive: true, mode: 0o700 });
       fs.writeFileSync(path.join(context.privateDir, `${context.leaseId}.exit.json`), JSON.stringify({

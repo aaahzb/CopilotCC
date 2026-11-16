@@ -1,12 +1,13 @@
 import { spawn, spawnSync, type ChildProcess, type SpawnOptions } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { probeCliVersion, selectHookTransport } from "./cli-capabilities";
+import { probeCliVersion, selectHookTransport, supportsNoFlicker } from "./cli-capabilities";
 import { isProcessAlive } from "./process-identity";
 import { UUID_RE, type TerminalBackend } from "./protocol";
 import { terminalChildCommand, terminalHookCommand, type TerminalChildCommand } from "./runtime-entry";
 import type { TerminalChildRequest } from "./terminal-child";
 import { writeTerminalSettings } from "./terminal-hooks";
+import { diagLog } from "./startup-diagnostics";
 import { StartupTiming } from "./startup-timing";
 import type {
   ProcessIdentity,
@@ -89,7 +90,8 @@ export class SystemTerminalAdapter {
     fs.mkdirSync(context.privateDir, { recursive: true, mode: 0o700 });
     // 启动耗时只做内存计时，flush 异步落盘；不得在启动链上等待写日志。
     const timing = new StartupTiming("system");
-    const transport = selectHookTransport(await this.probeVersion(context.cliPath));
+    const version = await this.probeVersion(context.cliPath);
+    const transport = selectHookTransport(version);
     timing.mark("probe");
     const helperCommand = transport === "command"
       ? terminalHookCommand(context.leaseId, this.childCommand)
@@ -115,6 +117,8 @@ export class SystemTerminalAdapter {
         hookUrl: `http://127.0.0.1:${context.port}/terminal-hook/${context.leaseId}`,
         hookTokenFile: path.join(context.privateDir, `${context.leaseId}.hook-token`),
       } : {}),
+      // 支持该变量的版本强制全屏且不计入启动失败；旧版本不写未知字段。
+      ...(supportsNoFlicker(version) ? { noFlicker: true } : {}),
     };
     fs.writeFileSync(requestFile, JSON.stringify(request, null, 2), { encoding: "utf8", mode: 0o600 });
 
@@ -206,13 +210,23 @@ export class SystemTerminalAdapter {
   private async waitForStatus(context: TerminalStartContext): Promise<ProcessIdentity> {
     const file = path.join(context.privateDir, `${context.leaseId}.status.json`);
     const deadline = Date.now() + 20_000;
+    // 临时诊断（2026-11-16）：区分「status 文件确实迟到」与「轮询被主线程阻塞」。
+    const startedAt = Date.now();
+    let polls = 0;
+    let lastPollAt = startedAt;
+    diagLog("status wait start");
     while (Date.now() <= deadline) {
+      polls += 1;
+      const now = Date.now();
+      if (now - lastPollAt > 200) diagLog(`status poll gap ${now - lastPollAt}ms after ${polls} polls`);
+      lastPollAt = now;
       try {
         const value = JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, unknown>;
         if (value.leaseId === context.leaseId && typeof value.pid === "number"
           && Number.isInteger(value.pid) && value.pid > 0 && typeof value.executable === "string"
           && value.executable && typeof value.startedAt === "string"
           && Number.isFinite(Date.parse(value.startedAt))) {
+          diagLog(`status ready after ${polls} polls ${Date.now() - startedAt}ms`);
           return { pid: value.pid, executable: value.executable, startedAt: value.startedAt };
         }
       } catch {
@@ -220,6 +234,7 @@ export class SystemTerminalAdapter {
       }
       await new Promise<void>((resolve) => setTimeout(resolve, 50));
     }
+    diagLog(`status TIMEOUT after ${polls} polls ${Date.now() - startedAt}ms`);
     throw new Error("TERMINAL_STATUS_TIMEOUT");
   }
 

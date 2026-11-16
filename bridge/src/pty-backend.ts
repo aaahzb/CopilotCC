@@ -12,9 +12,9 @@ export interface PtySpawnOptions {
   env?: NodeJS.ProcessEnv;
 }
 
-/** 伪终端退出事件；没有信号时统一为 null。 */
+/** 伪终端退出事件；没有信号或退出码时统一为 null（ConPTY 被强杀后没有退出码）。 */
 export interface PtyExitEvent {
-  exitCode: number;
+  exitCode: number | null;
   signal: number | null;
 }
 

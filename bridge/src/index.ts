@@ -17,6 +17,7 @@ import { SystemTerminalAdapter } from "./system-terminal";
 import { createEmbeddedTerminalAdapter } from "./embedded-terminal";
 import { runPtySmoke } from "./pty-smoke";
 import { terminalChildCommand, terminalNativeDirectory } from "./runtime-entry";
+import { enableStartupDiagnostics } from "./startup-diagnostics";
 import { enableStartupTiming } from "./startup-timing";
 
 const cmd = process.argv[2] ?? "start";
@@ -25,6 +26,7 @@ const cmd = process.argv[2] ?? "start";
 async function cmdStart(): Promise<void> {
   const config = loadOrCreateConfig();
   enableStartupTiming(configDir()); // 启动耗时写入 configDir/startup.log，异步且不阻塞启动
+  enableStartupDiagnostics(configDir()); // 临时诊断构建：额外写 startup-diag.log，排查后移除
   claimInstance(configDir()); // 单实例守卫：已有活实例直接抛错退出，避免双桥抢端口
   const sessions = new SessionManager(path.join(configDir(), "sessions.json"));
   sessions.load();

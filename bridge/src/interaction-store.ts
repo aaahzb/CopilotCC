@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { InteractionRecord, TimelineItem } from "./protocol";
+import { diagSlow } from "./startup-diagnostics";
 
 const SAFE_SESSION_ID = /^[a-zA-Z0-9_-]+$/;
 const OUTCOMES = new Set(["answered", "allowed", "denied", "cancelled", "timeout", "error"]);
@@ -144,6 +145,7 @@ export class InteractionStore {
   read(folder: string, sessionId: string): TimelineItem[] {
     const file = this.filePath(folder, sessionId);
     if (!file || !fs.existsSync(file)) return [];
+    const startedAt = Date.now();
     const items = new Map<string, TimelineItem>();
     for (const line of fs.readFileSync(file, "utf-8").split("\n")) {
       if (!line.trim()) continue;
@@ -154,6 +156,7 @@ export class InteractionStore {
         // 单行损坏不阻断其它事实恢复。
       }
     }
+    diagSlow("sidecar.read", startedAt, `items=${items.size}`);
     return [...items.values()];
   }
 

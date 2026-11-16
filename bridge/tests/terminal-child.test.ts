@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess, type SpawnOptions } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -272,5 +272,58 @@ describe("runTerminalChild", () => {
     expect(result.stderr).toContain("TERMINAL_CHILD_REQUEST");
     expect(result.stderr).not.toContain(requestFile);
     expect(result.stderr).not.toContain("invalid-private-json");
+  });
+});
+
+describe("runTerminalChild 全屏失败计数开关", () => {
+  it("请求标记 noFlicker 时向 CLI 环境注入 CLAUDE_CODE_NO_FLICKER=1", async () => {
+    const { requestFile, request, cliPath } = requestFixture();
+    fs.writeFileSync(requestFile, JSON.stringify({ ...request, noFlicker: true }), "utf8");
+    const child = new EventEmitter() as ChildProcess;
+    const spawnImpl = vi.fn(() => {
+      queueMicrotask(() => child.emit("exit", 0, null));
+      return child;
+    });
+    const running = runTerminalChild(requestFile, {
+      spawn: spawnImpl as never,
+      identity: async () => ({ pid: 1234, executable: "C:/bridge/ccc-bridge.exe", startedAt: "2026-11-10T08:00:00.000Z" }),
+    });
+    await vi.waitFor(() => expect(fs.existsSync(path.join(request.cwd, `${LEASE_ID}.status.json`))).toBe(true));
+    fs.writeFileSync(path.join(request.cwd, `${LEASE_ID}.start`), "", "utf8");
+    await running;
+    expect(spawnImpl).toHaveBeenCalledWith(cliPath, request.args, expect.objectContaining({
+      env: expect.objectContaining({ CLAUDE_CODE_NO_FLICKER: "1" }),
+    }));
+  });
+
+  it("未标记 noFlicker 时不注入开关", async () => {
+    const { requestFile, request, cliPath } = requestFixture();
+    const child = new EventEmitter() as ChildProcess;
+    // 显式声明 spawn 参数，让 mock.calls 能取到真实子进程环境。
+    const spawnImpl = vi.fn((_executable: string, _args: string[], _options: SpawnOptions) => {
+      queueMicrotask(() => child.emit("exit", 0, null));
+      return child;
+    });
+    const running = runTerminalChild(requestFile, {
+      spawn: spawnImpl as never,
+      identity: async () => ({ pid: 1234, executable: "C:/bridge/ccc-bridge.exe", startedAt: "2026-11-10T08:00:00.000Z" }),
+    });
+    await vi.waitFor(() => expect(fs.existsSync(path.join(request.cwd, `${LEASE_ID}.status.json`))).toBe(true));
+    fs.writeFileSync(path.join(request.cwd, `${LEASE_ID}.start`), "", "utf8");
+    await running;
+    const spawnEnv = spawnImpl.mock.calls[0]?.[2]?.env as NodeJS.ProcessEnv | undefined;
+    expect(spawnEnv).not.toHaveProperty("CLAUDE_CODE_NO_FLICKER");
+    expect(spawnImpl).toHaveBeenCalledWith(cliPath, request.args, expect.anything());
+  });
+
+  it("非布尔 noFlicker 在启动 CLI 前拒绝", async () => {
+    const { requestFile, request } = requestFixture();
+    fs.writeFileSync(requestFile, JSON.stringify({ ...request, noFlicker: "yes" }), "utf8");
+    const spawnImpl = vi.fn();
+    await expect(runTerminalChild(requestFile, {
+      spawn: spawnImpl as never,
+      identity: async () => ({ pid: 1, executable: "x", startedAt: "2026-11-10T08:00:00.000Z" }),
+    })).rejects.toThrow("TERMINAL_CHILD_REQUEST");
+    expect(spawnImpl.mock.calls.length).toBe(0);
   });
 });

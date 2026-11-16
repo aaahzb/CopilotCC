@@ -330,3 +330,41 @@ describe("内嵌终端启动耗时日志", () => {
     ));
   });
 });
+
+describe("EmbeddedTerminalAdapter 全屏启动失败计数规避", () => {
+  it.each([
+    ["2.1.323", true],
+    ["2.1.235", false],
+  ])("探测版本 %s 时向 PTY 环境注入 CLAUDE_CODE_NO_FLICKER=%s", async (version, expected) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ccc-embedded-no-flicker-"));
+    tempDirs.push(dir);
+    const backend = {
+      kind: "bun-node-pty" as const,
+      // 显式声明 options 参数，让 mock.calls 能取到真实 spawn 选项。
+      spawn: vi.fn(async (_options: unknown) => fakePty()),
+      close: vi.fn(async () => {}),
+    };
+    const adapter = new EmbeddedTerminalAdapter({
+      backend,
+      probeVersion: async () => version,
+      childCommand: { executable: "C:/bridge/ccc-terminal.exe", prefixArgs: [] },
+      readIdentity: async () => null,
+    });
+    await adapter.start({
+      leaseId: LEASE_ID,
+      hookToken: "H".repeat(43),
+      mode: "embedded",
+      folder: dir,
+      initialSessionId: LEASE_ID,
+      resumeSessionId: LEASE_ID,
+      cliPath: path.join(dir, "fake-claude.exe"),
+      port: 19280,
+      privateDir: path.join(dir, "terminal"),
+    });
+    const spawnOptions = backend.spawn.mock.calls[0]?.[0] as { env?: NodeJS.ProcessEnv } | undefined;
+    // 只有支持该变量的版本才注入；旧版本保持环境原样，避免 CLI 收到未知开关。
+    expect(spawnOptions?.env?.CLAUDE_CODE_NO_FLICKER).toBe(expected ? "1" : undefined);
+    // Hook 变量与开关互不影响，command 通道仍必须带上租约地址。
+    expect(spawnOptions?.env?.CCC_TERMINAL_HOOK_URL).toContain("terminal-hook");
+  });
+});

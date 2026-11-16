@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import path from "node:path";
 import { promisify } from "node:util";
+import { diagLog } from "./startup-diagnostics";
 import type { ProcessIdentity } from "./terminal-lease";
 
 const execFileAsync = promisify(execFile);
@@ -75,11 +76,25 @@ export async function readProcessIdentity(
       // 包装进程拿不到身份就直接失败（2026-11-15 Windows CI 实测：首条用例超时、后续热查询通过）。
       // Get-Process 走系统进程 API（GetProcessTimes/MainModule），不经 WMI，本地约 155ms；
       // 输出格式与解析器保持一致：可执行路径一行、ISO 启动时间一行。
-      const script = `$p=Get-Process -Id ${pid} -ErrorAction Stop; [Console]::Out.WriteLine($p.Path); [Console]::Out.WriteLine($p.StartTime.ToUniversalTime().ToString("o"))`;
-      const { stdout } = await execFileAsync("powershell.exe", [
-        "-NoProfile", "-NonInteractive", "-Command", script,
-      ], { timeout: 8000, maxBuffer: 8192, windowsHide: true });
-      return parseWindowsProcessIdentity(stdout, pid);
+      // 临时诊断（2026-11-16）：脚本在 stderr 打印自身耗时，用于区分「PowerShell 本身慢」与
+      // 「桥接侧等待/回调延迟」；parseWindowsProcessIdentity 只读 stdout，不受影响。
+      const script = `$sw=[Diagnostics.Stopwatch]::StartNew(); $p=Get-Process -Id ${pid} -ErrorAction Stop; [Console]::Out.WriteLine($p.Path); [Console]::Out.WriteLine($p.StartTime.ToUniversalTime().ToString("o")); [Console]::Error.WriteLine("CCCPS elapsed=" + $sw.ElapsedMilliseconds)`;
+      const startedAt = Date.now();
+      diagLog(`identity pid=${pid} start`);
+      try {
+        const { stdout, stderr } = await execFileAsync("powershell.exe", [
+          "-NoProfile", "-NonInteractive", "-Command", script,
+        ], { timeout: 8000, maxBuffer: 8192, windowsHide: true });
+        const psElapsed = /CCCPS elapsed=(\d+)/.exec(String(stderr))?.[1] ?? "n/a";
+        diagLog(`identity pid=${pid} ok wait=${Date.now() - startedAt}ms ps=${psElapsed}ms`);
+        return parseWindowsProcessIdentity(stdout, pid);
+      } catch (error) {
+        // 诊断分支保持原有降级语义：任何失败都返回 null，不向调用方暴露细节。
+        diagLog(`identity pid=${pid} FAILED wait=${Date.now() - startedAt}ms `
+          + `${(error as NodeJS.ErrnoException).code ?? ""} `
+          + `${String((error as Error).message ?? "").replace(/\s+/g, " ").slice(0, 120)}`);
+        return null;
+      }
     }
     if (platform === "darwin") {
       const { stdout } = await execFileAsync("/bin/ps", [

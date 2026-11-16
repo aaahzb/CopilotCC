@@ -197,3 +197,22 @@ describe("SystemTerminalAdapter", () => {
     expect(ensureShellEnvFallback).toBeTypeOf("function");
   });
 });
+
+describe("SystemTerminalAdapter 全屏启动失败计数规避", () => {
+  it.each([
+    ["2.1.323", true],
+    ["2.1.235", false],
+  ])("探测版本 %s 时包装请求标记 noFlicker=%s", async (version, expected) => {
+    privateDir = fs.mkdtempSync(path.join(os.tmpdir(), "ccc-system-no-flicker-"));
+    tempDirs.push(privateDir);
+    const { spawnImpl, childCommand } = fakeLaunch();
+    const adapter = new SystemTerminalAdapter({
+      platform: "win32", spawn: spawnImpl as never, which: () => "C:/WindowsTerminal/wt.exe",
+      childCommand, probeVersion: async () => version,
+    });
+    await adapter.start(context());
+    const request = JSON.parse(fs.readFileSync(path.join(privateDir, `${LEASE_ID}.request.json`), "utf8"));
+    // 旧版本请求里不能出现未知字段；支持时由包装进程负责注入环境变量。
+    expect(request.noFlicker).toBe(expected ? true : undefined);
+  });
+});

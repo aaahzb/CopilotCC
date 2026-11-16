@@ -32,7 +32,7 @@ export interface TerminalServiceDeps {
   };
   suspendSdk(): Promise<void>;
   restoreSdk(sessionId: string | null): void;
-  readHistoryPage(folder: string, sessionId: string): TranscriptPage;
+  readHistoryPage(folder: string, sessionId: string): Promise<TranscriptPage>;
   broadcast(message: ServerMessage): void;
   pushSessionList(): void;
   syncCurrentAlias(): void;
@@ -107,7 +107,8 @@ export class TerminalService {
         this.pushMirror(sessionId);
       },
       onMirror: (sessionId) => {
-        if (sessionId) this.pushMirror(sessionId);
+        // 真实退出流程会 await 最终镜像，保证恢复 SDK / 广播 idle 之前历史已经补齐。
+        return sessionId ? this.pushMirror(sessionId) : undefined;
       },
       onRestore: (sessionId) => this.deps.restoreSdk(sessionId),
       onError: (code, message) => this.deps.broadcast({
@@ -358,23 +359,46 @@ export class TerminalService {
     this.deps.pushSessionList();
   }
 
+  /** 同一会话的镜像推送串行化，保证异步读取完成后 revision 仍按事件顺序递增 */
+  private readonly mirrorChains = new Map<string, Promise<void>>();
+
   /**
    * 读取并广播 lease 当前会话的最新结构化页面。
+   * 异步读取转录，避免大文件扫描时冻结整个桥接事件循环；调用方可忽略返回的 Promise。
    * @param sessionId watcher 或 Hook 指定的会话
+   * @returns 本次镜像推送（含同一会话此前排队推送）完成时兑现
    */
-  pushMirror(sessionId: string): void {
+  pushMirror(sessionId: string): Promise<void> {
     const lease = this.leases.currentRecord();
-    if (!lease || lease.currentSessionId !== sessionId) return;
-    const page = this.deps.readHistoryPage(lease.folder, sessionId);
-    const revision = (this.mirrorRevisions.get(sessionId) ?? 0) + 1;
-    this.mirrorRevisions.set(sessionId, revision);
-    this.deps.broadcast({
-      type: "session.mirror.data",
-      sessionId,
-      revision,
-      messages: page.messages,
-      hasMore: page.hasMore,
-      ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
+    if (!lease || lease.currentSessionId !== sessionId) return Promise.resolve();
+    const previous = this.mirrorChains.get(sessionId) ?? Promise.resolve();
+    const task = previous.then(async () => {
+      try {
+        // 排队期间 lease 可能已关闭或切换会话：只镜像仍然当前的会话。
+        const current = this.leases.currentRecord();
+        if (!current || current.currentSessionId !== sessionId) return;
+        const page = await this.deps.readHistoryPage(current.folder, sessionId);
+        // 异步读取期间 lease 也可能变化，广播前再确认一次。
+        const after = this.leases.currentRecord();
+        if (!after || after.currentSessionId !== sessionId) return;
+        const revision = (this.mirrorRevisions.get(sessionId) ?? 0) + 1;
+        this.mirrorRevisions.set(sessionId, revision);
+        this.deps.broadcast({
+          type: "session.mirror.data",
+          sessionId,
+          revision,
+          messages: page.messages,
+          hasMore: page.hasMore,
+          ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
+        });
+      } catch {
+        // 单次镜像失败不影响后续推送
+      }
     });
+    this.mirrorChains.set(sessionId, task);
+    void task.then(() => {
+      if (this.mirrorChains.get(sessionId) === task) this.mirrorChains.delete(sessionId);
+    });
+    return task;
   }
 }

@@ -230,9 +230,11 @@ export class NodePtyBackend implements PtyBackend {
       this.processes.get(id)?.receiveData(frame.data);
       return;
     }
-    if (frame.type === "exit" && id !== null && typeof frame.exitCode === "number") {
+    if (frame.type === "exit" && id !== null) {
+      // 强杀后 helper 可能拿不到退出码（JSON 里直接缺字段）；按 null 分发，
+      // 不能因为缺少退出码把整个 helper 后端判为非法帧并连带结束所有会话。
       this.processes.get(id)?.receiveExit({
-        exitCode: frame.exitCode,
+        exitCode: typeof frame.exitCode === "number" ? frame.exitCode : null,
         signal: typeof frame.signal === "number" ? frame.signal : null,
       });
       return;

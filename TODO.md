@@ -603,3 +603,45 @@
 - 根因：与"找不到 CLI"同源的上一层——.app 不读 ~/.zshrc，密钥/代理变量没带进桥接进程，SDK spawn 出的 claude 无任何凭据。
 - 修复：createClaudeSession 起手调 ensureShellEnvFallback（unix 限定、结果缓存）：密钥类变量缺失时 `zsh -lic env` 取用户终端全量环境，把 ANTHROPIC_*/CLAUDE_*/代理变量中缺失的补进 process.env（只补不覆盖）。
 - 教训：环境隔离不止 PATH 一层——"程序能找到"之后还有"凭据能拿到"。依赖 shell 环境的任何能力都要把 GUI 启动链路整段走通验证。
+
+## 2026-11-16 Windows 终端启动慢根因修复（标题缓存 + 异步转录 I/O）
+
+- [x] 根因（来自 `startup.log` / `startup-diag.log` 与只读探针）：8 秒不在终端进程本身，而是桥接主线程同步打开 358.9MB 转录时被 Kaspersky（`avp.exe` 常驻、Defender RTP 已关闭）同步扫描；开关事件循环冻结约 7.8–7.9 秒，`waitForStatus` 轮询和 PowerShell `execFile` 回调一起被推迟。对照证据：同一插件终端第二次 `embedded total=306ms`；同一路径 PowerShell 自身 `ps=34ms`；4 天未动的大转录 `open=1,046,432ms`、打开后 `read64k=0ms`。
+- [x] 会话标题缓存：`transcript.ts` 新增 `configureSessionTitleCache` / `refreshSessionTitles`，标题按“绝对路径 + 文件大小指纹”缓存到 `<configDir>/session-titles.json`；命中缓存不再打开转录，文件变小判定被重建并失效，`deleteTranscript` 同步清缓存。超过 4MB 且未缓存的转录在同步路径只返回 `(空会话)` 占位，由异步读取 64KB 头部补全后补发会话列表；头部无标题的负结果按文件大小记忆，避免反复打开。
+- [x] 历史分页异步化：`readTranscriptPageAsync` 用 `fs.promises`；最新页只读尾部窗口（8MB 起、上限 64MB，按需扩大），`before` 分页全量异步读取以保持与同步实现完全一致；`readTranscriptTimeline` 重构为共享的 `parseTranscriptEntries` + `buildTimeline`。`server.ts` 的 `readHistoryPage`、`pushSnapshot`、`session.history`、压缩摘要补全改异步/定向补帧；`terminal-service.pushMirror` 按会话串行化并返回 Promise，真实退出仍保证“最终镜像 → 恢复 SDK → idle”的顺序。
+- [x] effort 读取保护：`readTranscriptEffort` 对超过 64MB 的转录直接返回 `undefined`（沿用 init 上报值），不再在每轮 result 同步打开超大文件。
+- [x] 测试：新增标题缓存 2 项、异步分页 3 项、超大转录 effort 保护 1 项；更新镜像/终端退出/镜像服务测试等待异步完成。bridge 全量 41 文件 / 464 通过 / 1 跳过（Darwin 专项），`tsc --noEmit` 通过。
+- [ ] 待验证：用带现有启动诊断插桩的新 Windows 构建在隔离目录实测系统终端与插件终端首次打开，确认 `startup.log` 中 `status`/`identity` 不再约 8 秒；随后按用户确认撤掉临时诊断插桩并清理临时产物。
+
+## 2026-11-16（之二）插件终端关闭 5s 阻塞与历史打开 7.9s 的修复
+
+- [x] 关闭阻塞根因：node-pty 1.1.0 `WindowsPtyAgent.kill()` 在 JS 线程同步调用 `_ptyNative.kill()` → 原生 `ClosePseudoConsole` 等待控制台客户端；claude.exe 未及时退出时系统等满约 5 秒宽限期。实测 `pty.nativeKill 5035ms`、`event-loop blocked ~5029ms`。
+- [x] 关闭修复：`BunPtyBackend` 在 Windows 关闭前先 `taskkill /PID <pid> /T /F`（3 秒上限、失败回退原生关闭），再调 `raw.kill()`。真实机器日志 `pty.nativeKill 3ms`、`terminal.close returned 89ms`，不再出现 blocked 行；本地卡死客户端复现 5011ms → 5–72ms。
+- [x] 打开慢根因（来自 diag5 实测）：单次页读取 `open=7885–7913ms`、`read=3–5ms`、`parse=13–15ms`——耗时全在 `fs.promises.open` 被 Kaspersky 按文件版本整文件扫描；`before` 分页还会用 `fs.promises.readFile` 二次打开。
+- [x] 打开修复：`transcript.ts` 新增有界 LRU 转录句柄缓存（上限 32），命中时只用 `handle.stat()` 校验大小不减且 ino/dev/birthtime 未变，绝不重新 open；最新页、`before` 全量页与标题异步补全共用同一句柄；变小/换文件自动重开；`deleteTranscript` 先退役缓存句柄，避免 Windows delete-pending 阻止同 ID 重建。新增 4 项回归测试（连续分页只 open 一次、重建后重开、`before` 复用、标题与分页共用）。bridge 全量 41 文件 / 471 通过 / 1 跳过，`tsc --noEmit` 通过；Bun 探针实测 14MB 转录三次分页合计只 open 1 次。
+- [ ] 待验证：用新构建 `ccc-diag6.exe` 在真实机器复测插件终端打开/翻历史，确认 `pageAsync` 的 `open` 从约 7.9s 降到几十毫秒，关闭仍保持 ~90ms。
+
+## 2026-11-16（之三）diag7 预开句柄实测 + 全屏启动失败计数规避（NO_FLICKER）
+
+- [x] diag7 真实机器结果：启动预开最后绑定会话的转录句柄后，首次历史渲染 <100ms（此前 `pageAsync` 整段 7943ms）；插件终端打开 367–577ms（probe 47ms、settings 1ms、spawn 29–37ms、identity 188–208ms）；关闭 96ms。桥接侧读取已达标，剩余等待在 CLI 进程内部。
+- [x] AV 扫描特征补全：新建 14MB 临时文件 open 0–3ms、静默会话转录 open 2–20ms，而活动的大转录每个新版本首次 open 约 7.8s——是 Kaspersky 按“文件+路径+版本”扫描，不是目录或体积的普遍问题。另有新证据：桥接进程长期持有该转录句柄期间，其他进程对同一文件的 open/stat 可阻塞 >45s~240s（探针 exit=124 被杀），此前 diag6/diag7 运行期间即可复现。
+- [x] 句柄缓存的边界说明：文件句柄是进程私有，缓存只让桥接自己的读取免扫；插件终端是新的 `claude --resume` 进程，它自己打开转录仍要过 AV 扫描——这就是“文件已经打开过、插件终端仍慢”的原因。CLI 侧只能靠杀软排除目录/进程解决。
+- [x] 新回归（全屏渲染回退提示）：桥接的 taskkill 快速关闭若发生在全屏会话开始 10 秒内，会被 CLI 记作一次全屏启动失败；两次后回退经典渲染并打印提示。修复：`cli-capabilities.ts` 新增 `supportsNoFlicker`（>= 2.1.236 才支持，unknown 不猜）；`embedded-terminal.ts` 与 `system-terminal.ts` 按探测版本注入 `CLAUDE_CODE_NO_FLICKER=1`（系统终端经请求字段 `noFlicker` 传入包装进程，由 `terminal-child.ts` 校验并在子进程环境注入）。旧版本不注入、请求不带未知字段。
+- [x] 测试：新增 `tests/cli-capabilities.test.ts` 版本矩阵与三条启动路径用例（注入/不注入、请求标记、非布尔拒绝）；四个相关文件 48/48 通过；bridge 全量 42 文件 / 492 通过 / 1 跳过；`tsc --noEmit` 通过。
+- [ ] 待验证：用 `D:\ccc-fast-final-verify-20261026\tool-history-20261027\diag-bridge-20261116\ccc-diag8.exe`（配套同目录新编 `ccc-terminal.exe`）复测：快速开关插件终端不再出现 fullscreen 回退提示、仍为全屏渲染；同时确认打开/关闭耗时维持 diag7 水平。
+- [ ] 待用户决定：给 Kaspersky 添加排除（`C:\Users\aaahzb\.claude\projects` 与 claude.exe/桥接 exe 受信任）以消除 CLI 侧 resume 的 7.8s 扫描；长期持有句柄对其他进程 open 的阻塞风险，是否改为空闲关闭句柄。
+
+### 追加修复：关闭提示中的「退出码 undefined」
+
+- [x] 现象与定位：关闭终端后提示「终端已退出（exit） · 退出码 undefined」。日志确认是主动关闭后的正常退出帧，`pty.exit event code=undefined`——Windows ConPTY 被 taskkill 强杀后 node-pty 运行时不给退出码（其类型声明写的是 number，与实际不符）；界面只把 `null` 当作“无退出码”，`undefined` 就漏成文案。
+- [x] 修复：`PtyExitEvent.exitCode` 放宽为 `number | null`；`BunPtyProcess` 在退出事件处把非 number 归一为 `null`；`NodePtyBackend` 的 helper 退出帧缺 `exitCode` 时按 `null` 分发，不再误判 `HELPER_INVALID_FRAME` 并连带结束所有会话。
+- [x] 测试：新增 2 条回归（强杀缺退出码→null、helper 缺字段→null 且后端不失效）；bridge 全量 42 文件 / 494 通过 / 1 跳过；`tsc --noEmit` 通过。
+- [ ] 待验证：用 `ccc-diag9.exe`（同目录新版 `ccc-terminal.exe` 保持 19:12 构建）关闭终端，确认提示只显示「终端已退出（exit）」；diag8/9 均含 NO_FLICKER 门控。
+
+### 追加修复：首字出现前滚轮导致随后滚轮失效（插件终端）
+
+- [x] 现象：插件终端里，在画面出现第一个字之前滚动鼠标，字符出现后不点「可滚历史」按钮就无法滚轮浏览。
+- [x] 根因：上次的“向上滚轮自动导出”在 CLI 未就绪时也会触发——空画面、已 attach、`baseY=0` 立即发 Ctrl+O；CLI 尚未启动输入处理，3 秒后判定未出现 transcript 并进入 8 秒冷却。冷却期内向上滚轮被处理器吞掉，表现为“首字出现后滚不动”，点按钮会绕过冷却所以又正常。
+- [x] 修复：`TerminalApp.tsx` 新增 `hasVisibleText`（扫描当前视口是否有非空行）；自动导出条件加上“画面已有可见字符”。启动阶段的滚轮不再消耗冷却，首字出现后的第一次滚轮即可正常自动导出；手动按钮行为不变。
+- [x] 测试：新增“首字出现前滚轮不启动导出、出现后立即可用”回归；三条既有滚轮用例补充“画面已渲染”前提。`terminal-page` 15/15，扩展全量 25 文件 / 190 通过，`tsc --noEmit` 通过；已重新构建 `.output/chrome-mv3`。
+- [ ] 待验证：重新加载扩展后，启动瞬间先滚轮、再等首字出现，确认不点按钮也能立即用滚轮自动导出历史；同时复核 alternate 视图翻页与 8 秒冷却行为未回退。
