@@ -459,6 +459,9 @@ describe("内嵌终端真实 WS 服务接线", () => {
     await postHook(f, f.opened.leaseId, SID_2, "clear");
     const control = await connect(f.server.port);
     const from = control.inbox.inbox.length;
+    // 正常关停必须在最终帧之后完成关闭握手：1001 表示服务端主动告别且客户端已读完
+    // 之前的全部数据；退化为 terminate 时客户端只会看到 1006，最终帧没有送达保证。
+    const closeCode = new Promise<number>((resolve) => control.ws.once("close", (code) => resolve(code)));
     const leaseFile = path.join(f.dir, "terminal", "embedded-lease.json");
     let closed = false;
     const closing = f.server.close().then(() => { closed = true; });
@@ -483,6 +486,7 @@ describe("内嵌终端真实 WS 服务接线", () => {
     expect(mirrorIndex).toBeGreaterThanOrEqual(0);
     expect(restoreIndex).toBeGreaterThan(mirrorIndex);
     expect(idleIndex).toBeGreaterThan(restoreIndex);
+    expect(await closeCode).toBe(1001);
   });
 
   it("PTY_UNAVAILABLE 只定向终端页，聊天恢复且系统终端仍可用", async () => {

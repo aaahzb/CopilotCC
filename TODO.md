@@ -645,3 +645,11 @@
 - [x] 修复：`TerminalApp.tsx` 新增 `hasVisibleText`（扫描当前视口是否有非空行）；自动导出条件加上“画面已有可见字符”。启动阶段的滚轮不再消耗冷却，首字出现后的第一次滚轮即可正常自动导出；手动按钮行为不变。
 - [x] 测试：新增“首字出现前滚轮不启动导出、出现后立即可用”回归；三条既有滚轮用例补充“画面已渲染”前提。`terminal-page` 15/15，扩展全量 25 文件 / 190 通过，`tsc --noEmit` 通过；已重新构建 `.output/chrome-mv3`。
 - [ ] 待验证：重新加载扩展后，启动瞬间先滚轮、再等首字出现，确认不点按钮也能立即用滚轮自动导出历史；同时复核 alternate 视图翻页与 8 秒冷却行为未回退。
+
+### 追加修复：桥接关闭强断 WS 导致 Ubuntu/macOS 最终帧丢失（CI/CD 门禁）
+
+- [x] 现象：tag `v2026.11.16.1` 的发布前门禁只有一条失败——`server-embedded-terminal.test.ts` 的“桥接正常关闭等待真实 PTY 退出和 lease 最终清理后才完成”。Ubuntu 在第 483 行 `mirrorIndex === -1`（最终镜像没收到），macOS 在第 484 行 `restoreIndex === -1`（镜像到了、`folder.bound` 没到），Windows 通过；日志里的 `Commit: 15dbd9c…` 是 GitHub runner 镜像版本，不是仓库提交。
+- [x] 根因：`closeRunning()` 在广播完最终镜像/恢复/idle 帧后立即对所有客户端 `terminate()`（`socket.destroy()`）。`ws@8.22` 的 `WebSocketServer.close()` 只等待 clients 归零，不会替服务端优雅关闭；Windows 的 TCP 栈保留了已写入的缓冲，所以本地与 Windows CI 一直绿，POSIX 上客户端可能还没读完就被 RST 丢帧。同一退出流程在不关闭服务器的“重连超时”用例里三平台都通过，证明最终帧的产生与顺序本身正确，差异只在关闭阶段。
+- [x] 修复：`server.ts` 新增 `closeWebSocket()`——OPEN/CLOSING 时发送 1001（going away）关闭帧并等待客户端回应（收到回应说明它已读完之前全部数据），500ms 超时才 `terminate()`；CONNECTING 直接中止。`closeRunning()` 先并发优雅关闭全部客户端，再 `wss.close`/`http.close`，关停时长仍有界。
+- [x] 先 RED 后 GREEN：现有用例新增“控制连接关闭码必须是 1001”断言；修复前 Windows 稳定得到 1006，修复后 1001。该用例连续 30 次全过；bridge 全量 42 文件 / 494 通过 / 1 跳过，扩展 25 文件 / 190 通过，两端 `tsc --noEmit` 通过。
+- [ ] 本次修复只提交到本地 main，尚未推送、打 tag 或发布；需下一次云端 Ubuntu/macOS/Windows 门禁复验。

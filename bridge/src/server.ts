@@ -336,12 +336,52 @@ function listenOn(port: number, handler: http.RequestListener): Promise<Running>
   });
 }
 
+/** 关停时等待单个客户端完成关闭握手的上限；超时即强断，不能挂起页面拖住退出。 */
+const CLOSE_HANDSHAKE_TIMEOUT_MS = 500;
+
 /**
- * 关停一套 http+ws 服务：先强断所有 WS 客户端（wss.close 会等它们结束），再关 HTTP 监听。
+ * 优雅关闭单个 WS 连接，保证已排队的最终帧先于关闭帧送达客户端。
+ * CONNECTING 阶段还没有可握手的连接，直接中止；OPEN/CLOSING 阶段发送 1001 并等待
+ * 客户端回应关闭帧——收到回应说明它已读完之前的全部数据。超时后退化为 terminate。
+ * @param ws 待关闭连接
+ * @returns 连接已关闭或已强制断开时兑现
+ */
+function closeWebSocket(ws: WebSocket): Promise<void> {
+  if (ws.readyState === WebSocket.CLOSED) return Promise.resolve();
+  if (ws.readyState === WebSocket.CONNECTING) {
+    ws.terminate(); // CONNECTING 时 close() 不会断开底层 socket，必须中止握手
+    return Promise.resolve();
+  }
+  return new Promise<void>((resolve) => {
+    const done = (): void => {
+      clearTimeout(timer);
+      resolve();
+    };
+    // ws 自带的关闭计时器长达 30 秒；桥接退出必须有更短的上限。
+    const timer = setTimeout(() => {
+      ws.terminate();
+      done();
+    }, CLOSE_HANDSHAKE_TIMEOUT_MS);
+    timer.unref?.();
+    ws.once("close", done);
+    try {
+      ws.close(1001, "bridge shutdown");
+    } catch {
+      ws.terminate();
+      done();
+    }
+  });
+}
+
+/**
+ * 关停一套 http+ws 服务：先优雅关闭所有 WS 客户端（wss.close 只等待它们结束），再关 HTTP 监听。
+ * 不能直接 terminate：最终镜像/恢复/idle 帧刚广播完时强断 socket，POSIX 客户端可能
+ * 还没读完就被 RST 丢帧；先完成关闭握手才能保证最终帧送达。
  * @param r 运行中的服务
  */
 async function closeRunning(r: Running): Promise<void> {
-  for (const c of r.wss.clients) c.terminate();
+  // 所有客户端并发握手，整体最多等待一个超时周期，关停时长仍然有界。
+  await Promise.all([...r.wss.clients].map((c) => closeWebSocket(c)));
   await new Promise<void>((res) => r.wss.close(() => res()));
   // 浏览器 fetch 的 keep-alive 空闲连接不拖累关闭；bun 等运行时可能没有该 API，做防御
   (r.http as { closeIdleConnections?: () => void }).closeIdleConnections?.();
