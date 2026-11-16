@@ -32,6 +32,34 @@ function normalizeExecutable(value: string): string {
 }
 
 /**
+ * 自报启动时间与系统记录的允许偏差。进程只能记录自身初始化时刻，与 OS 创建时间
+ * 相差加载耗时，CI 高负载下可达数秒；Windows 在一次开机内按递增计数器分配 PID，
+ * 旧进程退出后不会立即复用，因此该容差不会把同路径的其他进程误认成原进程。
+ */
+const SELF_START_TOLERANCE_MS = 30_000;
+
+/**
+ * Windows 包装进程的自报身份：不启动 PowerShell，避免 CI 满载时冷启动超时阻断启动。
+ * 路径取 process.execPath，与 Get-Process 返回的主模块路径一致；启动时间用当前时间
+ * 减去进程 uptime 估算（Node 与 Bun 均支持），误差为进程初始化耗时。macOS 仍走
+ * 精确的 ps 查询，返回 null。
+ * @param platform 当前平台，默认取 process.platform
+ * @returns Windows 下始终返回可用身份；其他平台返回 null，由调用方回退到系统查询
+ */
+export function selfProcessIdentity(
+  platform: NodeJS.Platform = process.platform,
+): ProcessIdentity | null {
+  if (platform !== "win32") return null;
+  const uptime = typeof process.uptime === "function" ? process.uptime() : 0;
+  return {
+    pid: process.pid,
+    executable: normalizeExecutable(process.execPath),
+    startedAt: new Date(Date.now() - uptime * 1000).toISOString(),
+    startedAtSource: "self",
+  };
+}
+
+/**
  * 解析 PowerShell 的两行私有查询结果。
  * @param stdout 可执行路径与 ISO 启动时间
  * @param pid 被查询 PID
@@ -118,7 +146,7 @@ export async function readProcessIdentity(
  * 同时核对 PID、程序路径和启动时间，拒绝 PID 复用造成的假存活。
  * @param expected 私有 lease 保存的身份
  * @param query 可注入的真实查询
- * @returns 三项全部匹配才为 true
+ * @returns 三项全部匹配才为 true；自报启动时间按初始化偏差容差比较
  */
 export async function matchesProcessIdentity(
   expected: ProcessIdentity,
@@ -126,6 +154,12 @@ export async function matchesProcessIdentity(
 ): Promise<boolean> {
   const actual = await query(expected.pid);
   if (!actual || actual.pid !== expected.pid) return false;
-  return normalizeExecutable(actual.executable) === normalizeExecutable(expected.executable)
-    && Date.parse(actual.startedAt) === Date.parse(expected.startedAt);
+  if (normalizeExecutable(actual.executable) !== normalizeExecutable(expected.executable)) {
+    return false;
+  }
+  const expectedStart = Date.parse(expected.startedAt);
+  const actualStart = Date.parse(actual.startedAt);
+  return expected.startedAtSource === "self"
+    ? Math.abs(actualStart - expectedStart) <= SELF_START_TOLERANCE_MS
+    : actualStart === expectedStart;
 }

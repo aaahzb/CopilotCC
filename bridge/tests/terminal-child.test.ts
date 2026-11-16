@@ -63,6 +63,27 @@ describe("runTerminalChild", () => {
     });
   });
 
+  it.skipIf(process.platform !== "win32")("Windows 包装进程用自报身份写 status，不依赖外部查询", async () => {
+    const { requestFile, request } = requestFixture();
+    const child = new EventEmitter() as ChildProcess;
+    const spawnImpl = vi.fn(() => {
+      queueMicrotask(() => child.emit("exit", 0, null));
+      return child;
+    });
+    const startedAt = Date.now();
+    // 不注入 identity：Windows 必须走自报路径，启动链上不得再拉起 PowerShell。
+    const running = runTerminalChild(requestFile, { spawn: spawnImpl as never });
+    const statusFile = path.join(request.cwd, `${LEASE_ID}.status.json`);
+    await vi.waitFor(() => expect(fs.existsSync(statusFile)).toBe(true), { timeout: 3000 });
+    const status = JSON.parse(fs.readFileSync(statusFile, "utf8"));
+    expect(status).toMatchObject({
+      leaseId: LEASE_ID, pid: process.pid, startedAtSource: "self",
+    });
+    expect(Date.now() - startedAt).toBeLessThan(3000);
+    fs.writeFileSync(path.join(request.cwd, `${LEASE_ID}.start`), "", "utf8");
+    await running;
+  });
+
   it("启用启动日志后记录身份查询、等待准许与 CLI 启动耗时", async () => {
     const { requestFile, request } = requestFixture();
     enableStartupTiming(request.cwd);

@@ -62,6 +62,28 @@ describe("SystemTerminalAdapter", () => {
     expect(spawnImpl.mock.calls[0]?.[2]).toMatchObject({ windowsHide: false, detached: true });
   });
 
+  it("status 中自报的启动时间来源随身份一起保存", async () => {
+    privateDir = fs.mkdtempSync(path.join(os.tmpdir(), "ccc-system-terminal-self-"));
+    tempDirs.push(privateDir);
+    const childCommand = { executable: "C:/bridge/ccc-bridge.exe", prefixArgs: [] as string[] };
+    const spawnImpl = vi.fn(() => {
+      fs.writeFileSync(path.join(privateDir, `${LEASE_ID}.status.json`), JSON.stringify({
+        leaseId: LEASE_ID, pid: 4321, executable: childCommand.executable,
+        startedAt: "2026-11-10T08:00:00.000Z", startedAtSource: "self",
+      }), "utf8");
+      return new EventEmitter() as ChildProcess;
+    });
+    const adapter = new SystemTerminalAdapter({
+      platform: "win32", spawn: spawnImpl as never, which: () => "C:/WindowsTerminal/wt.exe",
+      childCommand, probeVersion: async () => "2.1.316",
+    });
+    const handle = await adapter.start(context());
+    expect(handle.identity).toEqual({
+      pid: 4321, executable: childCommand.executable,
+      startedAt: "2026-11-10T08:00:00.000Z", startedAtSource: "self",
+    });
+  });
+
   it("无会话使用桥接 UUID，wt 缺失回退可见控制台并跟踪 exit.json", async () => {
     privateDir = fs.mkdtempSync(path.join(os.tmpdir(), "ccc-system-console-"));
     tempDirs.push(privateDir);

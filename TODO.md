@@ -652,4 +652,13 @@
 - [x] 根因：`closeRunning()` 在广播完最终镜像/恢复/idle 帧后立即对所有客户端 `terminate()`（`socket.destroy()`）。`ws@8.22` 的 `WebSocketServer.close()` 只等待 clients 归零，不会替服务端优雅关闭；Windows 的 TCP 栈保留了已写入的缓冲，所以本地与 Windows CI 一直绿，POSIX 上客户端可能还没读完就被 RST 丢帧。同一退出流程在不关闭服务器的“重连超时”用例里三平台都通过，证明最终帧的产生与顺序本身正确，差异只在关闭阶段。
 - [x] 修复：`server.ts` 新增 `closeWebSocket()`——OPEN/CLOSING 时发送 1001（going away）关闭帧并等待客户端回应（收到回应说明它已读完之前全部数据），500ms 超时才 `terminate()`；CONNECTING 直接中止。`closeRunning()` 先并发优雅关闭全部客户端，再 `wss.close`/`http.close`，关停时长仍有界。
 - [x] 先 RED 后 GREEN：现有用例新增“控制连接关闭码必须是 1001”断言；修复前 Windows 稳定得到 1006，修复后 1001。该用例连续 30 次全过；bridge 全量 42 文件 / 494 通过 / 1 跳过，扩展 25 文件 / 190 通过，两端 `tsc --noEmit` 通过。
-- [ ] 本次修复只提交到本地 main，尚未推送、打 tag 或发布；需下一次云端 Ubuntu/macOS/Windows 门禁复验。
+- [x] 云端复验（第二轮）：Ubuntu/macOS 桥接 40 文件 / 2 跳过、扩展 24 文件 / 188 用例全部通过，关闭修复生效；Windows 暴露另一条独立失败，见下节。
+
+### 追加修复：Windows 包装进程自报身份，移除启动链上的 PowerShell 依赖（第二轮门禁）
+
+- [x] 现象：tag 门禁仅 Windows 失败，`terminal-child.test.ts > src/index.ts 成功路径启用启动日志并按段记录包装耗时` 在 9226ms 后报“包装进程在写 status 前退出（code=1）”，错误码 `TERMINAL_CHILD_IDENTITY`；同一文件 `src/tray.ts` 用例通过。
+- [x] 根因：包装进程写 status 前调用 `readProcessIdentity(process.pid)`，Windows 上再拉起 `powershell.exe Get-Process` 查“自己”。CI 并行满载时 PowerShell 冷启动超过 8s 硬超时，查询返回 null，包装进程直接失败。此前两次分别用 WMI、放宽到 8s 绕过，均为阈值修补，仍会复发。
+- [x] 修复：新增 `selfProcessIdentity()`——Windows 包装进程直接用 `process.execPath` 与 `Date.now() - process.uptime()*1000` 自报身份，启动链不再派生 PowerShell；身份新增 `startedAtSource: "self"`，恢复核对时对自报启动时间允许 30s 初始化偏差，PID 与路径仍严格比较（Windows 单次开机内 PID 递增不复用）。macOS 保持精确 `ps` 查询，内嵌终端身份逻辑不变；`system-terminal` 与 lease 持久化同步透传来源字段。
+- [x] 先 RED 后 GREEN：三条新用例分别因缺少 `selfProcessIdentity`、status/handle 缺少来源字段而失败；修复后定向 3 文件 33 通过 / 1 跳过，真实入口用例连续 5 次 2 通过 / 13 跳过。
+- [x] 全量：桥接 42 文件 / 497 通过 / 1 跳过，`tsc --noEmit` 通过。
+- [ ] 本轮修复待提交、推送并触发下一次三平台门禁复验。

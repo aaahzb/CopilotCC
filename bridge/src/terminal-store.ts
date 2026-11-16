@@ -37,7 +37,9 @@ function isValidRecord(value: unknown): value is TerminalLeaseRecord {
     const identity = value.identity;
     if (!isObject(identity) || !Number.isInteger(identity.pid) || (identity.pid as number) <= 0
       || typeof identity.executable !== "string" || !identity.executable
-      || typeof identity.startedAt !== "string" || !identity.startedAt) return false;
+      || typeof identity.startedAt !== "string" || !identity.startedAt
+      || (identity.startedAtSource !== undefined
+        && identity.startedAtSource !== "os" && identity.startedAtSource !== "self")) return false;
   }
   return true;
 }

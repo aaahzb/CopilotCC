@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { readProcessIdentity } from "./process-identity";
+import { readProcessIdentity, selfProcessIdentity } from "./process-identity";
 import { UUID_RE } from "./protocol";
 import { StartupTiming } from "./startup-timing";
 import type { ProcessIdentity } from "./terminal-lease";
@@ -119,9 +119,13 @@ export async function runTerminalChild(
   const directory = path.dirname(absoluteRequest);
   // 包装进程的耗时同样只做内存计时并异步落盘；写日志失败绝不影响启动或退出。
   const timing = new StartupTiming("terminal-child");
-  const identity = await (deps.identity ?? readProcessIdentity)(process.pid);
+  // Windows 使用自报身份，不在启动链上拉起 PowerShell：CI 满载时其冷启动可超过 8 秒，
+  // 会把身份查询拖成 null 并让包装进程在写 status 前失败。macOS 仍用 ps 精确查询。
+  const identity = deps.identity
+    ? await deps.identity(process.pid)
+    : (selfProcessIdentity() ?? await readProcessIdentity(process.pid));
   timing.mark("identity");
-  if (!identity || identity.pid !== process.pid && !deps.identity) {
+  if (!identity || (identity.pid !== process.pid && !deps.identity)) {
     throw new Error("TERMINAL_CHILD_IDENTITY");
   }
   fs.writeFileSync(path.join(directory, `${request.leaseId}.status.json`), JSON.stringify({
@@ -129,6 +133,7 @@ export async function runTerminalChild(
     pid: identity.pid,
     executable: identity.executable,
     startedAt: identity.startedAt,
+    ...(identity.startedAtSource ? { startedAtSource: identity.startedAtSource } : {}),
   }), { encoding: "utf8", mode: 0o600 });
   timing.mark("status");
 

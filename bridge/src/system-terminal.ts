@@ -227,7 +227,12 @@ export class SystemTerminalAdapter {
           && value.executable && typeof value.startedAt === "string"
           && Number.isFinite(Date.parse(value.startedAt))) {
           diagLog(`status ready after ${polls} polls ${Date.now() - startedAt}ms`);
-          return { pid: value.pid, executable: value.executable, startedAt: value.startedAt };
+          return {
+            pid: value.pid,
+            executable: value.executable,
+            startedAt: value.startedAt,
+            ...(value.startedAtSource === "self" ? { startedAtSource: "self" as const } : {}),
+          };
         }
       } catch {
         // 包装进程可能尚未写完，继续等待，不把半个 JSON 当成启动失败。

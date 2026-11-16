@@ -9,6 +9,11 @@ export interface ProcessIdentity {
   pid: number;
   executable: string;
   startedAt: string;
+  /**
+   * 启动时间来源：os 表示由系统查询得到，self 表示进程自报（仅 Windows 包装进程）。
+   * 自报值来自 Node/Bun 初始化时刻，恢复核对时按容差比较。
+   */
+  startedAtSource?: "os" | "self";
 }
 
 export interface TerminalStartContext {

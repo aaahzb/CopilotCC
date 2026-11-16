@@ -5,6 +5,7 @@ import {
   parseMacProcessIdentity,
   parseWindowsProcessIdentity,
   readProcessIdentity,
+  selfProcessIdentity,
 } from "../src/process-identity";
 
 const identity = {
@@ -33,6 +34,33 @@ describe("进程身份", () => {
     expect(await matchesProcessIdentity(identity, async () => ({ ...identity, pid: 1234, executable: "C:/other.exe" })))
       .toBe(false);
     expect(await matchesProcessIdentity(identity, async () => null)).toBe(false);
+  });
+
+  it("Windows 自报身份不启动外部查询，恢复核对时容许初始化偏差", async () => {
+    // 包装进程自身身份不能依赖 PowerShell：CI 满载时冷启动可超过 8 秒。
+    const self = selfProcessIdentity("win32");
+    expect(self).toMatchObject({ pid: process.pid, startedAtSource: "self" });
+    expect(self?.executable.replace(/\\/g, "/").toLowerCase())
+      .toBe(process.execPath.replace(/\\/g, "/").toLowerCase());
+    // macOS 继续使用快速且精确的 ps，不需要自报路径。
+    expect(selfProcessIdentity("darwin")).toBeNull();
+
+    const expected = {
+      pid: 4321,
+      executable: "C:/Program Files/nodejs/node.exe",
+      startedAt: "2026-11-16T12:00:00.000Z",
+      startedAtSource: "self" as const,
+    };
+    // 自报时间取自 Node 初始化时刻，与 OS 创建时间相差初始化耗时；路径和时间距离仍须核验。
+    expect(await matchesProcessIdentity(expected, async () => ({
+      ...expected, startedAt: "2026-11-16T12:00:05.000Z",
+    }))).toBe(true);
+    expect(await matchesProcessIdentity(expected, async () => ({
+      ...expected, startedAt: "2026-11-16T12:01:00.000Z",
+    }))).toBe(false);
+    expect(await matchesProcessIdentity(expected, async () => ({
+      ...expected, executable: "C:/other/node.exe",
+    }))).toBe(false);
   });
 
   const itMac = process.platform === "darwin" ? it : it.skip;
