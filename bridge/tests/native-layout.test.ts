@@ -88,7 +88,8 @@ afterEach(() => {
 });
 
 describe("原生 PTY 发行布局", () => {
-  it("直接路线包含目标 node-pty JS 和全部本机文件，哈希可复核", async () => {
+  // packagePty 会同步复制 64MB 的 node-pty 包并逐个哈希；满载 CI runner 上实测超过默认 5 秒，放宽容限。
+  it("直接路线包含目标 node-pty JS 和全部本机文件，哈希可复核", { timeout: 30_000 }, async () => {
     const outDir = path.join(tempDir(), "dist");
     fs.mkdirSync(outDir);
     await packagePty({ target: "win", backend: "bun-node-pty", outDir, nodeRuntime: null });
@@ -109,7 +110,7 @@ describe("原生 PTY 发行布局", () => {
     await expect(verifyNativeLayout(outDir, "win32", "x64")).resolves.toBe(true);
   });
 
-  it("helper 路线携带 Node 22、helper.cjs 与原生包，缺文件会失败", async () => {
+  it("helper 路线携带 Node 22、helper.cjs 与原生包，缺文件会失败", { timeout: 30_000 }, async () => {
     const root = tempDir();
     const outDir = path.join(root, "dist");
     const fakeNode = path.join(root, "node.exe");
@@ -129,7 +130,7 @@ describe("原生 PTY 发行布局", () => {
     await expect(verifyNativeLayout(outDir, "win32", "x64")).rejects.toThrow("NATIVE_LAYOUT");
   });
 
-  it("macOS 打包显式恢复发行副本的 spawn-helper 执行位", async () => {
+  it("macOS 打包显式恢复发行副本的 spawn-helper 执行位", { timeout: 30_000 }, async () => {
     const outDir = path.join(tempDir(), "dist");
     fs.mkdirSync(outDir);
     const calls: Array<{ file: string; mode: number }> = [];
@@ -147,7 +148,7 @@ describe("原生 PTY 发行布局", () => {
     }]);
   });
 
-  it("macOS 主机发行校验拒绝无执行位的 spawn-helper", async () => {
+  it("macOS 主机发行校验拒绝无执行位的 spawn-helper", { timeout: 30_000 }, async () => {
     const outDir = path.join(tempDir(), "dist");
     fs.mkdirSync(outDir);
     await packagePty({ target: "darwin", backend: "bun-node-pty", outDir, nodeRuntime: null });
@@ -160,7 +161,7 @@ describe("原生 PTY 发行布局", () => {
     await expect(verifyNativeLayout(outDir, "darwin", "arm64", host)).resolves.toBe(true);
   });
 
-  it("已登记 native 文件哈希被篡改时拒绝发行", async () => {
+  it("已登记 native 文件哈希被篡改时拒绝发行", { timeout: 30_000 }, async () => {
     const outDir = path.join(tempDir(), "dist");
     fs.mkdirSync(outDir);
     await packagePty({ target: "win", backend: "bun-node-pty", outDir, nodeRuntime: null });
