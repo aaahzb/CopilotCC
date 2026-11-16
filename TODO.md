@@ -661,4 +661,13 @@
 - [x] 修复：新增 `selfProcessIdentity()`——Windows 包装进程直接用 `process.execPath` 与 `Date.now() - process.uptime()*1000` 自报身份，启动链不再派生 PowerShell；身份新增 `startedAtSource: "self"`，恢复核对时对自报启动时间允许 30s 初始化偏差，PID 与路径仍严格比较（Windows 单次开机内 PID 递增不复用）。macOS 保持精确 `ps` 查询，内嵌终端身份逻辑不变；`system-terminal` 与 lease 持久化同步透传来源字段。
 - [x] 先 RED 后 GREEN：三条新用例分别因缺少 `selfProcessIdentity`、status/handle 缺少来源字段而失败；修复后定向 3 文件 33 通过 / 1 跳过，真实入口用例连续 5 次 2 通过 / 13 跳过。
 - [x] 全量：桥接 42 文件 / 497 通过 / 1 跳过，`tsc --noEmit` 通过。
-- [ ] 本轮修复待提交、推送并触发下一次三平台门禁复验。
+- [x] 已随 `v2026.11.16.3` 推送复验：Ubuntu/macOS 全绿，Windows 暴露另一条独立失败，见下节。
+
+### 追加修复：Windows 身份查询改为 pwsh 优先并放宽测试期限（第三轮门禁）
+
+- [x] 现象：tag `v2026.11.16.3` 三平台门禁只有 Windows 失败，且失败点已不是包装进程——`process-identity.test.ts > 真实 Windows 查询不依赖 WMI，返回当前进程路径与启动时间` 在 5012ms 报 `Test timed out in 5000ms`；同文件其余 41 条通过，Ubuntu/macOS 全部通过（桥接 488/490、扩展 188）。
+- [x] 根因：测试期限取 vitest 默认 5 秒，短于实现自身的 8 秒 `execFile` 超时。CI 满载时 PowerShell 冷启动落在 5–8 秒区间，实现还在等待，测试先判失败；即使放宽测试，单一 `powershell.exe` 也可能超过 8 秒而返回 null。上一轮已把包装进程移出该路径，失败只剩真实查询用例。
+- [x] 修复：`readProcessIdentity` 在 Windows 按 `pwsh.exe`（PowerShell 7，GitHub windows-latest 自带、冷启动通常数百毫秒）→ `powershell.exe` 顺序尝试；只有 shell 本身无法启动（ENOENT/EACCES/EPERM/EINVAL）才回退，进程不存在、权限或超时立即返回 null，避免把等待翻倍；单次查询上限放宽到 15 秒。新增可注入 `execFile` 依赖，三条确定性用例覆盖“优先 pwsh / 缺失回退 / 失败不重复启动”。
+- [x] 先 RED 后 GREEN：三条新用例先因依赖被忽略、注入的 execFile 未被调用而失败（3 failed / 6 passed），实现后定向 9 通过 / 1 跳过。
+- [x] 全量：桥接 42 文件 / 500 通过 / 1 跳过；`tsc --noEmit` 通过。真实查询用例期限 30 秒、不存在 PID 用例 25 秒，均长于实现上限。
+- [ ] 本轮修复待提交、推送 main 并打 tag 触发三平台门禁复验。

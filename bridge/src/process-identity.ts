@@ -6,6 +6,30 @@ import type { ProcessIdentity } from "./terminal-lease";
 
 const execFileAsync = promisify(execFile);
 
+/** 查询进程身份时可注入的 execFile；返回值与 promisify(execFile) 的 utf8 结果一致。 */
+export type ProcessIdentityExecFile = (
+  file: string,
+  args: string[],
+  options: { timeout: number; maxBuffer: number; windowsHide: boolean },
+) => Promise<{ stdout: string; stderr: string }>;
+
+/** 进程身份查询依赖；测试注入 execFile 以确定性地覆盖 shell 回退分支。 */
+export interface ReadProcessIdentityDeps {
+  execFile?: ProcessIdentityExecFile;
+}
+
+/**
+ * Windows 查询 shell 的优先顺序。GitHub windows-latest 自带 PowerShell 7（pwsh.exe），
+ * 冷启动通常数百毫秒；Windows PowerShell 5.1 在满载 runner 上曾超过 8 秒。
+ */
+const WINDOWS_SHELL_CANDIDATES = ["pwsh.exe", "powershell.exe"] as const;
+
+/** 单次身份查询上限。包装进程已改用自报身份，此路径只影响恢复核对，可留足 CI 余量。 */
+const WINDOWS_QUERY_TIMEOUT_MS = 15_000;
+
+/** 这些错误说明 shell 本身无法启动（不存在/不可执行），才值得换下一个候选。 */
+const SHELL_UNAVAILABLE_CODES = new Set(["ENOENT", "EACCES", "EPERM", "EINVAL"]);
+
 /**
  * 仅在操作系统明确报告 ESRCH 时认定进程已退出；权限及瞬时查询错误一律保持未知。
  * @param pid 正整数进程 ID
@@ -91,11 +115,13 @@ export function parseMacProcessIdentity(stdout: string, pid: number): ProcessIde
  * 查询指定 PID 的真实程序路径和 OS 启动时间，不打印查询输出。
  * @param pid 正整数进程 ID
  * @param platform 当前平台，仅 Windows/macOS 在支持范围内
+ * @param deps 可注入的 execFile；生产环境使用真实子进程
  * @returns 身份；进程不存在、查询失败或输出非法均返回 null
  */
 export async function readProcessIdentity(
   pid: number,
   platform: NodeJS.Platform = process.platform,
+  deps: ReadProcessIdentityDeps = {},
 ): Promise<ProcessIdentity | null> {
   if (!Number.isInteger(pid) || pid <= 0) return null;
   try {
@@ -104,25 +130,33 @@ export async function readProcessIdentity(
       // 包装进程拿不到身份就直接失败（2026-11-15 Windows CI 实测：首条用例超时、后续热查询通过）。
       // Get-Process 走系统进程 API（GetProcessTimes/MainModule），不经 WMI，本地约 155ms；
       // 输出格式与解析器保持一致：可执行路径一行、ISO 启动时间一行。
-      // 临时诊断（2026-11-16）：脚本在 stderr 打印自身耗时，用于区分「PowerShell 本身慢」与
+      // 临时诊断（2026-11-16）：脚本在 stderr 打印自身耗时，用于区分「shell 本身慢」与
       // 「桥接侧等待/回调延迟」；parseWindowsProcessIdentity 只读 stdout，不受影响。
       const script = `$sw=[Diagnostics.Stopwatch]::StartNew(); $p=Get-Process -Id ${pid} -ErrorAction Stop; [Console]::Out.WriteLine($p.Path); [Console]::Out.WriteLine($p.StartTime.ToUniversalTime().ToString("o")); [Console]::Error.WriteLine("CCCPS elapsed=" + $sw.ElapsedMilliseconds)`;
-      const startedAt = Date.now();
-      diagLog(`identity pid=${pid} start`);
-      try {
-        const { stdout, stderr } = await execFileAsync("powershell.exe", [
-          "-NoProfile", "-NonInteractive", "-Command", script,
-        ], { timeout: 8000, maxBuffer: 8192, windowsHide: true });
-        const psElapsed = /CCCPS elapsed=(\d+)/.exec(String(stderr))?.[1] ?? "n/a";
-        diagLog(`identity pid=${pid} ok wait=${Date.now() - startedAt}ms ps=${psElapsed}ms`);
-        return parseWindowsProcessIdentity(stdout, pid);
-      } catch (error) {
-        // 诊断分支保持原有降级语义：任何失败都返回 null，不向调用方暴露细节。
-        diagLog(`identity pid=${pid} FAILED wait=${Date.now() - startedAt}ms `
-          + `${(error as NodeJS.ErrnoException).code ?? ""} `
-          + `${String((error as Error).message ?? "").replace(/\s+/g, " ").slice(0, 120)}`);
-        return null;
+      const exec: ProcessIdentityExecFile = deps.execFile
+        ?? ((file, args, options) => execFileAsync(file, args, options));
+      for (const [index, shell] of WINDOWS_SHELL_CANDIDATES.entries()) {
+        const startedAt = Date.now();
+        diagLog(`identity pid=${pid} start shell=${shell}`);
+        try {
+          const { stdout, stderr } = await exec(shell, [
+            "-NoProfile", "-NonInteractive", "-Command", script,
+          ], { timeout: WINDOWS_QUERY_TIMEOUT_MS, maxBuffer: 8192, windowsHide: true });
+          const psElapsed = /CCCPS elapsed=(\d+)/.exec(String(stderr))?.[1] ?? "n/a";
+          diagLog(`identity pid=${pid} ok shell=${shell} wait=${Date.now() - startedAt}ms ps=${psElapsed}ms`);
+          return parseWindowsProcessIdentity(String(stdout), pid);
+        } catch (error) {
+          // 诊断分支保持原有降级语义：任何失败都不向调用方暴露细节。
+          const code = (error as NodeJS.ErrnoException).code;
+          const shellUnavailable = typeof code === "string" && SHELL_UNAVAILABLE_CODES.has(code);
+          diagLog(`identity pid=${pid} FAILED shell=${shell} wait=${Date.now() - startedAt}ms `
+            + `${code ?? ""} ${String((error as Error).message ?? "").replace(/\s+/g, " ").slice(0, 120)}`);
+          // 只有 shell 本身拉不起来才换候选；进程不存在、权限或超时与 shell 无关，
+          // 再启动一个只会把等待翻倍并错过测试期限。
+          if (!shellUnavailable || index === WINDOWS_SHELL_CANDIDATES.length - 1) return null;
+        }
       }
+      return null;
     }
     if (platform === "darwin") {
       const { stdout } = await execFileAsync("/bin/ps", [

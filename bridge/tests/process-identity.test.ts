@@ -83,7 +83,57 @@ describe("进程身份", () => {
     }
   });
 
+  it("Windows 查询优先使用 pwsh，成功即返回身份且不启动第二个 shell", async () => {
+    // GitHub windows-latest 自带 PowerShell 7；它比 Windows PowerShell 5.1 冷启动快得多，
+    // 满载 runner 上前者数百毫秒、后者曾超过 8 秒。
+    const calls: string[] = [];
+    const actual = await readProcessIdentity(4242, "win32", {
+      execFile: async (file) => {
+        calls.push(file);
+        return {
+          stdout: "C:\\bridge\\ccc-bridge.exe\r\n2026-11-16T12:00:00.0000000Z\r\n",
+          stderr: "CCCPS elapsed=120",
+        };
+      },
+    });
+    expect(calls).toEqual(["pwsh.exe"]);
+    expect(actual).toMatchObject({ pid: 4242, executable: "C:/bridge/ccc-bridge.exe" });
+  });
+
+  it("pwsh 不存在时回退 Windows PowerShell，启动失败不向调用方抛错", async () => {
+    const calls: string[] = [];
+    const actual = await readProcessIdentity(99, "win32", {
+      execFile: async (file) => {
+        calls.push(file);
+        if (file === "pwsh.exe") {
+          throw Object.assign(new Error("spawn pwsh.exe ENOENT"), { code: "ENOENT" });
+        }
+        return {
+          stdout: "C:\\bridge\\ccc-bridge.exe\r\n2026-11-16T12:00:00.0000000Z\r\n",
+          stderr: "",
+        };
+      },
+    });
+    expect(calls).toEqual(["pwsh.exe", "powershell.exe"]);
+    expect(actual?.pid).toBe(99);
+  });
+
+  it("Windows 查询失败立即返回 null，不再启动第二个 shell 拖长等待", async () => {
+    // 进程不存在、权限或超时与 shell 无关；换一个 shell 只会把 8 秒等待翻倍。
+    const calls: string[] = [];
+    const result = await readProcessIdentity(2_147_483_647, "win32", {
+      execFile: async (file) => {
+        calls.push(file);
+        throw Object.assign(new Error("Command failed"), { code: 1 });
+      },
+    });
+    expect(result).toBeNull();
+    expect(calls).toEqual(["pwsh.exe"]);
+  });
+
   const itWin = process.platform === "win32" ? it : it.skip;
+  // 实现允许单次查询 15 秒（CI 满载时 shell 冷启动可能接近 8 秒）；测试期限必须比它长，
+  // 否则 5 秒默认超时会先于实现自身的超时触发，把实现内部的降级误报成测试失败。
   itWin("真实 Windows 查询不依赖 WMI，返回当前进程路径与启动时间", async () => {
     const actual = await readProcessIdentity(process.pid, "win32");
     expect(actual).toMatchObject({ pid: process.pid });
@@ -91,11 +141,11 @@ describe("进程身份", () => {
     expect(actual?.executable.replace(/\\/g, "/").toLowerCase())
       .toBe(process.execPath.replace(/\\/g, "/").toLowerCase());
     expect(Number.isFinite(Date.parse(actual?.startedAt ?? ""))).toBe(true);
-  });
+  }, 30_000);
 
   itWin("Windows 查询不存在的 PID 返回 null，而不是抛出原始异常", async () => {
     await expect(readProcessIdentity(2_147_483_647, "win32")).resolves.toBeNull();
-  });
+  }, 25_000);
 
   it("只有 ESRCH 证明进程退出，权限或其他探测错误保持未知", () => {
     const candidate = (processIdentity as unknown as {
