@@ -107,23 +107,74 @@ describe("BunPtyBackend", () => {
     expect(data).toEqual([]);
   });
 
-  it("Windows 关闭前先强杀客户端进程树，避免 ClosePseudoConsole 等满 5 秒宽限期", async () => {
+  it("Windows 关闭先发两次 Ctrl+C，CLI 自行退出后不再强杀进程树", async () => {
+    // 直接 taskkill 会跳过 CLI 的退出钩子，留下全屏启动标记，下次启动提示“上次没有正确关闭”。
     const fake = new FakePty();
     const order: string[] = [];
+    fake.write.mockImplementation((data: string) => { order.push(`write:${JSON.stringify(data)}`); });
     fake.kill.mockImplementation(() => { order.push("raw.kill"); });
     const killTree = vi.fn(async (pid: number): Promise<void> => { order.push(`killTree:${pid}`); });
     const backend = new BunPtyBackend({
       executableDir: "C:/native",
       platform: "win32",
       killTree,
+      closeGraceMs: 5_000,
+      closeInterruptGapMs: 0,
+      isAlive: () => false,
       require: () => ({ spawn: () => fake }) as never,
     });
     const proc = await backend.spawn(OPTIONS);
 
     await proc.kill();
 
-    expect(killTree).toHaveBeenCalledWith(4321);
-    expect(order).toEqual(["killTree:4321", "raw.kill"]);
+    expect(order).toEqual(["write:\"\\u0003\"", "write:\"\\u0003\"", "raw.kill"]);
+    expect(killTree).not.toHaveBeenCalled();
+    expect(fake.kill).toHaveBeenCalledTimes(1);
+  });
+
+  it("宽限期内 CLI 未退出才强杀客户端进程树", async () => {
+    // 宽限期过后仍存活说明 Ctrl+C 没有让它退出（例如卡在启动或对话框），必须回退强杀。
+    const fake = new FakePty();
+    const order: string[] = [];
+    fake.write.mockImplementation((data: string) => { order.push(`write:${JSON.stringify(data)}`); });
+    fake.kill.mockImplementation(() => { order.push("raw.kill"); });
+    const killTree = vi.fn(async (pid: number): Promise<void> => { order.push(`killTree:${pid}`); });
+    const backend = new BunPtyBackend({
+      executableDir: "C:/native",
+      platform: "win32",
+      killTree,
+      closeGraceMs: 0,
+      closeInterruptGapMs: 0,
+      isAlive: () => true,
+      require: () => ({ spawn: () => fake }) as never,
+    });
+    const proc = await backend.spawn(OPTIONS);
+
+    await proc.kill();
+
+    expect(order).toEqual(["write:\"\\u0003\"", "write:\"\\u0003\"", "killTree:4321", "raw.kill"]);
+  });
+
+  it("宽限期内进程结束后不再等待剩余时间", async () => {
+    const fake = new FakePty();
+    let probes = 0;
+    const backend = new BunPtyBackend({
+      executableDir: "C:/native",
+      platform: "win32",
+      killTree: async () => {},
+      closeGraceMs: 5_000,
+      closeInterruptGapMs: 0,
+      // 第一次探测仍存活，第二次已退出：最多等待一个轮询间隔，不能睡满 5 秒。
+      isAlive: () => { probes += 1; return probes < 2; },
+      require: () => ({ spawn: () => fake }) as never,
+    });
+    const proc = await backend.spawn(OPTIONS);
+
+    const startedAt = Date.now();
+    await proc.kill();
+
+    expect(probes).toBeGreaterThanOrEqual(2);
+    expect(Date.now() - startedAt).toBeLessThan(2_000);
   });
 
   it("Windows 强杀后缺失的退出码归一为 null，界面不再显示 undefined", async () => {
@@ -132,6 +183,9 @@ describe("BunPtyBackend", () => {
       executableDir: "C:/native",
       platform: "win32",
       killTree: async () => {},
+      closeGraceMs: 0,
+      closeInterruptGapMs: 0,
+      isAlive: () => true,
       require: () => ({ spawn: () => fake }) as never,
     });
     const proc = await backend.spawn(OPTIONS);
@@ -151,6 +205,9 @@ describe("BunPtyBackend", () => {
       executableDir: "C:/native",
       platform: "win32",
       killTree,
+      closeGraceMs: 0,
+      closeInterruptGapMs: 0,
+      isAlive: () => true,
       require: () => ({ spawn: () => fake }) as never,
     });
     const proc = await backend.spawn(OPTIONS);
@@ -175,6 +232,7 @@ describe("BunPtyBackend", () => {
     await proc.kill();
 
     expect(killTree).not.toHaveBeenCalled();
+    expect(fake.write).not.toHaveBeenCalled();
     expect(fake.kill).toHaveBeenCalledTimes(1);
   });
 

@@ -671,3 +671,15 @@
 - [x] 先 RED 后 GREEN：三条新用例先因依赖被忽略、注入的 execFile 未被调用而失败（3 failed / 6 passed），实现后定向 9 通过 / 1 跳过。
 - [x] 全量：桥接 42 文件 / 500 通过 / 1 跳过；`tsc --noEmit` 通过。真实查询用例期限 30 秒、不存在 PID 用例 25 秒，均长于实现上限。
 - [ ] 本轮修复待提交、推送 main 并打 tag 触发三平台门禁复验。
+
+### 追加修复：插件终端关闭改为先请 CLI 正常退出，宽限 1 秒再强杀
+
+- [x] 现象：用户在另一个终端打开 Claude Code 时提示“上次没有正确关闭”（实为全屏渲染器上次未完成启动）。此前关闭插件终端时直接 `taskkill /T /F` + `raw.kill()`，CLI 没有机会执行退出清理。
+- [x] 根因（反编译 CLI 2.1.323 字符串与启动逻辑确认）：非环境变量强制全屏时，CLI 会把 `fullscreenBootPending[pid]`（含启动时刻/主机/版本）写入全局配置；只有正常退出的 `process.on("exit")` 钩子会删除该条目。`taskkill`/TerminateProcess 跳过钩子，条目残留，下次启动判为一次 strike，提示“fullscreen renderer didn't finish starting last time”。当 `CLAUDE_CODE_NO_FLICKER=1`（`env_on`）时 CLI 完全跳过该 canary，所以隔离探针必须不带该变量才能复现；插件/系统终端对支持版本都会设置它，因此本轮修复主要保证“任何情况下都不用强杀”，同时覆盖版本探测失败等未注入 NO_FLICKER 的路径。
+- [x] 关键测量：隔离探针（真实 claude.exe + node-pty，独立 `CLAUDE_CONFIG_DIR`/`HOME`、本机假上游）连续多次运行：两次 Ctrl+C（间隔 60/120ms，输入框有空文字均有效）后真实进程在 563–566ms 退出，退出码 0；node-pty 的 `exit` 事件约在 1540ms 触发，是其 `FLUSH_DATA_INTERVAL=1000ms` 清洗定时器造成的观测延迟，不是进程存活时间。因此宽限期取最小整秒 **1 秒**（约 0.44 秒余量）；900ms 间隔的 Ctrl+C 不会触发退出，故两次按键间隔固定 120ms（CLI 的确认窗口约 800ms）。
+- [x] 修复：`bun-pty-backend.ts` 的 `BunPtyProcess.kill()` 在 Windows 改为先向 PTY 写两次 `\x03`，用 `isProcessAlive`（signal 0，仅 ESRCH 判死）每 100ms 轮询真实进程；1 秒内退出则跳过 `taskkill`，仍调用 `raw.kill()` 关闭伪控制台释放句柄；超时才按原逻辑 `taskkill /T /F`。非 Windows 行为不变。新增可注入 `closeGraceMs` / `closeInterruptGapMs` / `isAlive`，默认 1000/120/`isProcessAlive`。
+- [x] 先 RED 后 GREEN：新增 3 条用例（宽限期内自行退出不 taskkill、超时才强杀、进程提前结束不睡满宽限期），修复前 3 failed / 14 passed，修复后 17/17 通过。
+- [x] 全量：桥接 42 文件 / 502 通过 / 1 跳过；`tsc --noEmit` 通过。
+- [x] 真实路径验证：用生产类 `BunPtyBackend` + 真实 claude.exe 在隔离目录关闭，`kill()` 耗时 682–684ms，返回后 OS 进程已不存在，退出码 0（不是强杀的 null），无残留。
+- [x] 系统终端模式保持强杀并记录原因：`taskkill` 不带 `/F` 无法结束控制台进程；历史 WM_CLOSE 探针只让目标退出、未执行 SIGINT 处理器（`signalReceived: false`）；向共享控制台注入 Ctrl+C 会同时命中批处理启动器（弹出 Terminate batch job 提示），需改进程组架构才能安全实现。系统终端正常关窗本身由系统投递控制台关闭事件，不属于本路径。
+- [ ] 待提交、推送 main、打新 tag 触发三平台门禁；真机复核插件终端关闭 1 秒内退出且再次打开不再提示。已存在的残留提示可能需要先成功完成一次全屏启动（或执行一次 `/tui fullscreen`）才会清除，不能据此判定修复无效。

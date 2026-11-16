@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import * as path from "node:path";
 import type { IPty } from "node-pty";
+import { isProcessAlive } from "./process-identity";
 import { diagLog } from "./startup-diagnostics";
 import {
   validatePtySpawnOptions,
@@ -29,6 +30,38 @@ export interface BunPtyBackendOptions {
   arch?: string;
   /** Windows 关闭前强制结束 PTY 客户端进程树；默认 taskkill，测试可注入 */
   killTree?: (pid: number) => Promise<void>;
+  /** Windows 关闭时先等待 CLI 自行退出的宽限期（毫秒）；默认 1000，测试可缩短 */
+  closeGraceMs?: number;
+  /** 关闭时两次 Ctrl+C 的间隔（毫秒）；必须小于 CLI 的 0.8 秒确认窗口 */
+  closeInterruptGapMs?: number;
+  /** 宽限期内判断 PID 是否存活；默认 signal 0 探测，测试可注入 */
+  isAlive?: (pid: number) => boolean;
+}
+
+/** 实测 Claude Code 在第二次 Ctrl+C 后约 0.56 秒退出；取整 1 秒，兼顾满载机器余量。 */
+const DEFAULT_CLOSE_GRACE_MS = 1000;
+
+/** 两次 Ctrl+C 的间隔。CLI 只在约 0.8 秒内连按两次才确认退出；实测 0.12 秒稳定。 */
+const DEFAULT_INTERRUPT_GAP_MS = 120;
+
+/** 宽限期内检查进程是否已退出的轮询间隔。 */
+const CLOSE_POLL_INTERVAL_MS = 100;
+
+/** Windows 优雅关闭配置：先请 CLI 自己退出，宽限期满才强杀。 */
+interface GracefulCloseOptions {
+  killTree: (pid: number) => Promise<void>;
+  graceMs: number;
+  interruptGapMs: number;
+  isAlive: (pid: number) => boolean;
+}
+
+/**
+ * 等待指定毫秒数。
+ * @param ms 等待时长（毫秒）
+ * @returns 定时结束后的 Promise
+ */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**
@@ -102,12 +135,12 @@ class BunPtyProcess implements PtyProcess {
    * 包装一个真实 node-pty 进程。
    * @param raw 原生进程。
    * @param onExit 用于后端移除已退出进程。
-   * @param killTree Windows 关闭前强杀客户端进程树；其它平台为 undefined。
+   * @param graceful Windows 优雅关闭配置；其它平台为 undefined。
    */
   constructor(
     private readonly raw: IPty,
     onExit: () => void,
-    private readonly killTree?: (pid: number) => Promise<void>,
+    private readonly graceful?: GracefulCloseOptions,
   ) {
     this.pid = raw.pid;
     raw.onData((data) => {
@@ -256,6 +289,34 @@ class BunPtyProcess implements PtyProcess {
     }
   }
 
+  /**
+   * 请求 CLI 通过两次 Ctrl+C 自行退出，并在宽限期内等待其真正结束。
+   * 直接 taskkill 会跳过 CLI 的退出钩子，留下全屏启动标记，下次启动提示“上次没有正确关闭”。
+   * @param options 宽限期、按键间隔与存活探测
+   * @returns 宽限期内退出（或探测到已不存在）为 true；仍需强杀为 false
+   */
+  private async interruptAndWait(options: GracefulCloseOptions): Promise<boolean> {
+    const startedAt = Date.now();
+    // 两次 Ctrl+C 是 Claude Code 的正常退出手势；一次通常只清空输入或取消当前操作。
+    for (let press = 0; press < 2; press += 1) {
+      if (press > 0 && options.interruptGapMs > 0) await sleep(options.interruptGapMs);
+      try {
+        this.raw.write("\x03");
+      } catch {
+        // 进程可能恰好已退出；继续等待或回退强杀。
+      }
+    }
+    const deadline = startedAt + options.interruptGapMs + options.graceMs;
+    let gone = this.exited || !options.isAlive(this.pid);
+    while (!gone && Date.now() < deadline) {
+      // 轮询真实进程存活，而不是等 node-pty 的 exit 事件：后者比进程退出晚约 1 秒。
+      await sleep(Math.min(CLOSE_POLL_INTERVAL_MS, Math.max(1, deadline - Date.now())));
+      gone = this.exited || !options.isAlive(this.pid);
+    }
+    diagLog(`pty.graceful ${gone ? "exit" : "timeout"} ${Date.now() - startedAt}ms`);
+    return gone;
+  }
+
   /** @returns 首次调用终止原生进程，后续调用直接完成。 */
   async kill(): Promise<void> {
     if (this.killed || this.exited) return;
@@ -263,16 +324,23 @@ class BunPtyProcess implements PtyProcess {
     this.earlyData = [];
     this.diagnoseKill();
     this.diagnoseFork();
-    if (this.killTree) {
+    const graceful = this.graceful;
+    const exitedCleanly = graceful ? await this.interruptAndWait(graceful) : false;
+    if (graceful && !exitedCleanly) {
       try {
         // 先结束控制台客户端，ClosePseudoConsole 才不会同步等满系统 5 秒宽限期。
-        await this.killTree(this.pid);
+        await graceful.killTree(this.pid);
       } catch {
         // 强杀失败时仍走原生关闭，最坏退化为原先的等待。
       }
     }
     const startedAt = Date.now();
-    this.raw.kill();
+    try {
+      // 即使 CLI 已自行退出，也要关闭伪控制台释放句柄；此时不会再打断它的清理流程。
+      this.raw.kill();
+    } catch {
+      // 优雅退出后套接字可能已被 node-pty 清理，关闭失败不影响结果。
+    }
     diagLog(`pty.raw.kill ${Date.now() - startedAt}ms`);
   }
 }
@@ -348,8 +416,13 @@ export class BunPtyBackend implements PtyBackend {
     proc = new BunPtyProcess(
       raw,
       () => this.processes.delete(proc),
-      // 只有 Windows ConPTY 的同步关闭会等满控制台客户端退出宽限期。
-      platform === "win32" ? this.options.killTree ?? killProcessTree : undefined,
+      // 只有 Windows ConPTY 需要先优雅关闭再强杀；其它平台沿用原有信号关闭。
+      platform === "win32" ? {
+        killTree: this.options.killTree ?? killProcessTree,
+        graceMs: this.options.closeGraceMs ?? DEFAULT_CLOSE_GRACE_MS,
+        interruptGapMs: this.options.closeInterruptGapMs ?? DEFAULT_INTERRUPT_GAP_MS,
+        isAlive: this.options.isAlive ?? isProcessAlive,
+      } : undefined,
     );
     this.processes.add(proc);
     return proc;
