@@ -216,13 +216,16 @@ export function InputBox(props: {
         onCompositionStart={() => props.onComposition?.(true)}
         onCompositionEnd={() => props.onComposition?.(false)}
         onKeyDown={(e) => {
+          // macOS 中文输入法：组合中按回车是“确认候选/把字母落成英文”，必须交给输入法，
+          // 不能当发送；部分浏览器此时只报 keyCode 229，因此两种标记都检查。
+          const composing = e.nativeEvent.isComposing || e.keyCode === 229;
           // Esc = 中止本轮生成（对齐 Claude Code CLI 的 ESC）；输入法组合中的 Esc 是取消拼音，不拦截
-          if (e.key === "Escape" && props.busy && !writeDisabled && !e.nativeEvent.isComposing) {
+          if (e.key === "Escape" && props.busy && !writeDisabled && !composing) {
             e.preventDefault();
             props.onStop();
             return;
           }
-          if (e.key === "Enter" && !e.shiftKey) {
+          if (e.key === "Enter" && !e.shiftKey && !composing) {
             e.preventDefault();
             void submit();
           }

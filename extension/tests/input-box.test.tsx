@@ -165,6 +165,40 @@ describe("InputBox 原生 fast 与实际执行状态", () => {
   });
 });
 
+describe("InputBox 输入法组合中的回车", () => {
+  /** 在输入框派发可取消的回车 keydown。 @param ta 输入框。 @param isComposing 是否处于输入法组合。 @returns 已派发的事件。 */
+  function pressEnter(ta: HTMLTextAreaElement, isComposing: boolean): KeyboardEvent {
+    const event = new KeyboardEvent("keydown", {
+      key: "Enter", bubbles: true, cancelable: true, isComposing,
+    });
+    act(() => ta.dispatchEvent(event));
+    return event;
+  }
+
+  it("组合中回车只确认候选，不发送也不阻止输入法落字", async () => {
+    const onSend = vi.fn();
+    const host = mount({ draft: "nihao", onSend });
+    const ta = host.querySelector("textarea")!;
+    const event = pressEnter(ta, true);
+    await act(async () => { await Promise.resolve(); });
+    expect(onSend).not.toHaveBeenCalled();
+    // 不 preventDefault，浏览器才能把组合中的字母按回车落成英文。
+    expect(event.defaultPrevented).toBe(false);
+  });
+
+  it("组合确认后的下一次回车才发送", async () => {
+    const onSend = vi.fn();
+    const host = mount({ draft: "nihao", onSend });
+    const ta = host.querySelector("textarea")!;
+    pressEnter(ta, true);
+    await act(async () => { await Promise.resolve(); });
+    expect(onSend).not.toHaveBeenCalled();
+    pressEnter(ta, false);
+    await act(async () => { await Promise.resolve(); });
+    expect(onSend).toHaveBeenCalledWith("nihao", []);
+  });
+});
+
 describe("InputBox 输入框拖拽调高度", () => {
   it("消息区底缘有拖拽手柄，光标上下箭头，原生右下角手柄停用", () => {
     const host = mount();
