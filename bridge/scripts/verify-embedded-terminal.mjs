@@ -1,6 +1,6 @@
 /**
  * 阶段 B/C 双终端端到端验收：完整发行目录或绿色单文件 + 真实 Chrome/xterm + 真实 PTY + 隔离假 CLI。
- * 用法：node bridge/scripts/verify-embedded-terminal.mjs --root <已批准根目录下的新目录> [--portable] [--negative-control attach] [--skip-clipboard]
+ * 用法：node bridge/scripts/verify-embedded-terminal.mjs --root <已批准根目录下的新目录> [--portable] [--portable-exe <外部 exe>] [--extension-path <外部解压目录>] [--negative-control attach] [--skip-clipboard]
  */
 import { spawn, spawnSync, execFileSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
@@ -10,15 +10,16 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import WebSocket, { WebSocketServer } from "ws";
 import { resolveRealCli, runRealCli, startRealCliUpstream } from "./real-cli-test-fixture.mjs";
-import { localApprovedVerificationRoot } from "./verification-root.mjs";
+import { assertEmbeddedVerificationPaths, localApprovedVerificationRoot } from "./verification-root.mjs";
+import { assertGracefulShutdownLog, assertNoFakeSigbreak } from "../../scripts/shutdown-diagnostics.mjs";
 
 const APPROVED_ROOT = localApprovedVerificationRoot();
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
-const EXTENSION_PATH = path.join(PROJECT_ROOT, "extension", ".output", "chrome-mv3");
+const DEFAULT_EXTENSION_PATH = path.join(PROJECT_ROOT, "extension", ".output", "chrome-mv3");
 const DIST_DIR = path.join(PROJECT_ROOT, "bridge", "dist", "ccc-bridge-win-x64");
 const DIST_EXE = path.join(DIST_DIR, "ccc-bridge.exe");
 const DIST_TERMINAL_EXE = path.join(DIST_DIR, "ccc-terminal.exe");
-const PORTABLE_EXE = path.join(PROJECT_ROOT, "bridge", "dist", "portable-win-x64", "CopilotCC.exe");
+const DEFAULT_PORTABLE_EXE = path.join(PROJECT_ROOT, "bridge", "dist", "portable-win-x64", "CopilotCC.exe");
 const FAKE_CLI = path.join(APPROVED_ROOT, "bin", "fake-claude.exe");
 const EXTENSION_ID = "cnalihjaacpahpjkpneacjcfbhboglno";
 const PAGE_URL = `chrome-extension://${EXTENSION_ID}/sidepanel.html`;
@@ -78,7 +79,26 @@ const rootArgIndex = process.argv.indexOf("--root");
 const root = rootArgIndex >= 0 ? path.resolve(process.argv[rootArgIndex + 1] ?? "") : "";
 const negativeIndex = process.argv.indexOf("--negative-control");
 const negativeControl = negativeIndex >= 0 ? process.argv[negativeIndex + 1] : null;
+
+/** @param name 外部资产选项名 @returns 批准根目录内的绝对路径；未指定时返回 null */
+function externalArtifactPath(name) {
+  const index = process.argv.indexOf(name);
+  if (index < 0) return null;
+  const value = process.argv[index + 1];
+  assert(value && path.isAbsolute(value), `${name} 需要绝对路径`);
+  const resolved = path.resolve(value);
+  assert(inside(APPROVED_ROOT, resolved), `${name} 必须严格位于已批准验收根目录内`);
+  assert(fs.existsSync(resolved), `外部验收资产不存在：${resolved}`);
+  return resolved;
+}
+
+const extensionOverride = externalArtifactPath("--extension-path");
+const portableOverride = externalArtifactPath("--portable-exe");
+const EXTENSION_PATH = extensionOverride ?? DEFAULT_EXTENSION_PATH;
+const PORTABLE_EXE = portableOverride ?? DEFAULT_PORTABLE_EXE;
+assert(portable || !portableOverride, "--portable-exe 必须与 --portable 同时使用");
 assert(root && inside(APPROVED_ROOT, root), "root 必须严格位于批准的 dual-terminal-20261110 目录内");
+assertEmbeddedVerificationPaths(root, EXTENSION_ID, { portable });
 assert(!negativeControl || negativeControl === "attach", "仅支持 --negative-control attach");
 assert(!(realCliResumeOnly && negativeControl), "真实 CLI 补验不能与 attach 负控同时使用");
 if (fs.existsSync(root)) assert(fs.readdirSync(root).length === 0, "root 必须为空；不覆盖或删除旧证据");
@@ -155,7 +175,19 @@ const evidence = {
   macOSVerified: false,
   runtimeErrors: [],
   negativeControl,
-  observations: { manifestHash, portable, cleanup: { remaining: [] } },
+  observations: {
+    manifestHash,
+    portable,
+    artifactSources: {
+      extension: { path: EXTENSION_PATH, external: extensionOverride !== null },
+      portableExe: portable ? {
+        path: PORTABLE_EXE,
+        external: portableOverride !== null,
+        sha256: createHash("sha256").update(fs.readFileSync(PORTABLE_EXE)).digest("hex"),
+      } : null,
+    },
+    cleanup: { remaining: [] },
+  },
   unverifiedPlatforms: { macos: "未在 macOS arm64 运行，Terminal.app、原生 PTY 与签名尚未验收" },
 };
 let bridgeChild = null;
@@ -255,6 +287,9 @@ public static class WindowProbe {
   [StructLayout(LayoutKind.Sequential)] public struct PROCESS_INFORMATION {
     public IntPtr hProcess; public IntPtr hThread; public uint dwProcessId; public uint dwThreadId;
   }
+  [StructLayout(LayoutKind.Sequential)] public struct FILETIME {
+    public uint dwLowDateTime; public uint dwHighDateTime;
+  }
   [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] public struct KEY_EVENT_RECORD {
     public int KeyDown; public ushort RepeatCount, VirtualKeyCode, VirtualScanCode;
     public char UnicodeChar; public uint ControlKeyState;
@@ -311,6 +346,85 @@ public static class WindowProbe {
     ref STARTUPINFO startupInfo, out PROCESS_INFORMATION processInfo);
   [DllImport("kernel32.dll")] static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
   [DllImport("kernel32.dll")] static extern bool GetExitCodeProcess(IntPtr handle, out uint exitCode);
+  [DllImport("kernel32.dll", SetLastError=true)] static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
+  [DllImport("kernel32.dll", SetLastError=true)] static extern bool GetProcessTimes(
+    IntPtr handle, out FILETIME creation, out FILETIME exit, out FILETIME kernel, out FILETIME user);
+  [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern bool QueryFullProcessImageName(
+    IntPtr handle, uint flags, StringBuilder executable, ref uint length);
+  [DllImport("kernel32.dll", SetLastError=true)] static extern bool TerminateProcess(IntPtr handle, uint exitCode);
+
+  public class NativeProcessIdentity {
+    public uint pid;
+    public string executable;
+    public string startedAt;
+    public string startedTicks;
+  }
+
+  static NativeProcessIdentity ReadNativeProcessIdentity(uint pid, IntPtr handle) {
+    var executable = new StringBuilder(32768);
+    uint length = (uint)executable.Capacity;
+    if (!QueryFullProcessImageName(handle, 0, executable, ref length)) {
+      throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+    }
+    FILETIME creation, exit, kernel, user;
+    if (!GetProcessTimes(handle, out creation, out exit, out kernel, out user)) {
+      throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+    }
+    ulong fileTime = ((ulong)creation.dwHighDateTime << 32) | creation.dwLowDateTime;
+    var started = DateTime.FromFileTimeUtc(unchecked((long)fileTime));
+    return new NativeProcessIdentity {
+      pid=pid, executable=executable.ToString().Replace('\\', '/'),
+      startedAt=started.ToString("o"), startedTicks=started.Ticks.ToString(),
+    };
+  }
+
+  static string QueryNativeProcessIdentity(uint pid) {
+    var handle = OpenProcess(0x1000, false, pid);
+    if (handle == IntPtr.Zero) {
+      int error = Marshal.GetLastWin32Error();
+      if (error == 87) return "null";
+      throw new System.ComponentModel.Win32Exception(error);
+    }
+    try {
+      uint exitCode;
+      if (!GetExitCodeProcess(handle, out exitCode)) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+      if (exitCode != 259) return "null";
+      try { return new JavaScriptSerializer().Serialize(ReadNativeProcessIdentity(pid, handle)); }
+      catch (System.ComponentModel.Win32Exception) {
+        if (!GetExitCodeProcess(handle, out exitCode)) throw;
+        if (exitCode != 259) return "null";
+        throw;
+      }
+    } finally { CloseHandle(handle); }
+  }
+
+  static IntPtr OpenOwnedProcess(uint pid, string expectedPath, string expectedStartTicks, bool terminate) {
+    // 先持有目标进程句柄，再在同一对象上核对路径与精确启动时间；PID 复用不能把后续操作转移到别的进程。
+    var handle = OpenProcess(terminate ? 0x1001u : 0x1000u, false, pid);
+    if (handle == IntPtr.Zero) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+    try {
+      var identity = ReadNativeProcessIdentity(pid, handle);
+      if (!String.Equals(Path.GetFullPath(identity.executable), Path.GetFullPath(expectedPath),
+        StringComparison.OrdinalIgnoreCase)) {
+        throw new InvalidOperationException("owned process executable mismatch: " + identity.executable);
+      }
+      if (identity.startedTicks != expectedStartTicks) {
+        throw new InvalidOperationException("owned process start time mismatch: " + identity.startedTicks + " != " + expectedStartTicks);
+      }
+      return handle;
+    } catch {
+      CloseHandle(handle);
+      throw;
+    }
+  }
+
+  static string TerminateOwned(uint pid, string expectedPath, string expectedStartTicks) {
+    var handle = OpenOwnedProcess(pid, expectedPath, expectedStartTicks, true);
+    try {
+      if (!TerminateProcess(handle, 1)) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+      return new JavaScriptSerializer().Serialize(new { sent=true, identityBound=true, pid });
+    } finally { CloseHandle(handle); }
+  }
 
   static PROCESS_INFORMATION StartConsole(string executable, string workingDirectory, string arguments) {
     var startup = new STARTUPINFO(); startup.cb = Marshal.SizeOf(startup);
@@ -346,7 +460,7 @@ public static class WindowProbe {
     SetConsoleCtrlHandler(RecordConsoleCtrl, true);
     Console.CancelKeyPress += (sender, args) => {
       args.Cancel = true;
-      File.WriteAllText(signalFile, "SIGINT");
+      File.WriteAllText(signalFile, args.SpecialKey == ConsoleSpecialKey.ControlBreak ? "CTRL:1" : "SIGINT");
       Environment.Exit(0);
     };
     File.WriteAllText(readyFile, "ready");
@@ -406,42 +520,45 @@ public static class WindowProbe {
     } finally { if (input != IntPtr.Zero) CloseHandle(input); }
   }
 
-  static string CloseConsole(uint pid, uint verifierPid, bool ctrlBreak) {
+  static string CloseConsole(uint pid, uint verifierPid, bool ctrlBreak, string expectedPath, string expectedStartTicks) {
+    var process = OpenOwnedProcess(pid, expectedPath, expectedStartTicks, false);
     FreeConsole();
     IntPtr consoleWindow = IntPtr.Zero;
     string method = ctrlBreak ? "CTRL_BREAK_EVENT" : "WM_CLOSE";
     try {
-      if (!AttachConsole(pid)) {
-        int error = Marshal.GetLastWin32Error();
-        throw new System.ComponentModel.Win32Exception(error, "AttachConsole(close) failed: " + error);
-      }
-      var buffer = new uint[64];
-      int count = GetConsoleProcessList(buffer, buffer.Length);
-      if (count <= 0 || count > buffer.Length) throw new Exception("GetConsoleProcessList(close) failed: " + count);
-      var attached = new List<uint>();
-      for (int i = 0; i < count; i++) attached.Add(buffer[i]);
-      if (!attached.Contains(pid) || attached.Contains(verifierPid)) {
-        throw new Exception("Unsafe console ownership for close: target=" + pid + ", verifier=" + verifierPid);
-      }
-      if (ctrlBreak) {
-        // 文档只支持 CTRL_C/CTRL_BREAK；调用方必须仍附着目标 Console，非零 PID 定向到独立进程组。
-        if (!GenerateConsoleCtrlEvent(1, pid)) {
+      try {
+        if (!AttachConsole(pid)) {
           int error = Marshal.GetLastWin32Error();
-          throw new System.ComponentModel.Win32Exception(error, "GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT) failed: " + error);
+          throw new System.ComponentModel.Win32Exception(error, "AttachConsole(close) failed: " + error);
         }
-      } else {
-        consoleWindow = GetConsoleWindow();
-        if (consoleWindow == IntPtr.Zero) throw new Exception("GetConsoleWindow(close) returned zero");
+        var buffer = new uint[64];
+        int count = GetConsoleProcessList(buffer, buffer.Length);
+        if (count <= 0 || count > buffer.Length) throw new Exception("GetConsoleProcessList(close) failed: " + count);
+        var attached = new List<uint>();
+        for (int i = 0; i < count; i++) attached.Add(buffer[i]);
+        if (!attached.Contains(pid) || attached.Contains(verifierPid)) {
+          throw new Exception("Unsafe console ownership for close: target=" + pid + ", verifier=" + verifierPid);
+        }
+        if (ctrlBreak) {
+          // 文档只支持 CTRL_C/CTRL_BREAK；调用方必须仍附着目标 Console，非零 PID 定向到独立进程组。
+          if (!GenerateConsoleCtrlEvent(1, pid)) {
+            int error = Marshal.GetLastWin32Error();
+            throw new System.ComponentModel.Win32Exception(error, "GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT) failed: " + error);
+          }
+        } else {
+          consoleWindow = GetConsoleWindow();
+          if (consoleWindow == IntPtr.Zero) throw new Exception("GetConsoleWindow(close) returned zero");
+        }
+      } finally { FreeConsole(); }
+      if (!ctrlBreak) {
+        // 先脱离目标 Console，再同步请求已核对的隔离 Console 正常关闭；SMTO_ABORTIFHUNG 防止卡死探针。
+        IntPtr messageResult;
+        if (SendMessageTimeout(consoleWindow, 0x0010, IntPtr.Zero, IntPtr.Zero, 0x0002, 3000, out messageResult) == IntPtr.Zero) {
+          throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "SendMessageTimeout(console WM_CLOSE) failed");
+        }
       }
-    } finally { FreeConsole(); }
-    if (!ctrlBreak) {
-      // 先脱离目标 Console，再同步请求已核对的隔离 Console 正常关闭；SMTO_ABORTIFHUNG 防止卡死探针。
-      IntPtr messageResult;
-      if (SendMessageTimeout(consoleWindow, 0x0010, IntPtr.Zero, IntPtr.Zero, 0x0002, 3000, out messageResult) == IntPtr.Zero) {
-        throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "SendMessageTimeout(console WM_CLOSE) failed");
-      }
-    }
-    return new JavaScriptSerializer().Serialize(new { sent=true, method, consolePid=pid, isolatedConsole=true, target=consoleWindow.ToInt64().ToString() });
+      return new JavaScriptSerializer().Serialize(new { sent=true, method, consolePid=pid, isolatedConsole=true, identityBound=true, target=consoleWindow.ToInt64().ToString() });
+    } finally { CloseHandle(process); }
   }
 
   static IntPtr UniqueTrayWindow(int pid) {
@@ -549,8 +666,14 @@ public static class WindowProbe {
     if (args[0] == "console-send" && args.Length == 3) {
       Console.Write(SendConsole(uint.Parse(args[1]), args[2])); return 0;
     }
-    if ((args[0] == "console-close" || args[0] == "console-break-group") && args.Length == 3) {
-      Console.Write(CloseConsole(uint.Parse(args[1]), uint.Parse(args[2]), args[0] == "console-break-group")); return 0;
+    if (args[0] == "process-identity" && args.Length == 2) {
+      Console.Write(QueryNativeProcessIdentity(uint.Parse(args[1]))); return 0;
+    }
+    if ((args[0] == "console-close" || args[0] == "console-break-group") && args.Length == 5) {
+      Console.Write(CloseConsole(uint.Parse(args[1]), uint.Parse(args[2]), args[0] == "console-break-group", args[3], args[4])); return 0;
+    }
+    if (args[0] == "process-kill" && args.Length == 4) {
+      Console.Write(TerminateOwned(uint.Parse(args[1]), args[2], args[3])); return 0;
     }
     if (args[0] == "tray-find" && args.Length == 3) {
       Console.Write(new JavaScriptSerializer().Serialize(FindTray(uint.Parse(args[1]), args[2]))); return 0;
@@ -1135,6 +1258,7 @@ async function startBridge(extraEnv = {}, terminalExe = null) {
     HTTP_PROXY: "", HTTPS_PROXY: "", ALL_PROXY: "", http_proxy: "", https_proxy: "", all_proxy: "",
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1", DISABLE_TELEMETRY: "1", DISABLE_AUTOUPDATER: "1",
     CCC_FAKE_CLI_DELAY_STREAM_INIT_MS: "10000",
+    CCC_FAKE_CLI_IGNORE_SIGBREAK: "1",
     ...extraEnv,
   };
   delete env.CCC_FAKE_CLI_DISABLE_HOOKS;
@@ -1244,6 +1368,7 @@ async function stopBridge(graceful = false) {
   if (!bridgeChild && bridgePid === null) return;
   const launcher = bridgeChild;
   const usePortable = bridgeLaunchPortable;
+  const shutdownFakeEventOffset = graceful && !usePortable ? fakeEvents().length : 0;
   const tray = bridgeTray;
   let targetPid = bridgePid;
   if (targetPid === null) {
@@ -1266,6 +1391,9 @@ async function stopBridge(graceful = false) {
     bridgeLaunchPortable = false;
     return;
   }
+  const shutdownDiagnosticFile = path.join(home, "startup-diag.log");
+  const shutdownDiagnosticOffset = graceful && !usePortable && fs.existsSync(shutdownDiagnosticFile)
+    ? fs.statSync(shutdownDiagnosticFile).size : 0;
   if (pidAlive(targetPid)) {
     if (graceful && usePortable) {
       assert(tray && tray.parentPid === targetPid, "绿色正常关闭缺少本轮托盘 helper 身份");
@@ -1279,19 +1407,20 @@ async function stopBridge(graceful = false) {
         method: "tray-menu-exit", bridgePid: targetPid, trayPid: tray.pid, command: result.command,
       };
     } else if (graceful) {
-      const result = JSON.parse(execFileSync(windowProbe, ["console-break-group", String(targetPid), String(process.pid)], {
+      const owned = ownedProcesses.get(targetPid);
+      assert(owned?.role === "bridge" && owned.startedTicks, "正常关闭前缺少桥接登记身份");
+      const result = JSON.parse(execFileSync(windowProbe, [
+        "console-break-group", String(targetPid), String(process.pid), owned.executable, owned.startedTicks,
+      ], {
         encoding: "utf8", windowsHide: true, timeout: 5000,
       }));
       assert(result.sent === true && result.isolatedConsole === true && result.consolePid === targetPid
-        && result.method === "CTRL_BREAK_EVENT", "未确认定向隔离 Console 正常关闭");
-      evidence.observations.gracefulClose = { method: "CTRL_BREAK_EVENT", bridgePid: targetPid };
+        && result.identityBound === true && result.method === "CTRL_BREAK_EVENT", "未确认定向隔离 Console 正常关闭");
+      evidence.observations.gracefulClose = { method: "CTRL_BREAK_EVENT", bridgePid: targetPid, identityBound: true };
     } else {
       const owned = ownedProcesses.get(targetPid);
-      const actual = processIdentity(targetPid);
-      assert(owned?.role === "bridge" && actual
-        && actual.executable.toLowerCase() === owned.executable.toLowerCase()
-        && Date.parse(actual.startedAt) === Date.parse(owned.startedAt), "异常清理前桥接身份核对失败");
-      process.kill(targetPid); // 只强杀本轮登记且刚刚复核身份的隔离桥接。
+      assert(owned?.role === "bridge", "异常清理前桥接身份核对失败");
+      killOwnedProcess(targetPid);
     }
     try {
       await waitFor(() => !pidAlive(targetPid) ? true : null,
@@ -1332,7 +1461,7 @@ async function stopBridge(graceful = false) {
         assert(actual.executable.toLowerCase() === owned.executable.toLowerCase()
           && Date.parse(actual.startedAt) === Date.parse(owned.startedAt),
         `托盘 helper 清理前身份核对失败：expected=${owned.startedAt}, actual=${actual.startedAt}`);
-        process.kill(tray.pid);
+        killOwnedProcess(tray.pid);
         killSent = true;
       }
     }
@@ -1350,6 +1479,13 @@ async function stopBridge(graceful = false) {
   if (graceful) {
     assert(!launcher || launcher.exitCode === 0, "桥接启动器正常路径退出码异常：" + launcher?.exitCode);
     assert(!fs.existsSync(path.join(home, "runtime.json")), "桥接正常关闭后 runtime.json 仍存在");
+    if (!usePortable) {
+      const diagnostics = fs.readFileSync(shutdownDiagnosticFile);
+      evidence.observations.gracefulClose.shutdownStages = assertGracefulShutdownLog(
+        diagnostics.subarray(shutdownDiagnosticOffset).toString("utf8"));
+      assertNoFakeSigbreak(fakeEvents().slice(shutdownFakeEventOffset));
+      evidence.observations.gracefulClose.fakeCliSigbreakReceived = false;
+    }
     if (usePortable) evidence.portableGracefulShutdown = true;
   }
   bridgeChild = null;
@@ -1621,17 +1757,19 @@ function assertRequiredEvidence() {
   if (evidence.runtimeErrors.length !== 0) throw new Error("Chrome 存在运行错误");
 }
 
-/** @param pid 待核对 PID @returns 真实可执行路径与启动时间；不存在或查询失败返回 null */
+/** @param pid 待核对 PID @returns 同一原生句柄读取的路径与精确启动时间；不存在或查询失败返回 null */
 function processIdentity(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return null;
-  const script = `[Console]::OutputEncoding=[Text.Encoding]::UTF8; $p=Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}"; if ($null -eq $p) { exit 3 }; [Console]::Out.WriteLine($p.ExecutablePath); [Console]::Out.WriteLine($p.CreationDate.ToUniversalTime().ToString("o"))`;
   try {
-    const stdout = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
-      encoding: "utf8", windowsHide: true, timeout: 4000,
+    const queried = spawnSync(windowProbe, ["process-identity", String(pid)], {
+      cwd: toolsDir, encoding: "utf8", windowsHide: true, timeout: 5000,
     });
-    const [executable = "", startedAt = ""] = stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-    if (!executable || !Number.isFinite(Date.parse(startedAt))) return null;
-    return { pid, executable: executable.replace(/\\/g, "/"), startedAt: new Date(startedAt).toISOString() };
+    if (queried.status !== 0) return null;
+    const identity = JSON.parse(queried.stdout);
+    if (identity === null) return null;
+    if (identity.pid !== pid || !identity.executable || !Number.isFinite(Date.parse(identity.startedAt))
+      || !/^\d+$/.test(identity.startedTicks)) return null;
+    return identity;
   } catch { return null; }
 }
 
@@ -1641,6 +1779,19 @@ function pidAlive(pid) {
   try { process.kill(pid, 0); return true; } catch (error) { return error?.code === "EPERM"; }
 }
 
+/** 只在 helper 持有的同一进程句柄上核对登记身份并终止，避免查询后的 PID 复用。 @param pid 本轮登记 PID @returns 无返回值 */
+function killOwnedProcess(pid) {
+  const owned = ownedProcesses.get(pid);
+  assert(owned && /^\d+$/.test(owned.startedTicks ?? ""), `进程 ${pid} 缺少完整登记身份`);
+  const terminated = spawnSync(windowProbe, ["process-kill", String(pid), owned.executable, owned.startedTicks], {
+    cwd: toolsDir, encoding: "utf8", windowsHide: true, timeout: 5000,
+  });
+  assert(terminated.status === 0, `句柄绑定终止失败：${terminated.stderr || terminated.stdout}`);
+  const result = JSON.parse(terminated.stdout);
+  assert(result.sent === true && result.identityBound === true && result.pid === pid,
+    `未确认句柄绑定终止：${terminated.stdout}`);
+}
+
 /** @param excludedLeaseId 刷新时必须排除的旧 lease @returns 当前 embedded 私有记录中的非敏感身份，且登记为仅本轮可清理进程 */
 async function trackEmbeddedProcess(excludedLeaseId = null) {
   return waitFor(() => {
@@ -1648,10 +1799,11 @@ async function trackEmbeddedProcess(excludedLeaseId = null) {
       const record = JSON.parse(fs.readFileSync(path.join(home, "terminal", "embedded-lease.json"), "utf8"));
       if (record.mode !== "embedded" || !record.identity || record.identity.pid !== record.pid
         || record.leaseId === excludedLeaseId) return null;
-      const identity = record.identity;
-      ownedProcesses.set(record.pid, {
-        role: "embedded", executable: identity.executable, startedAt: identity.startedAt, leaseId: record.leaseId,
-      });
+      const expected = record.identity;
+      const identity = processIdentity(record.pid);
+      if (!identity || identity.executable.toLowerCase() !== String(expected.executable).toLowerCase()
+        || Date.parse(identity.startedAt) !== Date.parse(expected.startedAt)) return null;
+      ownedProcesses.set(record.pid, { role: "embedded", ...identity, leaseId: record.leaseId });
       return { leaseId: record.leaseId, pid: record.pid, identity };
     } catch { return null; }
   }, "embedded PID+路径+启动时间身份");
@@ -2542,7 +2694,7 @@ async function run() {
   const unknownActual = processIdentity(unknownSurvivor.pid);
   assert(unknownActual && unknownActual.executable.toLowerCase() === unknownSurvivor.identity.executable.toLowerCase()
     && Date.parse(unknownActual.startedAt) === Date.parse(unknownSurvivor.identity.startedAt), "定向清理前身份复核失败");
-  process.kill(unknownSurvivor.pid); // 只清理本轮登记且刚刚重新核对身份的隔离故障注入进程。
+  killOwnedProcess(unknownSurvivor.pid);
   await waitPidExit(unknownSurvivor.pid);
 
   // 用复制过滤制造缺 manifest 的独立发行副本；不删除或改写任何已有证据文件。
@@ -3052,7 +3204,7 @@ try {
       remaining.push({ pid, role: owned.role, reason: "identity-mismatch-not-killed" });
       continue;
     }
-    try { process.kill(pid); } catch {}
+    try { killOwnedProcess(pid); } catch {}
   }
   await delay(500);
   for (const [pid, owned] of ownedProcesses) {

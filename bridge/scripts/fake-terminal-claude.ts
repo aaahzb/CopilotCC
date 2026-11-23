@@ -50,6 +50,11 @@ function recordEvent(kind: string, detail: Record<string, unknown> = {}): void {
   fs.appendFileSync(eventLog, `${JSON.stringify({ kind, pid: process.pid, ...detail })}\n`, "utf8");
 }
 
+if (process.platform === "win32" && process.env.CCC_FAKE_CLI_IGNORE_SIGBREAK === "1") {
+  process.on("SIGBREAK", () => recordEvent("signal", { signal: "SIGBREAK" }));
+  recordEvent("signal-handler", { signal: "SIGBREAK" });
+}
+
 if (args.includes("--version")) {
   process.stdout.write("2.1.316 (CopilotCC isolated fake)\n");
   process.exit(0);

@@ -7,6 +7,12 @@ export interface PortableVerificationRootOptions {
 
 export function localApprovedVerificationRoot(env?: NodeJS.ProcessEnv): string;
 
+export function assertEmbeddedVerificationPaths(
+  root: string,
+  extensionId: string,
+  options: { portable: boolean; platform?: string },
+): void;
+
 export function resolvePortableVerificationRoot(
   value: string,
   options: PortableVerificationRootOptions,

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import * as os from "node:os";
 import * as path from "node:path";
-import { localApprovedVerificationRoot, resolvePortableVerificationRoot } from "../scripts/verification-root.mjs";
+import { assertEmbeddedVerificationPaths, localApprovedVerificationRoot, resolvePortableVerificationRoot } from "../scripts/verification-root.mjs";
 
 const base = path.resolve(os.tmpdir(), "ccc-portable-root-policy");
 const localApprovedRoot = path.join(base, "approved");
@@ -25,6 +25,26 @@ describe("本机验收批准根目录配置", () => {
 
   it("拒绝依赖当前工作目录的相对批准目录", () => {
     expect(() => localApprovedVerificationRoot({ CCC_VERIFY_ROOT: "relative/approved" })).toThrow("绝对路径");
+  });
+});
+
+describe("真实 Chrome 验收路径长度", () => {
+  const extensionId = "cnalihjaacpahpjkpneacjcfbhboglno";
+
+  it("短目录接受非便携和便携验收", () => {
+    const root = "D:/approved/r3p";
+    expect(() => assertEmbeddedVerificationPaths(root, extensionId, { portable: false, platform: "win32" })).not.toThrow();
+    expect(() => assertEmbeddedVerificationPaths(root, extensionId, { portable: true, platform: "win32" })).not.toThrow();
+  });
+
+  it("启动前列出超过传统 Win32 上限的内层 exe 与 Chrome 锁路径", () => {
+    const root = `D:/approved/${"nested/".repeat(24)}run`;
+    expect(() => assertEmbeddedVerificationPaths(root, extensionId, { portable: true, platform: "win32" }))
+      .toThrow(/绿色内层可执行文件\(\d+\)=.*Chrome 扩展存储锁|Chrome 扩展存储锁\(\d+\)=.*绿色内层可执行文件/);
+  });
+
+  it("非 Windows 不套用 Win32 传统路径上限", () => {
+    expect(() => assertEmbeddedVerificationPaths("/tmp/deep", extensionId, { portable: true, platform: "linux" })).not.toThrow();
   });
 });
 

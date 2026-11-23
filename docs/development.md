@@ -96,6 +96,8 @@ APPROVED="$CCC_VERIFY_ROOT"
 
 未设置变量时，脚本仍兼容旧本机默认目录；新环境应显式配置。每次 `--root` 都必须是 `$APPROVED` 下全新的空子目录，不能使用批准根目录本身、项目树内目录或已有证据目录。脚本不覆盖或删除旧证据，也不停止或替换用户正在使用的桥接。
 
+Windows 下直接使用批准根目录内的短子目录，不要再叠加多层验收分类目录。绿色内层路径包含 64 位 payload hash，Chrome 也会在 profile 下创建扩展存储锁；传统 Win32 路径超过 259 字符时，验收脚本会在启动前报错并列出实际路径，避免把它误报成内层 PID 或设置页连接超时。
+
 ### 构建与系统终端
 
 ```bash
@@ -159,7 +161,24 @@ node bridge/scripts/verify-embedded-terminal.mjs \
 
 生命周期验收检查源 exe 与隔离副本哈希、单文件布局、清理、占用保护、篡改重建、重复启动和真实进度窗口。GitHub Actions 中，生命周期脚本也接受 `$RUNNER_TEMP` 的严格子目录；具体命令以工作流为准。
 
-发行等价验收不能只加载 `wxt build` 的目录。先运行 `npm --prefix extension run zip`，在干净快照中把最终 zip 解压到新的空 `extension/.output/chrome-mv3`，再运行上述 portable Chrome 和真实 CLI 命令。Windows Git Bash 自带的 GNU tar 不支持 zip，应显式使用 `C:/Windows/System32/tar.exe`；Release 工作流使用同一工具。
+发行等价验收不能只加载 `wxt build` 的目录。先运行 `npm --prefix extension run zip`，再用 `--extension-path` 显式指定 zip 的外部解压目录，避免覆盖项目产物。下载 Release 资产复验时使用同一入口，同时用 `--portable-exe` 指定实际下载的单文件。两个来源都必须严格位于 `$APPROVED` 内，证据会记录实际路径、是否使用外部资产及 exe SHA-256。
+
+```bash
+VERSION=YYYY.MM.DD.N
+mkdir "$APPROVED/fresh-release-extension"
+C:/Windows/System32/tar.exe \
+  -xf "$APPROVED/fresh-release-assets/ccc-extension-$VERSION-chrome.zip" \
+  -C "$APPROVED/fresh-release-extension"
+
+# 解压目录根部必须直接包含 manifest.json；下载、解压和证据目录各自保持独立。
+node bridge/scripts/verify-embedded-terminal.mjs \
+  --root "$APPROVED/fresh-downloaded-portable-embedded" \
+  --portable \
+  --portable-exe "$APPROVED/fresh-release-assets/CopilotCC.exe" \
+  --extension-path "$APPROVED/fresh-release-extension"
+```
+
+未获系统剪贴板授权时追加 `--skip-clipboard`，此时五项剪贴板行为不能记为通过。Windows Git Bash 自带的 GNU tar 不支持 zip，应显式使用 `C:/Windows/System32/tar.exe`；Release 工作流使用同一工具。
 
 历史验收结果和未覆盖边界见[当前待办](../TODO.md)与[历史开发日志](history/2026-11-17-development-log.md)。旧日志中的计数和运行状态不要当成当前结果。
 
@@ -184,8 +203,8 @@ docs/history/            # 历史日志、交接报告和脱敏证据
 
 ## CI 与发布
 
-- CI 在 push 和 PR 时运行 Ubuntu、Windows、macOS 三平台门禁，包括仓库检查、两端类型检查与测试、扩展构建，以及平台原生构建和项目树外验收。Windows 还会对最终绿色单文件和当前扩展构建运行真实 Chrome 离线验收。
-- Release 在 `v*` 标签上先运行同平台测试门禁，再分别构建 Windows 单 exe、macOS DMG 和扩展 zip。Windows 任务下载最终扩展 artifact，从 zip 解压后对同一待发布单文件运行真实 Chrome，通过后才上传资产。公开资产按固定名称汇总，缺失任一资产都会失败。
+- CI 在 push 和 PR 时运行 Ubuntu、Windows、macOS 三平台门禁，包括仓库检查、两端类型检查与测试、扩展构建，以及平台原生构建和项目树外验收。Windows 还会对最终绿色单文件和当前扩展构建运行真实 Chrome 离线验收，并分别运行无 SDK 子进程、有 SDK 子进程的定向 Console 正常关闭探针。
+- Release 在 `v*` 标签上先运行同平台测试门禁，再分别构建 Windows 单 exe、macOS DMG 和扩展 zip。Windows 任务下载最终扩展 artifact，从 zip 解压后对同一待发布单文件运行真实 Chrome，并运行与 CI 相同的两种 Console 正常关闭探针，通过后才上传资产。公开资产按固定名称汇总，缺失任一资产都会失败。
 - 标签采用 `vYYYY.MM.DD.N`。四段版本号通过脚本直接写入包 JSON，避免 `npm version` 把末段改成预发布版本。
 
 ```bash

@@ -50,3 +50,27 @@ export function resolvePortableVerificationRoot(value, options) {
   }
   return root;
 }
+
+/**
+ * 在创建进程前拒绝已知会触发传统 Win32 路径上限的真实 Chrome 验收目录。
+ * @param {string} root 本次全新验收目录。
+ * @param {string} extensionId 固定扩展 ID。
+ * @param {{portable:boolean,platform?:string}} options 是否包含绿色内层路径及目标平台。
+ * @throws {Error} 任一必需路径超过 259 字符时抛出，并列出实际路径。
+ */
+export function assertEmbeddedVerificationPaths(root, extensionId, { portable, platform = process.platform }) {
+  if (platform !== "win32") return;
+  const candidates = [{
+    label: "Chrome 扩展存储锁",
+    value: path.join(root, "chrome-profile", "Default", "Local Extension Settings", extensionId, "LOCK"),
+  }];
+  if (portable) candidates.push({
+    label: "绿色内层可执行文件",
+    value: path.join(root, "home", "runtime", "0".repeat(64), "ccc-bridge.exe"),
+  });
+  const tooLong = candidates.filter((candidate) => candidate.value.length > 259);
+  if (tooLong.length > 0) {
+    throw new Error(`EMBEDDED_VERIFY_PATH: 超过 Windows 传统路径上限，请改用批准根目录下更短的新目录：${
+      tooLong.map((candidate) => `${candidate.label}(${candidate.value.length})=${candidate.value}`).join("；")}`);
+  }
+}

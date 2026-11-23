@@ -33,7 +33,7 @@ import type {
 } from "./terminal-lease";
 import type { EmbeddedTerminalHandle } from "./embedded-terminal";
 import { StartupTiming } from "./startup-timing";
-import { diagLog, diagSlow } from "./startup-diagnostics";
+import { diagLog, diagLogSync, diagSlow } from "./startup-diagnostics";
 
 /** 服务依赖。createSession 仅供测试注入假会话工厂。 */
 export interface ServerDeps {
@@ -380,16 +380,16 @@ function closeWebSocket(ws: WebSocket): Promise<void> {
  * @param r 运行中的服务
  */
 async function closeRunning(r: Running): Promise<void> {
-  diagLog(`shutdown.ws start clients=${r.wss.clients.size}`);
+  diagLogSync(`shutdown.ws start clients=${r.wss.clients.size}`);
   // 所有客户端并发握手，整体最多等待一个超时周期，关停时长仍然有界。
   await Promise.all([...r.wss.clients].map((c) => closeWebSocket(c)));
-  diagLog("shutdown.ws clients settled");
+  diagLogSync("shutdown.ws clients settled");
   await new Promise<void>((res) => r.wss.close(() => res()));
-  diagLog("shutdown.wss closed");
+  diagLogSync("shutdown.wss closed");
   // 浏览器 fetch 的 keep-alive 空闲连接不拖累关闭；bun 等运行时可能没有该 API，做防御
   (r.http as { closeIdleConnections?: () => void }).closeIdleConnections?.();
   await new Promise<void>((res) => r.http.close(() => res()));
-  diagLog("shutdown.http closed");
+  diagLogSync("shutdown.http closed");
 }
 
 /**
@@ -1562,14 +1562,14 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
       },
       setPort: rebind,
       close: async () => {
-        diagLog("shutdown.server start");
+        diagLogSync("shutdown.server start");
         terminal?.close(); // 关闭 watcher；系统终端进程留给真实退出或重启核对
-        diagLog("shutdown.watcher closed");
+        diagLogSync("shutdown.watcher closed");
         await terminal?.closeEmbedded(); // 内嵌 PTY 随桥接正常退出结束后端与重连计时器
-        diagLog("shutdown.embedded closed");
+        diagLogSync("shutdown.embedded closed");
         await closeRunning(current); // 先断开全部视图连接
         await workspace.claude?.close(); // 桥接整体关停才终结会话（视图断开/在线切端口都不杀）
-        diagLog("shutdown.sdk closed");
+        diagLogSync("shutdown.sdk closed");
       },
     };
   }

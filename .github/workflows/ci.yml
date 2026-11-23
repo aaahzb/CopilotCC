@@ -123,3 +123,7 @@ jobs:
           cp "$RUNNER_TEMP/ccc-pty-fake-win.exe" "$CCC_VERIFY_ROOT/bin/fake-claude.exe"
           node scripts/verify-embedded-terminal.mjs \
             --root "$RUNNER_TEMP/ccc-portable-chrome-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --portable
+          node scripts/probe-console-interrupt.mjs \
+            "$RUNNER_TEMP/ccc-console-idle-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" bridge ctrl-break-group idle
+          CCC_PROBE_FAKE_CLI="$RUNNER_TEMP/ccc-pty-fake-win.exe" node scripts/probe-console-interrupt.mjs \
+            "$RUNNER_TEMP/ccc-console-sdk-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" bridge ctrl-break-group sdk-child
