@@ -164,6 +164,7 @@ let browserCdp = null;
 let control = null;
 let runtimePort = 0;
 let bridgeEnvironment = null;
+let bridgeStderrFile = null;
 let upstreamRequests = 0;
 let proxy = null;
 let realUpstream = null;
@@ -1125,7 +1126,8 @@ async function startBridge(extraEnv = {}, terminalExe = null) {
   bridgeTray = null;
   bridgeLaunchPortable = usePortable;
   bridgeExecutable = usePortable ? null : terminalExe ?? isolatedTerminalExe;
-  const stderrFd = fs.openSync(path.join(root, `bridge-${Date.now()}.stderr.log`), "a");
+  bridgeStderrFile = path.join(root, `bridge-${Date.now()}.stderr.log`);
+  const stderrFd = fs.openSync(bridgeStderrFile, "a");
   if (usePortable) {
     // 与用户双击一致；外层启动内层后自行退出，外层 PID 绝不能冒充内层。
     bridgeChild = spawn(isolatedExe, [], {
@@ -1271,8 +1273,29 @@ async function stopBridge(graceful = false) {
         && Date.parse(actual.startedAt) === Date.parse(owned.startedAt), "异常清理前桥接身份核对失败");
       process.kill(targetPid); // 只强杀本轮登记且刚刚复核身份的隔离桥接。
     }
-    await waitFor(() => !pidAlive(targetPid) ? true : null,
-      graceful ? "真实正常关闭后桥接退出" : "异常夹具桥接退出", graceful ? 15000 : 3000);
+    try {
+      await waitFor(() => !pidAlive(targetPid) ? true : null,
+        graceful ? "真实正常关闭后桥接退出" : "异常夹具桥接退出", graceful ? 15000 : 3000);
+    } catch (error) {
+      const milestones = [
+        "pagehideClosesOwnedPty", "bridgeShutdownKillsOwnedPty",
+        "abnormalRestartNeverKillsUnknownIdentity", "nativeFailureLeavesChatAndSystemTerminalUsable",
+      ];
+      const state = {
+        targetPid,
+        bridgeAlive: pidAlive(targetPid),
+        bridgeIdentity: processIdentity(targetPid),
+        tray: tray ? { pid: tray.pid, alive: pidAlive(tray.pid), identity: processIdentity(tray.pid) } : null,
+        runtimeExists: fs.existsSync(path.join(home, "runtime.json")),
+        milestones: Object.fromEntries(milestones.map((name) => [name, evidence[name]])),
+      };
+      const tail = (file) => {
+        try { return redact(fs.readFileSync(file, "utf8")).slice(-2400); } catch { return ""; }
+      };
+      throw new Error(`${error.message}；关闭状态=${JSON.stringify(state)}`
+        + `；桥接stderr尾部=${tail(bridgeStderrFile)}`
+        + `；启动诊断尾部=${tail(path.join(home, "startup-diag.log"))}`);
+    }
   }
   let trayCleanup = null;
   if (tray) {
