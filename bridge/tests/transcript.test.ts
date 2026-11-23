@@ -7,7 +7,7 @@ import {
   extractEffortFromTranscript, readTranscriptEffort, configureSessionTitleCache,
   refreshSessionTitles, readTranscriptPageAsync, closeTranscriptHandles, warmTranscriptHandle,
 } from "../src/transcript";
-import { GUARD_PREFIX } from "../src/claude-session";
+import { GUARD_PREFIX } from "../src/tool-format";
 
 // 标题缓存与转录句柄缓存都是模块级状态：每个用例从干净状态开始，避免不同用例复用同一路径时互相污染。
 // Windows 上缓存的打开句柄会让删除/重建同名文件停留在 delete-pending，必须等句柄真正关闭。

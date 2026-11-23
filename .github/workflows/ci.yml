@@ -27,6 +27,10 @@ jobs:
 
       - uses: oven-sh/setup-bun@v2
 
+      - name: 仓库：生成副本 / 文档链接 / 脚本测试
+        shell: bash
+        run: npm run check
+
       - name: 桥接：依赖 / 类型检查 / 单测 / 预编译件架构审计
         working-directory: bridge
         shell: bash
@@ -102,3 +106,15 @@ jobs:
           npm run typecheck
           npm test
           npm run build
+
+      - name: Windows：最终绿色单文件与扩展真实 Chrome 离线验收
+        if: runner.os == 'Windows'
+        working-directory: bridge
+        shell: bash
+        env:
+          CCC_VERIFY_ROOT: ${{ runner.temp }}
+        run: |
+          mkdir -p "$CCC_VERIFY_ROOT/bin"
+          cp "$RUNNER_TEMP/ccc-pty-fake-win.exe" "$CCC_VERIFY_ROOT/bin/fake-claude.exe"
+          node scripts/verify-embedded-terminal.mjs \
+            --root "$RUNNER_TEMP/ccc-portable-chrome-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --portable

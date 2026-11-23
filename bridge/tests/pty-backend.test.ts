@@ -1,5 +1,4 @@
 import { EventEmitter } from "node:events";
-import type { ChildProcess } from "node:child_process";
 import { PassThrough } from "node:stream";
 import * as path from "node:path";
 import { describe, expect, it, vi } from "vitest";

@@ -5,9 +5,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createPayloadManifest } from "./build-portable-exe.mjs";
-import { resolvePortableVerificationRoot } from "./portable-verification-root.mjs";
+import { localApprovedVerificationRoot, resolvePortableVerificationRoot } from "./verification-root.mjs";
 
-const APPROVED_ROOT = "D:\\ccc-fast-final-verify-20261026\\tool-history-20261027\\dual-terminal-20261110";
+const APPROVED_ROOT = localApprovedVerificationRoot();
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const PORTABLE_EXE = path.join(PROJECT_ROOT, "bridge", "dist", "portable-win-x64", "CopilotCC.exe");
 const FULL_DIST = path.join(PROJECT_ROOT, "bridge", "dist", "ccc-bridge-win-x64");

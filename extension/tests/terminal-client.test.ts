@@ -50,7 +50,7 @@ function fixture(): {
 }
 
 /** 完成认证、open 和 attach，返回当前连接。 */
-function attach(client: TerminalClient): FakeWS {
+function attach(): FakeWS {
   const ws = FakeWS.instances.at(-1);
   if (!ws) throw new Error("缺少 WebSocket");
   ws.open();
@@ -80,7 +80,7 @@ describe("TerminalClient 认证、输出和重连", () => {
 
   it("输入带 leaseId，resize 使用 fit 行列，连续输出按 seq 写入且 attached 后回调", () => {
     const f = fixture();
-    const ws = attach(f.client);
+    const ws = attach();
     expect(f.attached).toBe(1);
     f.client.input("中文\r");
     f.client.resize(132, 36);
@@ -95,7 +95,7 @@ describe("TerminalClient 认证、输出和重连", () => {
 
   it("重连 auth.ok 后只 attach 同一 token/lastSeq，不重新 open", () => {
     const f = fixture();
-    const first = attach(f.client);
+    const first = attach();
     first.push({ type: "terminal.output", leaseId: LEASE_ID, seq: 1, data: "保留" });
     first.close();
     vi.advanceTimersByTime(1000);
@@ -111,7 +111,7 @@ describe("TerminalClient 认证、输出和重连", () => {
 
   it("重复 seq 忽略，缺口明确报错并发送 close，不写入伪造连续屏幕", () => {
     const f = fixture();
-    const ws = attach(f.client);
+    const ws = attach();
     ws.push({ type: "terminal.output", leaseId: LEASE_ID, seq: 1, data: "正确" });
     ws.push({ type: "terminal.output", leaseId: LEASE_ID, seq: 1, data: "重复" });
     expect(f.writes).toEqual(["正确"]);
@@ -122,9 +122,31 @@ describe("TerminalClient 认证、输出和重连", () => {
     expect(f.views.at(-1)?.phase).toBe("error");
   });
 
+  it("刷新时旧 lease 尚在停止，新页面等到 idle 后重新 open", () => {
+    const f = fixture();
+    const ws = FakeWS.instances[0]!;
+    ws.open();
+    ws.push({ type: "auth.ok" });
+    ws.push({ type: "terminal.error", code: "ALREADY_ACTIVE", message: "已有终端正在接管当前工作区" });
+    expect(f.views.at(-1)?.phase).toBe("error");
+    expect(ws.messages().filter((message) => message.type === "terminal.open")).toHaveLength(1);
+    const idleState = {
+      leaseId: null, mode: null, phase: "idle", folder: null, initialSessionId: null,
+      currentSessionId: null, backend: null, canManualRelease: false,
+    } as const;
+    ws.push({ type: "terminal.state", state: idleState });
+    ws.push({ type: "terminal.state", state: idleState });
+    expect(ws.messages().filter((message) => message.type === "terminal.open"))
+      .toEqual([{ type: "terminal.open", mode: "embedded" }, { type: "terminal.open", mode: "embedded" }]);
+    ws.push({ type: "terminal.opened", leaseId: LEASE_ID, mode: "embedded", backend: "pty", attachToken: TOKEN });
+    ws.push({ type: "terminal.attached", leaseId: LEASE_ID, replayGap: false, latestSeq: 0 });
+    expect(f.views.at(-1)?.phase).toBe("attached");
+    f.client.close();
+  });
+
   it("输出缺口后的真实退出保留错误原因和退出码", () => {
     const f = fixture();
-    const ws = attach(f.client);
+    const ws = attach();
     ws.push({ type: "terminal.output", leaseId: LEASE_ID, seq: 2, data: "缺失" });
     expect(f.views.at(-1)?.phase).toBe("error");
     ws.push({ type: "terminal.exit", leaseId: LEASE_ID, reason: "exit", exitCode: 1 });

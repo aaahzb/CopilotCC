@@ -2,6 +2,9 @@
   "extends": "./.wxt/tsconfig.json",
   "compilerOptions": {
     "jsx": "react-jsx",
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
     "types": ["chrome", "node"]
-  }
+  },
+  "exclude": ["node_modules", ".output", "tests/tmp-*"]
 }

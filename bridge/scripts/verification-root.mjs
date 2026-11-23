@@ -1,5 +1,20 @@
 import * as path from "node:path";
 
+const LEGACY_LOCAL_APPROVED_ROOT = "D:\\ccc-fast-final-verify-20261026\\tool-history-20261027\\dual-terminal-20261110";
+
+/**
+ * 返回本机明确批准的验收根目录；环境变量未设置时兼容既有本机路径。
+ * @param {NodeJS.ProcessEnv} env 环境变量。
+ * @returns {string} 规范化后的绝对批准根目录。
+ * @throws {Error} CCC_VERIFY_ROOT 不是绝对路径时抛出。
+ */
+export function localApprovedVerificationRoot(env = process.env) {
+  const configured = env.CCC_VERIFY_ROOT;
+  if (!configured) return LEGACY_LOCAL_APPROVED_ROOT;
+  if (!path.isAbsolute(configured)) throw new Error("CCC_VERIFY_ROOT: 必须是绝对路径");
+  return path.resolve(configured);
+}
+
 /**
  * 判断 child 是否严格位于 parent 内。
  * @param {string} parent 父目录。

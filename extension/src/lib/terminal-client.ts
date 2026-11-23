@@ -33,6 +33,7 @@ export class TerminalClient {
   private readonly bridge: BridgeClient;
   private lease: LeaseMemory | null = null;
   private openRequested = false;
+  private waitingForActiveLeaseToClose = false;
   private attached = false;
   private closeSent = false;
   private terminated = false;
@@ -128,7 +129,10 @@ export class TerminalClient {
     if (this.terminated) return;
     if (state === "closed") {
       this.attached = false;
-      if (!this.lease) this.openRequested = false;
+      if (!this.lease) {
+        this.openRequested = false;
+        this.waitingForActiveLeaseToClose = false;
+      }
       this.setView({ phase: "reconnecting", message: "连接中断，3 秒内尝试恢复" });
     } else if (state === "connecting") {
       this.setView({ phase: "connecting", message: "正在连接本机桥接…" });
@@ -174,6 +178,7 @@ export class TerminalClient {
       }
       case "terminal.state":
         this.setView({ terminal: message.state });
+        this.openAfterActiveLeaseCloses();
         break;
       case "terminal.exit": {
         if (!this.lease || message.leaseId !== this.lease.leaseId) return;
@@ -192,6 +197,13 @@ export class TerminalClient {
       }
       case "terminal.error": {
         if (message.leaseId && this.lease && message.leaseId !== this.lease.leaseId) return;
+        if (message.code === "ALREADY_ACTIVE" && this.openRequested && !this.lease
+          && !this.closeSent && !this.terminated) {
+          this.waitingForActiveLeaseToClose = true;
+          this.setView({ phase: "error", message: message.message });
+          this.openAfterActiveLeaseCloses();
+          return;
+        }
         const fatal = message.code === "OUTPUT_GAP" || message.code === "DETACHED"
           || message.code === "ATTACH_REQUIRED" || message.code === "NOT_OWNER";
         this.fail(message.message, fatal);
@@ -203,6 +215,14 @@ export class TerminalClient {
       default:
         break;
     }
+  }
+
+  private openAfterActiveLeaseCloses(): void {
+    if (!this.waitingForActiveLeaseToClose || this.terminated || this.closeSent || this.lease
+      || this.view.terminal?.phase !== "idle") return;
+    this.waitingForActiveLeaseToClose = false;
+    this.setView({ phase: "opening", message: "正在启动插件终端…" });
+    this.bridge.send({ type: "terminal.open", mode: "embedded" });
   }
 
   /** @param patch 公开视图增量 */

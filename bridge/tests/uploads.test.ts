@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { saveUploads, sanitizeUploadName, MAX_UPLOAD_BYTES } from "../src/uploads";
+import { saveUploads, sanitizeUploadName } from "../src/uploads";
 import { composeUploadNote, UPLOAD_DIR } from "../src/upload-note";
 
 let dir: string;

@@ -5,8 +5,9 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { localApprovedVerificationRoot } from "./verification-root.mjs";
 
-const VERIFY_ROOT = "D:\\ccc-fast-final-verify-20261026\\tool-history-20261027\\dual-terminal-20261110";
+const VERIFY_ROOT = localApprovedVerificationRoot();
 const bridgeRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 /**

@@ -9,7 +9,7 @@
     "dev": "npm run sync:protocol && wxt",
     "build": "npm run sync:protocol && wxt build",
     "test": "npm run sync:protocol && vitest run",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "wxt prepare && tsc --noEmit",
     "zip": "wxt zip"
   },
   "dependencies": {

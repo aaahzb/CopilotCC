@@ -1,0 +1,705 @@
+# CopilotCC — TODO
+
+- [x] Task 1: 仓库脚手架与协议同步/密钥脚本
+- [x] Task 2: bridge 骨架 + config.ts
+- [x] Task 3: shared/protocol.ts + 校验函数
+- [x] Task 4: session-manager.ts
+- [x] Task 5: transcript.ts
+- [x] Task 6: claude-session.ts
+- [x] Task 7: server.ts
+- [x] Task 8: index.ts CLI + selftest 验证
+- [x] Task 9: extension 骨架（WXT + background）
+- [x] Task 10: storage.ts + attach-policy.ts
+- [x] Task 11: ws-client.ts
+- [x] Task 12: page-extract.ts + UI 组件 + App 装配
+- [ ] Task 13: 端到端手动验收 + README.md
+
+## GitHub Actions #52 干净构建与失败即停修复（2026-11-14，本地复验完成，云端待验证）
+
+- [x] 已核对真实 CI #52（run `43604175479`，提交 `58e27a1`）：Ubuntu job 失败于扩展计划卡快照恢复用例；macOS job 成功；Windows job 虽显示 `success`，原始日志实际为 1 个文件失败、2 项失败、441 项通过、1 项跳过，两个失败均为干净目录下 `bridge/dist/.portable-build-*` 的 `ENOENT: mkdtemp`。同提交的 Release #40 成功不是 CI 重跑证据。
+- [x] 便携构建根因是 `mkdtempSync()` 不会创建父目录，干净 CI 没有此前构建遗留的 `bridge/dist/`。新增隔离干净脚本目录的真实构建回归，先取得与 CI 相同的 `ENOENT` RED，再仅在 `buildPortableExe()` 创建临时目录前补 `mkdirSync(..., { recursive: true })`，聚焦 5/5 转 GREEN；未改变压缩、去重、启动器或输出目录安全语义。
+- [x] Windows 公共步骤默认 PowerShell 会继续执行后续命令，使最后的架构检查或扩展构建成功覆盖此前测试失败的退出码。CI 的桥接、扩展两个公共多命令步骤均改为显式 `shell: bash`；Ubuntu/Windows/macOS 矩阵保持不变，没有删除 Ubuntu 或以矩阵绕过失败。受控失败探针退出 7 且未执行后一条命令；workflow YAML 可解析，两个公共步骤均为 fail-fast，6 个 shell 段语法通过。Release 已有全局 `defaults.run.shell: bash`，无需同类修改。
+- [x] Ubuntu 单次失败已沿 `chat.sync.pendingInteractions` → `setPermReqs()` → `PermissionCard` 完整追踪，生产数据流无平台分支；计划详情断言改为同等内容的 `vi.waitFor()` 条件等待，不跳过测试、不重试整例、不接受缺失节点。修改前在本机 Node 25、Node 22.23.4、限并发及四路并发下累计 44 次扩展全量（每次 180 项）均通过，WSL 又不可用，故**没有取得 Ubuntu 本地 RED，也没有证明生产根因已定位或云端 flaky 已消除**；本次只完成测试同步加固，聚焦 42/42 与全量 180/180 通过。
+- [x] 最终本地全量：bridge 40 个测试文件，444 项通过、1 项 Darwin 专项跳过（共 445 项）；extension 24 个测试文件、180/180；两端 typecheck、扩展 production build 和启动器 8/8 均通过。使用 Node 22 对应工具入口复验，未把本机结果冒充云端 CI。
+- [x] 真实绿色单 exe 构建成功：54,138,368 bytes，SHA-256 `f4c50672282430a62af5992dbffc5ce43b16401f75ea8350927dbafd75b2ab12`，payload SHA-256 `03f871fe9f582066a3160866b41ff68a87da08e01206230efa4fcb8b70f42630`。项目树外生命周期 `ci-52-portable-lifecycle-fixed-01/portable-verification.json` 为 `ok=true`、15 项必需断言全 true，`realApiCalled=false`、cleanup remaining/errors 双空、当前哈希一致；启动进度截图已人工确认“正在解压当前组件”和绿色进度条。首次指定的根目录被现有白名单拒绝且未创建验收目录，随后使用已批准根目录下的严格子目录通过，未放宽安全策略。
+- [ ] 本地修复与复验已完成，并按用户授权提交到本地 main；推送和云端 CI 尚未执行，Ubuntu 与 Windows 的真实新 run 仍待验证。本轮未修改扩展或终端生产逻辑，也未重新执行真实双终端 E2E；原始 macOS“插件终端窗口创建失败，未启动 Claude”仍按下一节保持未复现、未定位，不能关闭。
+- **历史证据边界：**下文 CI #42–#51 的 Windows“通过/全绿”保留当时 job/step 运行结论，但修复前公共步骤可能吞掉测试退出码，不能再单独作为 Windows 测试全绿证明。除 CI #52 原始日志已明确证明两项隐藏失败外，不反向推定其他历史 run 必有失败；需要时应逐份读取原始日志复核。
+
+## 2026-11-15 “可滚历史”检测修复与启动耗时测量（已提交，CI 回归修复中）
+
+- [x] “可滚历史”误报根因：Claude Code 2.1.323 transcript 视图页脚稳定段是 `Showing detailed transcript · ctrl+o to toggle`，`↑↓ scroll` 只在 virtualScroll 为真且窗口够宽时出现；原判定强制要求 `↑↓ scroll`，窄窗口必然误报“未检测到历史视图，请手动按 Ctrl+O，再按 [”。现改为“标题 + `to toggle`”双条件，Windows/macOS 共用扩展判定，仍只在 detailed viewer 内发送 `[`，不扩大为盲发。
+- [x] 先 RED 后 GREEN：`extension/tests/terminal-page.test.tsx` 新增“真实 transcript 页脚没有 ↑↓ scroll 时也识别并发送导出键”及负控“普通画面只含 transcript 标题时不盲发导出键”；修复前新用例只收到 `\x0f` 未收到 `[`，修复后聚焦 10/10 通过。
+- [x] 启动耗时只测量、不改启动路径：新增 `bridge/src/startup-timing.ts`，计时全部是内存 `Date.now()` 差值，写盘用异步 `fs.promises.appendFile`，不等待、不抛错；测试与 selftest 默认关闭，只有常驻入口显式 `enableStartupTiming(configDir())` 才落盘。scope/tag 走安全字符白名单，非法值直接丢弃，避免伪造日志行或泄露敏感信息。
+- [x] 日志位置与格式：写入 `<configDir>/startup.log`（默认 `~/.ccc-bridge/startup.log`），GUI winexe 无可见控制台也能事后查看；每行形如 `2026-11-15T05:45:00.000Z [startup] embedded probe=49ms settings=12ms spawn=180ms identity=31ms total=272ms`，同一行内各阶段为“距上一阶段”，`total` 为“距本次启动开始”。首输出与首次 attach 以增量行补齐。
+- [x] 埋点范围：`server.ts` 记录 `terminal.open` 的 `opened`/`failed`/`attached`；`embedded-terminal.ts` 记录 `probe/settings/spawn/identity` 与 CLI `firstOutput`；`system-terminal.ts` 记录 `probe/settings/launch/status` 并标注 `backend=windows-terminal|console`；`terminal-child.ts` 记录包装进程 `identity/status/start/spawn`；`index.ts` 与 `tray.ts` 两个常驻入口及 `--terminal-child` 独立入口分别启用。
+- [x] 测试证据：`bridge/tests/startup-timing.test.ts` 5 项覆盖精确两行格式、未启用不建文件、无新标记不写空行、非法标签丢弃、目录不可写静默 resolve；四个适配器/服务集成测试加入真实临时目录日志断言，两个 CLI 入口用 tsx + 隔离 `CCC_BRIDGE_HOME` 走成功路径。实现前均取得 `Cannot find module` 或 `ENOENT startup.log` 的有效 RED。
+- [x] 最终本地全量（2026-11-15 复跑）：bridge 41 个测试文件、456 项通过 / 1 项跳过（457 项）；extension 24 个文件、182 项通过；两端 `tsc --noEmit` 与扩展 production build（3.03 MB）均通过。
+- [x] 用户文档同步：`docs/guide.md` FAQ 新增 `startup.log` 的位置、分段含义与“异步写入、不拖慢启动”说明，Release 用户可直接查看，不需要控制台或额外工具。
+- [x] 已提交到本地 main（`d50c533 修复可滚历史检测并记录终端启动耗时`），并由用户推送到远端；云端 CI 复验发现两处回归，见下节。
+- [ ] 未重建 Windows exe、未做真实 Chrome + 隔离假 CLI 的启动日志端到端验收；启动提速本身（probe 结果未复用、PowerShell 身份查询约 250ms、CLI 自身 TUI 启动）按用户要求留待后续研究，本轮只完成测量。
+
+### CI run 118271964493 回归修复（2026-11-15）
+
+- [x] 云端 run `118271964493`（提交 `d50c533`）三平台矩阵：macOS 桥接 41 文件、39 通过 / 2 跳过，终端子进程 11/11 通过；Ubuntu 2 项失败、Windows 1 项失败，均为 `terminal-child.test.ts` 新增“两个 CLI 入口成功路径”真实子进程用例在 Vitest 默认 5s 处超时（Ubuntu 文件耗时 11s，两项各占 5s；Windows 只挂 `src/index.ts`，`src/tray.ts` 同次通过）。用例内部 `vi.waitFor` 为 15s，说明是 CI 并行冷启动 tsx 超过默认上限，不是断言失败。
+- [x] 修复：两个入口用例显式设置 30s 超时；内部 15s `vi.waitFor` 仍是实际完成条件，不会把挂死当成通过。用 `--testTimeout=1000` 复跑证明用例级 30s 覆盖全局默认，两个入口用例分别 593ms / 679ms 通过，文件 11/11。
+- [x] macOS 唯一失败是 DMG 阶段 `hdiutil: create failed - No space left on device`；失败前日志显示主机仍有 95Gi 可用、舞台仅 198M，287 个文件逻辑总量 207,111,424 bytes、分配 207,790,080 bytes，无稀疏文件，更符合 runner 上 hdiutil 临时镜像容量估算/偶发故障，不能归因于应用代码体积变化。
+- [x] 修复：`build-mac-app.sh` 给 hdiutil 显式 `-size`（舞台 `du -sk` + 64MiB 元数据余量），并对该已知偶发失败做 3 次有界重试、每次清理半成品；`bash -n` 通过。本机无 macOS，新命令的真实 hdiutil 执行仍待下一次云端 macOS job 验证。
+- [x] 该轮修复已提交为 `0c3e2cb 修复 CI 终端入口测试超时与 macOS DMG 容量` 并由用户推送；云端 run `118310643514` 显示 macOS DMG 已通过，剩余失败见下节。
+
+### CI run 118310643514 回归修复（2026-11-15）
+
+- [x] 全量复核 run `118310643514`（提交 `0c3e2cb`）三平台所有已执行 step：macOS 桥接 39 通过 / 2 跳过、扩展 24/24、DMG 打包与上传全部通过（上一轮 hdiutil 修复生效）；失败只剩 `terminal-child.test.ts` 的两条入口成功用例：Ubuntu 2 条（文件 31s）、Windows 1 条（`src/index.ts`，同次 `src/tray.ts` 通过），失败点均为等待 `.status.json` 15s 后 `expected false to be true`，不再是 5s 用例超时。Windows 专属 job 步骤因桥接测试失败全部未启动，本轮已在本地补跑等价步骤。
+- [x] Ubuntu 根因（确定性）：`readProcessIdentity` 只实现 Windows/macOS，Linux 直接返回 null；`runTerminalChild` 立即抛 `TERMINAL_CHILD_IDENTITY`，包装进程永远不会写 `.status.json`。两条失败用例各自白等 15s，文件耗时 31s 与之吻合。`--terminal-child` 只由系统终端路径拉起，而 `SystemTerminalAdapter` 明确拒绝 Linux（`TERMINAL_PLATFORM_UNSUPPORTED`），因此成功路径只在 Windows/macOS 有意义；Linux 的入口接线继续由非法请求用例覆盖，成功用例在 Linux 显式跳过并注明原因。
+- [x] Windows 根因（偶发）：身份查询走 `Get-CimInstance Win32_Process`（WMI），`execFile` 硬超时仅 3s；CI 首次查询需要唤醒 WMI 服务，超过 3s 后返回 null，包装进程按身份失败退出。两次 run 都是第一条入口用例失败、第二条（WMI 已热）通过，符合冷启动特征。修复为 `Get-Process -Id ... -ErrorAction Stop`（系统进程 API，不经 WMI；本地实测约 155ms，WMI 约 220ms），超时放宽到 8s；新增 Windows 真实身份用例与“不存在的 PID 返回 null”用例。
+- [x] 测试可诊断性：真实子进程用例改为捕获 stdout/stderr，status 等待与子进程退出竞速——进程提前退出立即带 `code/signal/输出尾部` 失败，不再把崩溃误报为“文件不存在”；等待预算 25s、用例级 45s，失败时在 finally 终止残留包装进程。
+- [x] 本地复验：bridge 41 文件 / 458 通过 / 1 跳过（macOS 专项），`tsc --noEmit` 通过；Windows 专属 CI 等价步骤全部通过——原生布局 SHA-256、fake CLI 编译、发行包 PTY smoke（initialSize/inputEcho/continuousTicks/chinese/resize/exitCode7 全 true，bun-node-pty）、启动器 8/8、绿色单 exe 构建、项目树外生命周期验收 `ok=true`（15 项 required 全 true）；extension 24 文件 / 182 通过、typecheck、production build 3.03 MB。本机 Node 25 会触发 PTY 探针的“必须 Node 22”守卫，构建使用此前同一台机器成功、六项行为全过的 `ci43-win-after-01/pty-route.json`；探针脚本本身未改动，留待云端 Node 22 复跑。
+- [ ] 尚未推送；需要下一次云端 CI 三平台同时复验。
+
+### CD run 118316274047 回归修复（2026-11-15，Release 工作流）
+
+- [x] 该 run 是 tag `v2026.11.15.1`（提交 `b5fa91b`）触发的 Release 工作流；唯一已执行的 job「发布前测试门禁」（ubuntu-26.04）在 `bridge/tests/server-fast-model.test.ts` 的 “seeding 的 Sonnet/on 不提升…” 失败：期望 `settings.state {model:'sonnet', fastMode:false}`，实际仍是上一帧 `fastMode:true`。同提交 CI 三平台只挂过 terminal-child，说明这是跨平台时序竞态，不是 CD 独有逻辑。
+- [x] 根因：用例只等 `fakeHandle.setFastMode` 被调用（服务端本地 mock），而 `settings.state` 广播要经 WS 送达客户端 inbox；CI 高负载下 mock 调用先返回、广播后到，紧接着断言 lastState 就读到上一帧。同类写法在本文件共 13 处（含失败路径里 `settings.error` 的到达判断，30ms `settle()` 同样不能证明收帧）。
+- [x] 先 RED 后 GREEN：临时把客户端 `collect` 的收帧延迟 150ms 模拟竞态，原测试 15 条里 13 条失败、覆盖 13 个断言行；随后新增 `waitState(ca, expected)`（5s 内容等待）替换所有“等 mock 后立刻读 inbox”的断言，同一延迟下 15/15 通过；移除延迟后真实时序 15/15 通过。
+- [x] CD 与 CI 同步：`release.yml` 的发布前测试门禁原先只在 ubuntu 单平台跑桥接/扩展单测，Windows/macOS 的平台专属测试（终端身份查询、入口接线等）根本不在发布门禁里。现改为与 `ci.yml` 相同的三平台矩阵、`fail-fast: false`、npm 缓存，并补上 CI 里已有的 `check-arch.mjs` 预编译件架构审计；build-win/build-mac/build-ext `needs: test` 与 publish 汇总链不变。PyYAML 解析校验通过。
+- [x] 本地复验：bridge 41 文件 / 458 通过 / 1 跳过、`tsc --noEmit` 通过；workflow YAML 结构断言（三平台矩阵、依赖链）通过。
+- [x] 流程规则：以后每次修 CI，必须同步检查并修复 `.github/workflows/release.yml`（CD），不能只让 CI 绿。
+- [ ] 尚未推送；需下一次 tag 复验 CD 三平台门禁与后续构建/发布。
+
+### CD run 118322528105 回归修复（2026-11-15，Release 工作流）
+
+- [x] 该 run 是 tag `v2026.11.15.2`（提交 `525a105`）触发：三平台发布门禁生效，Windows 桥接 41 文件全过（含 `Get-Process` 身份修复）、Ubuntu/macOS 桥接与扩展全过；唯一失败是 Windows 扩展 `app-tool-flow.test.tsx` 两条快照恢复用例——`快照恢复挂起卡…elicitation_complete` 在同步断言处拿到 0 张 `.elicitation-card`（32ms），`快照恢复完整计划卡…` 的 `details.plan-detail` 等满 1s `vi.waitFor` 仍不存在。同文件其余 40 条（含 user_dialog 快照恢复）全过。
+- [x] 根因（产品缺陷，非测试断言问题）：`BridgeClient` 断线重连的 `setTimeout` 定时器在 `close()` 时未被取消，而 `connect()` 第一行又把 `closedByUser` 重置为 false。`app-tool-flow.test.tsx` 里两条模拟断线用例（“断线清除压缩提示”“断线立即清除请求中提示”）调用 `ws.close()` 排定 1s 后重连；`afterEach` 卸载只设 `closedByUser=true` 并关 socket，不取消已排定的 timer。1s 后 timer 照常执行 → 已卸载 App 的 client 新建一条幽灵连接并 push 进 `FakeWebSocket.instances`，占用后续 `mountApp` 盲取的 `instances[0]`，之后所有帧都打到已卸载组件（`setState` 无效），表现为“同步 0 元素、等待 1s 也不出现”。真实浏览器里同样的路径会在组件卸载后泄漏一条永不关闭的 WS。
+- [x] 为什么只在 Windows CI 出现：该文件本地约 0.8s 跑完，1s 定时器落在测试结束之后；Windows CI 上文件耗时 3.05s，幽灵重连正好落在测试执行窗口内并抢占后续用例。Ubuntu/macOS 更快，因此一直未见。
+- [x] 先 RED 后 GREEN：在 `extension/tests/ws-client.test.ts` 新增“断线重连已排定后 close() 仍要取消定时器”，旧实现 `expected 2 to be 1`（60s 推进后确实新建连接），其余 4 条通过；修复后 5/5 通过，原“断线后指数退避重连，close() 后不再重连”保持通过。
+- [x] 修复：`BridgeClient` 保存 `reconnectTimer`，`close()` 取消并置空；退避回调执行前先清引用；`connect()` 主动重连前也取消待定退避，避免并行连接。bridge 侧 `embedded-terminal.ts` 已有等价的 `unref` + close 清理，无需改动。
+- [x] 测试可诊断性：`app-tool-flow.test.tsx` 的 `mountApp` 不再盲取 `instances[0]`，改为只认本次挂载后新建的实例；出现 0 个或多于 1 个都直接抛出带原因的显式错误，避免同类幽灵连接再次表现为“神秘 0 元素”。
+- [x] 本地复验（Node 22.23.5，与 CI 同版本）：extension 25 文件 / 185 项通过（含一次性幽灵 socket 探针 1 文件 2 项，用于验证旧 harness 在实例抢占下的症状与新取值方式；探针待确认后删除）、`tsc --noEmit` 通过、production build 3.03 MB 通过；`ws-client.test.ts` 5/5、`app-tool-flow.test.tsx` 42/42。
+- [ ] 尚未提交/推送；需用户重新打 tag 复验 CD 三平台门禁与后续构建/发布。
+
+### 插件终端滚轮必须先点「可滚历史」修复（2026-11-15）
+
+- [x] 用户实测（Windows，d50c533 之后重新构建）：插件终端打开后滚轮完全没有反应，必须点「可滚历史」导出一次才有可滚内容；导出后即使取消历史视图也一直能滚；macOS 同一构建打开即可滚。历史 E2E 只在点过「可滚历史」之后用 `Input.dispatchMouseEvent` 验证过滚轮，因此没有覆盖“未导出前”的真实场景。
+- [x] 根因：Claude Code 主画面原地重绘，不会把完整对话留在 xterm scrollback；normal 缓冲区 `baseY === 0` 表示视口上方没有任何历史行，xterm 收到滚轮也无处可滚。导出把 transcript 打印进正常缓冲区后才产生 scrollback，所以表现为“点按钮才能滚”。alternate 缓冲区（CLI 自带详细历史视图）由 xterm 转成方向键交给 CLI，不受影响。
+- [x] 先 RED 后 GREEN：`extension/tests/terminal-page.test.tsx` 新增 4 条用例——无原生历史时上滚自动发 Ctrl+O 并吞掉该次滚轮；已有历史/向下滚/alternate 缓冲区仍交回 xterm；滚轮导出成功后等到 `baseY` 增长再 `scrollPages(-1)`（按钮导出不自动翻页）；导出超时后 8s 冷却，滚轮不连续打断 CLI。修复前 4 条均因 `attachCustomWheelEventHandler` 从未接线而失败，修复后 14/14。
+- [x] 最小修复：`TerminalApp` 注册 `attachCustomWheelEventHandler`，仅在「上滚 + 已连接 + 非导出中 + normal 缓冲区 + `baseY === 0`」时执行与按钮相同的 `exportScrollback(true)` 并返回 false；失败记录冷却时间；成功后最多轮询 3s 等 transcript 落进 scrollback，再向上翻一页，让第一次滚轮就有可见反馈。按钮路径行为不变；“可滚历史”按钮改为显式 `() => exportScrollback()`，避免 click 事件被当作 `fromWheel` 参数。
+- [x] 本地复验：extension 25 文件 / 189 项通过（含一次性幽灵 socket 探针 2 项，待确认后删除）、`tsc --noEmit` 通过、production build 3.03 MB 通过。`docs/guide.md` 与终端页脚同步为“直接向上滚轮自动导出”。
+- [ ] 未在真实 Chrome + 真实 CLI 的 Windows 环境复验“打开即滚”；需要用户用新构建实测，若自动导出被 CLI 快捷键拦截需回报实际画面。尚未提交/推送。
+
+## 2026-11-14 macOS 实机调试交接（总状态：未完成）
+
+> 下文各日期章节保留当时的历史状态；当前结论以本节和 [RETURN-REPORT](2026-11-14-macos/RETURN-REPORT.md) 为准。
+
+- [x] 原始系统 Terminal.app 故障已分别取得真实 Release RED、直接请求 `TERMINAL_CHILD_IDENTITY`、中文 Locale 身份解析 RED，并以只对 `ps` 子进程固定 `LC_ALL=C` 的最小修复转 GREEN；两个生产入口同时保留脱敏固定错误码。
+- [x] 最终 v4 已通过真实 Terminal.app 的隔离假 CLI 全流程，以及真实 Claude Code CLI 2.1.325 + `127.0.0.1` 假上游的启动、输入、回复、Hook、退出和清理；未调用真实 API。
+- [x] 独立复现并修复首次关窗后第二次打开失败：普通 lease 的 `handle.close()` 不再关闭共享 backend，桥接最终退出仍通过 `closeEmbedded()` 统一关闭。该缺陷发生在窗口成功创建之后。
+- [x] 最终 production 扩展在真实 Chrome 侧边栏和独立窗口通过 WS、node-helper PTY、xterm、输入输出、复制粘贴、resize、连续输出、滚动、二次打开、刷新与清理；该轮使用隔离假 CLI。
+- [x] bridge 40 文件 / 444 项（38 文件 / 440 项通过，2 文件 / 4 项跳过）、extension 24 文件 / 180 项、两端 typecheck、扩展 production build、DMG CRC、严格 ad-hoc 签名、arm64 和 node-helper PTY smoke 均通过。
+- [ ] **原始“插件终端窗口创建失败，未启动 Claude”未复现、未定位，缺少有效原始 RED→GREEN；因此整体交接仍是未完成。** 实机功能全绿与二次打开修复都不能替代该完成条件。
+- [ ] macOS Bun 直路线仍为 `initial-size_TIMEOUT`，最终路线为 node-helper；不宣称 Bun 直路线通过。未创建 tag、Release 或推送。
+
+### Windows 独立复验（2026-11-14，已通过）
+
+- [x] 在安全展开、路径/类型/敏感文件检查及完整差异审查后，使用 lockfile 固定依赖独立复验：bridge 40 文件通过、443 项通过 / 1 项 Darwin 专项跳过，启动器 8/8；extension 24 文件 / 180 项通过；两端 typecheck 和扩展 production build 通过。
+- [x] 返回源码的新 Windows 编译产物选择 `bun-node-pty`，初始尺寸、输入回显、连续输出、中文、resize、退出码 7 及项目树外隔离均通过。新绿色单 exe 为 54,138,368 bytes，SHA-256 `bb80fa8ecb709b33f8e2671d5bf4f3142930d6eb5158a13284113453b4c5f64f`，payload SHA-256 `6230ff7fb0ce0f75eb8ecf0f41b65bc9da8df53be0fa6a160be0ae9d518aaffa`。
+- [x] 新构建绿色单 exe + 真实 Chrome + 隔离假 CLI 的完整双终端验收退出码 0、`ok=true`：43 项功能断言为真，覆盖首次窗口、WS open/attach、PTY/xterm、ASCII、中文、IME、复制粘贴、连续输出、132×36 resize、Hooks、双视图只读、重连、刷新、缺帧、异常恢复、系统终端互斥与正常退出。`runtimeErrors=[]`、`hookFailures=[]`、`upstreamRequests=0`、`realApiCalled=false`，cleanup remaining/errors 双空。
+- [x] 首次关窗后，驱动继续完成第二至第六次 `openFreshEmbedded()` 及后续恢复夹具；结果未出现 `PTY_BACKEND_CLOSED`，后续 lease 和刷新后的新 lease 均有效。初始插件窗口、中文/IME、132×36 resize 与系统终端四张关键截图已人工查看。
+- [x] 本轮证据：`D:/ccc-fast-final-verify-20261026/tool-history-20261027/dual-terminal-20261110/macos-return-20261114/windows-e2e-01/embedded-verification.json`。全程使用独立配置、端口、Chrome profile、工作目录和本机假上游，未停止或替换用户桥接，未调用真实 API。
+- [ ] Windows 复验通过不证明原始 macOS 插件窗口创建故障已修复；该故障仍按 Mac 返回报告保持未复现、未定位。本轮未重新执行 Windows 真实 CLI resume 专项，沿用上述历史真实 CLI 2.1.316 证据，不把它冒充为本轮结果。
+
+## 双终端阶段 A：系统终端续聊（2026-11-10，Windows 验收完成）
+
+- [x] 共用 lease、Session Hooks、TranscriptWatcher 与结构化历史镜像；系统终端独占期间侧边栏和独立窗口只读，草稿与历史分页保留，服务端拒绝全部写操作。
+- [x] Windows 优先打开 Windows Terminal，不可用时回退可见系统控制台并显示提示。生产压缩包使用同目录双 exe：GUI `ccc-bridge.exe` + Console `ccc-terminal.exe`，不再复用 GUI 托盘作为交互终端，也不修改发行 PE 头。
+- [x] `/clear`、`/resume`、fork、compact 由有效 command Hook 驱动；普通外部终端新会话只刷新列表，不抢占接管镜像。10 秒无有效 SessionStart 进入 degraded，保持只读且不猜 sessionId；真实进程退出按“最终镜像 → 恢复最后确认会话 → idle”处理。
+- [x] 系统 lease 跨桥接重启恢复；进程身份使用 PID + 可执行路径 + OS 启动时间核对，unknown 保持只读并要求人工解除，人工解除不杀进程。
+- [x] 最终自动回归：桥接 27 个测试文件、342/342 项通过；扩展 20 个测试文件、158/158 项通过；两端 typecheck、扩展 production build 和 Windows 双 exe 构建退出码均为 0。
+- [x] 有效 Hook 负控：`red-final-2/red-result.json` 非零退出并准确失败于 `clearFollowedNewSession=false`，不是准备阶段或脚本错误。
+- [x] 最终正常验收：`final-run-2/system-verification.json` 全部 required=true，`commandHooksWithoutFailure=true`、`hookFailures=[]`、`runtimeErrors=[]`、`consoleSubsystemProbe=false`、`loopbackRequests=0`、`realApiCalled=false`。真实 Windows Terminal、回退 Console、`/clear` 和 Chrome 双视图截图均已人工查看。
+- [x] 最终证据汇总：`D:/ccc-fast-final-verify-20261026/tool-history-20261027/dual-terminal-20261110/system-verification.json`。验收隔离副本与最终 dist 双 exe 逐字节一致；全程使用隔离假 CLI 和本机假上游，未调用真实 API，未停止或替换用户正在使用的桥接。
+- [ ] macOS Terminal.app 尚无真实运行证据，保持未验收。
+
+## 双终端阶段 B：插件独立终端（2026-11-10 起）
+
+- [x] 原生依赖与真实 PTY 路线探针：锁定 `node-pty@1.1.0`，Windows 真实编译产物选择 `bun-node-pty`，Node helper 回退也已实现；输入、连续输出、中文、132×36 resize 和退出码均经探针验证。
+- [x] 内嵌终端复用唯一 `TerminalLeaseManager`：输出使用 leaseId + 单调 seq，有界缓冲重放，attach/input/resize 严格校验；独立持久化记录 PID + executable + startedAt，unknown 不猜杀。
+- [x] 独立 `terminal.html` + xterm.js：认证后 opened → attached → 重放，支持中文/IME、fit/resize、pagehide 和结束按钮；attachToken 只在原页面内存，3 秒重连宽限后清理 owned PTY，输出缺口保留明确错误。
+- [x] Windows 完整发行布局：双 exe、`pty/`、`pty-manifest.json` 及按路线需要的 `runtime/`；项目树外真实 PTY 冒烟和缺文件负控通过，CI/Release 已接原生硬门槛但尚未宣称云端运行通过。
+- [x] 最终双终端真实 Windows 验收与文档：`embedded-green-27` 与补全截图后的 `embedded-green-28` 均退出码 0、全部必需项为 true；覆盖正常链路、Hooks、双视图、中文/IME、132×36、重连、刷新、缺帧、关闭、三类异常恢复、原生失败后系统终端与普通聊天。`runtimeErrors=[]`、`hookFailures=[]`、`upstreamRequests=0`、`realApiCalled=false`，cleanup remaining/errors 双空；关键真实截图已人工核对。最终 bridge 35 文件 403/403、extension 24 文件 173/173、两端 typecheck、扩展 production build 和原生布局/SHA-256 校验通过。
+- [ ] macOS Terminal.app、原生 PTY、签名与真实窗口均无实机证据，保持未验收。
+
+## 真实 Claude Code CLI 会话恢复补验（2026-11-11，Windows 已完成）
+
+- [x] 不再把隔离假 CLI 的 `resumedCorrectSession=true` 当作真实 CC 恢复证据；真实 CLI 2.1.316 的 `real-cli-resume-20261111-03/04` 均证明恢复请求携带首轮用户与助手独特标记、消息数由 2 增至 4，并继续写入同一 sessionId，全程只访问 `127.0.0.1` 假上游，未调用真实 API。
+- [x] 真实双终端完整补验：`real-cli-dual-terminal-20261111-12` 退出码 0，插件终端与 Windows Terminal 都完成真实 `--resume`、有效 resume Hook、旧用户/旧助手上下文、同一 JSONL、双视图镜像和退出恢复。系统关窗采样仍为包装 PID 消失且无 exit.json，但关窗后的新 idle 正常到达，双视图恢复可写并保留草稿；`realCliSystemExitRestored=true`、`realCliBridgeShutdownClean=true`，cleanup remaining/errors 双空。两张真实截图已人工核对，三轮请求分别包含 2、5、7 条消息，`realApiCalled=false`。
+- [x] 系统关窗缺陷 RED→GREEN：第 11 轮证明旧适配器只等 exit.json，导致包装进程已消失时 lease 永久 active；新回归先以退出回调 0 次失败，最小修复后聚焦 6/6。生产仅在无退出文件且包装 PID 明确 ESRCH 时补发退出，存活或查询未知不释放。修复后完整假 CLI 双终端 `embedded-post-system-close-fix-20261111-01` 全部 33 项通过，hook/runtime 错误与 cleanup 残留均为零；bridge 35 文件 405/405、extension 24 文件 173/173、两端 typecheck 和扩展 production build 通过。
+- [ ] macOS Terminal.app、原生 PTY、签名和真实窗口仍无实机证据；GitHub Runner 后续已在 CI #42 实际执行，见下方跨平台修复记录。
+
+## Windows 绿色单文件（2026-11-11，真实双终端与生命周期已完成）
+
+- [x] Windows 公开产物改为唯一 `CopilotCC.exe`：压缩内嵌完整双 exe、PTY 和 manifest，1 MiB 固定块跨文件去重；当前实测 54,134,272 bytes（约 51.6 MiB），SHA-256 `9a32c30310efdf9b4b6eda17387a34a1687264e72269972494b99820f0995598`，不是安装包，exe 旁无任何附属文件。
+- [x] 私有运行目录按 payload SHA-256 隔离，启动先清理带 CopilotCC 标记的旧版本和 staging，再校验或原子发布当前组件；完整版本复用、损坏重建、并发 Mutex、深路径、活跃/未知/foreign/junction 保护均有自动与真实生命周期证据。
+- [x] 原生深目录修复：真实探针证明 Bun 对 258 字符 `conpty.node` 的普通 LoadLibrary 失败、250 字符对照成功；发行 `node-pty/lib/utils.js` 使用扩展路径 `process.dlopen()` 同时覆盖 conpty 和关闭时 fork 的 conpty_console_list。后端与打包测试先 RED 后 GREEN，未采用同样受 MAX_PATH 限制的 `useConptyDll`。
+- [x] 新 payload 真实 CLI `portable-real-cli-dual-terminal-20261111-02` 退出码 0：真实 CLI 2.1.316 在插件终端和 Windows Terminal 均完成 resume、旧用户/旧助手上下文、同一 JSONL 镜像、退出恢复；单文件/内层身份/真实托盘退出/桥接正常关闭均为 true，三次本机假上游请求消息数为 2、5、7，`realApiCalled=false`，cleanup 双空。
+- [x] 新 payload 完整假 CLI `portable-embedded-green-20261111-04` 退出码 0：33 项终端行为及便携单文件、运行身份、正常退出全部 true，覆盖中文/IME、132×36、Hooks、双视图、重连、刷新、缺帧、异常恢复与原生失败隔离；`runtimeErrors=[]`、`hookFailures=[]`、`upstreamRequests=0`，cleanup 双空。真实终端截图已人工核对。
+- [x] 新 payload 生命周期 `portable-lifecycle-20261111-06` 退出码 0、`ok=true`：15 项必需断言全部通过，包括先清理再解压、旧版本/staging 回收、活跃/未知/foreign/junction 保护、篡改重建、重复启动有界、无 sidecar、GUI subsystem 和当前哈希一致。源 exe 与验收副本 SHA-256 均为 `9a32c303…5598`，cleanup remaining/errors 双空。第 05 轮 `PrintWindow` 虽成功却抓到未绘制黑帧，未采用为视觉证据；第 06 轮增加客户区像素门槛后，截图已人工确认“正在解压当前组件”和绿色进度条真实可见，未修改生产启动器或增加人为延时。
+- [x] 当前最终回归：bridge 38 个测试文件 422/422、extension 24 个测试文件 173/173，两端 typecheck 和扩展 production build 通过；构建仅有既有大 chunk 警告。生命周期根目录策略已接入本机白名单与 GitHub `RUNNER_TEMP` 严格子目录，CI/Release 配置已改为构建、验收并只发布单 exe。最终聚焦 6 文件 46/46、启动器 8/8、bridge typecheck、原生布局/SHA-256、工作流 YAML 与 20 个 shell 段语法、脚本语法及 `git diff --check` 均通过。
+- [ ] macOS 实机仍未验收；CI #42 已实际运行新配置但 Ubuntu/macOS 共同测试步骤失败，后续平台步骤未执行。修复后的三平台结果、tag 与 Release 仍待验证，不能宣称云端 Release 已生成。
+
+## 双终端交互缺陷修复（2026-11-11，Windows 已完成）
+
+- [x] 系统终端：20 秒慢启动窗口 + status/start/cancel 握手，避免先报失败后迟到窗口失去 lease；真实失败仍明确结束。`interaction-fix-system-05` 中受控慢启动 9637ms 后成功且无错误，最终超时后的迟到 child 有 cancel、无 start，交互式 CLI 启动数保持为 0；回退控制台、Hooks、只读镜像、退出恢复、重启恢复与定向清理全部通过。
+- [x] 侧边栏：新打开和 `terminal.opened` 清旧启动错误，后续新错误不被误清。插件终端提供复制/粘贴按钮、选择感知 Ctrl+C、Ctrl+Shift+C/V 和明确反馈；真实 CLI 的「可滚历史」先确认 detailed transcript，再发送 `[` 导出，普通画面不会误发导航键。
+- [x] 真实 CLI 单 exe `interaction-fix-real-portable-02` 退出码 0：插件终端与 Windows Terminal 均真实恢复旧上下文并同步镜像，Ctrl+C 中止本机延迟请求后可继续会话；导出后 xterm scrollHeight 526→6222，向上滚轮 scrollTop 5696→4976、向下 4976→5696，且没有滚轮方向键进入 PTY。单文件身份、正常托盘退出、桥接清理均通过，`realApiCalled=false`、`runtimeErrors=[]`、cleanup 双空，三张关键截图已人工核对。
+- [x] 最终完整假 CLI 单 exe `interaction-fix-embedded-05` 退出码 0且 `ok=true`：真实剪贴板多行复制、Ctrl+C/Ctrl+Shift+C 选区复制、按钮/Ctrl+Shift+V 中文多行粘贴、IME、132×36 resize、Hooks、折叠、重连重放、关闭/刷新/异常恢复、双终端互斥及便携正常退出全部通过；`commandHooksWithoutFailure=true`、`realApiCalled=false`、`runtimeErrors=[]`、cleanup 双空，四张关键截图已人工核对。
+- [x] 最终静态回归：bridge 38 个测试文件 427/427、extension 24 个测试文件 180/180，两端 typecheck 和扩展 production build 通过；绿色单 exe 为 `bridge/dist/portable-win-x64/CopilotCC.exe`（54,134,784 bytes，约 51.6 MiB）。macOS 实机与真实 API 中转仍未验收；GitHub Runner 已运行 CI #42，失败分类与修复见下节。
+
+## GitHub Actions #42 跨平台测试修复（2026-11-12，本地修复完成）
+
+- [x] 真实 CI #42（run `43058589061`，提交 `d4ce58f`）已核实：Windows 通过；Ubuntu 与 macOS 均为 5 个测试文件失败、25 项失败、398 项通过、4 项跳过。普通 stderr、开发模式 Origin 警告和故意注入的 `boom-测试异常` 不是失败根因。
+- [x] 其中 12 项是通用夹具使用 `C:/work` 等 Windows 路径，POSIX 的 `path.isAbsolute()` 合法拒绝；通用夹具改用 `path.resolve(...)`，保留生产绝对路径校验、相对路径负测试和 Windows 长路径专项。
+- [x] 另外 13 项是 WS 测试只注入假终端运行时、未注入 CLI 路径，真实 CLI 解析在假运行时之前返回 `CLI_NOT_FOUND`；`ServerDeps.terminal.resolveCli` 增加可选测试注入点，生产缺省仍为 `resolveClaudeExecutable`。两个新增注入值断言先在本机 RED（2 项失败、18 项通过），最小实现后 20/20 通过。
+- [x] 本地回归：原失败五文件 36/36，bridge 38 文件 427/427、启动器 8/8，extension 24 文件 180/180；两端 typecheck 与扩展 production build 均通过，仅有既有大 chunk 警告。
+- [x] 六文件修复已以用户本人身份提交并推送 `main`：`1123bea`（`修复跨平台终端测试环境依赖`），无共同作者或 AI 署名。其真实结果为 CI #43，不能沿用旧 #42 或本地 Windows 结果代替 POSIX 证据。
+
+## GitHub Actions #43 与 PTY 回退修复（2026-11-12，本地修复完成）
+
+- [x] CI #43（run `43067186158`，提交 `1123bea`）第一次 macOS 尝试因托管容量未获 Runner，`runner_id=0`、`steps=[]`，结论是 `cancelled` 而非测试失败；仅重跑失败项，未改代码或触发 Release。
+- [x] 第二次尝试中 Ubuntu、Windows 完整通过；Windows 的共同测试、真实 PTY、完整发行布局、项目树外 smoke、绿色单文件、启动器、项目树外生命周期及扩展步骤均为 `success`。macOS 共同单测 423 通过、4 跳过，证明 #42 的测试准备修复已在 POSIX 生效。
+- [x] macOS 随后在真实 PTY 准备阶段失败：Bun 路线报告 `posix_spawnp failed` 后，`auto` 回退 helper 又向同一 `pty/node_modules` 复制依赖，被 `node-pty/LICENSE` 的 `EEXIST` 阻断。该 Bun 错误不是最终原生路线结论，helper 当时尚未进入真实 PTY 行为验证。
+- [x] 新增 `stagePtyDependencies()`：两个包完整复制后才写完成标记，回退复用完整结果；无标记的同名目录明确报 `PTY_PROBE_DEPENDENCIES_INCOMPLETE`，不静默接续半成品。聚焦回归先因模块不存在 RED，实现后 2/2；跨目标负探针只证明回退不再发生复制冲突，不证明 macOS 原生行为。
+- [x] 新实现下 Windows 真实 PTY 选择 `bun-node-pty`，初始尺寸、输入响应、连续 tick、中文、resize、exit 7 六项行为及 CWD/原生依赖双隔离全部通过。完整回归为 bridge 39 文件 429/429、启动器 8/8、extension 24 文件 180/180，两端 typecheck 与扩展 production build 通过。
+- [ ] 按已获授权提交并推送本轮探针修复后，读取新 SHA 对应的三平台 CI，重点确认 macOS helper 真正越过暂存并进入原生行为验证。macOS Terminal.app、真实窗口、签名和产品交互仍需实机验收；不打 tag、不发布 Release。
+
+## GitHub Actions #44 与 Darwin 执行位修复（2026-11-12，本地修复完成）
+
+- [x] `e4f1a75570c26a387b4b7620065879fa5bce3b8b`（`修复 macOS PTY 回退重复暂存`）已提交并推送，对应 CI #44 run `43146771064`：Ubuntu、Windows 成功；macOS 共同测试 425 通过、4 跳过，且不再出现 `EEXIST`，证明回退已真正进入原生 spawn。
+- [x] macOS 两路线随后给出一致原生错误：Bun 在 `stage=spawn` 报 `posix_spawnp failed`，helper 在 `stage=spawn-helper` 报 `SPAWN_FAILED: posix_spawnp failed`。官方 `node-pty@1.1.0` tarball 的 Darwin arm64/x64 `spawn-helper` 均为 `0644`，而文件架构正确；恢复目标副本为 `0755` 是本次修复，不改全局缓存。
+- [x] 项目 CI 明确使用 Node 22，日志为 `node: v22.23.4`。`actions/checkout@v4` / `actions/setup-node@v4` 被强制以 Node 24 运行只是 Action 自身警告，不是项目或 PTY child 升级，也不能解释发布文件缺执行位。
+- [x] 三项回归先取得准确 RED（3 失败、8 通过）：探针暂存未 chmod、发行复制未 chmod、macOS 主机校验接受 `0644`。新增共享权限修复后，暂存在完成标记前恢复执行位，`packagePty()` 修复发行副本，`verifyNativeLayout()` 在 Darwin 主机拒绝无执行位文件；同一聚焦测试转为 11/11。
+- [x] 完整本地回归：bridge 39 文件 432/432、启动器 8/8、extension 24 文件 180/180，两端 typecheck 与扩展 production build 通过，仅有既有大 chunk 警告。项目树外 Windows 真实 PTY 仍选择 `bun-node-pty`，六项行为及 CWD/原生依赖隔离全部通过。
+- [x] `34aab032cc4eb97a59605d7786e750ae84117832`（`修复 macOS PTY 辅助程序执行位`）已提交并推送，对应真实结果为 CI #45；Ubuntu、Windows 成功，但 macOS 共同测试出现新的夹具失败，不能把该提交记作三平台通过。
+
+## GitHub Actions #45 与 Darwin 测试夹具修复（2026-11-12，CI #46 全绿）
+
+- [x] CI #45 run `43152101342`：Ubuntu job `130963441175`、Windows job `130963441176` 成功；macOS job `130963440887` 的共同测试为 1 个文件失败、36 个通过、2 个跳过，1 项失败、427 项通过、4 项跳过。真实 PTY、发行布局、项目树外 smoke、artifact 和扩展后续步骤均未执行。
+- [x] 失败用例为 `auto 回退复用完整暂存，不重复复制或覆盖前一路线`，错误是 `ENOENT ... chmod .../prebuilds/darwin-arm64/spawn-helper`。生产暂存按真实 Darwin 包结构恢复 helper 执行位，而旧用例只创建两个最小依赖包、没有该文件；不是 `posix_spawnp` 再现，也不能据此宣称执行位修复已在 macOS 原生验证。
+- [x] 在 Windows 先只给该用例注入 `platform:"darwin", arch:"arm64"`，复现同一 `ENOENT` RED；随后仅补测试用 `spawn-helper` 文件，不让生产代码忽略缺失的原生文件。聚焦两文件 11/11 和 bridge typecheck 通过。
+- [x] 最新完整回归：bridge 39 文件 432/432、启动器 8/8、extension 24 文件 180/180，两端 typecheck 与扩展 production build 通过，仅有既有大 chunk 警告。本次只修改测试夹具与文档，生产实现不变。
+- [x] `1ee42d0d1f54db49ad7f22ef7b005b86c02af36b` 已提交并推送，对应 CI #46 run `43153732333` 三平台全绿。macOS 共同测试 428 通过、4 跳过；`auto` 在 Bun `initial-size_TIMEOUT` 后回退并选择 `node-helper`，真实 PTY 六项行为与双隔离全 true，发行构建、arm64 布局校验、项目树外 smoke、artifact 和扩展后续步骤均成功。外部 smoke 六项也全 true、`backend=node-helper`。
+- [ ] CI 证据不替代 macOS 实机 Terminal.app、真实窗口、签名、GUI 产品交互或真实 API 中转验收；Bun 直路线仍有 initial-size 超时，不宣称两路线均通过。不打 tag、不发布 Release。
+
+## Release #37 macOS Bundle 签名修复（2026-11-12，已获完整修复与云端复验授权）
+
+- [x] 读取 Release run `43164913706` / macOS job `131004800910`：内层 `pty.node`、`spawn-helper`、Node、托盘与主程序均已执行签名，失败发生在随后外层 `.app` 签名；`In subcomponent: .../node-addon-api/node_addon_api.gyp` 后退出 `CODESIGN_FAILED: exit 1`，publish 未执行。
+- [x] 根因定位为新增 `Contents/MacOS/pty/node_modules` 把 `.gyp`、JS、JSON 等非代码文件带入代码签名区。Apple TN2206 与 Code Signing Tasks 明确要求代码位置不得放任意数据；普通 CI 未运行整包 codesign，因此 CI #46/#47 全绿不能覆盖该 Release 环节。
+- [x] 运行时链路已核对：`.app` 当前从 `Contents/MacOS` 读取 manifest、Node 和 helper；node-pty 的 `native.dir` 同时决定 `spawn-helper` 路径。安装脚本还包含 chmod、签名校验和失败重签，修复必须同步这些路径，不能只加 `--deep` 或删除单个 `.gyp`。
+- [x] 严格 RED→GREEN：首轮固定旧 Bundle 非代码布局拒绝、`.app` Resources 路径解析、Darwin 发行加载器与 helper Node 路径，取得 4 项准确失败；真实 staging 测试再因模块不存在取得 1 项 RED。实现后聚焦 45/45。
+- [x] 完整本地 bridge 39 文件 437/437、启动器 8/8、extension 24 文件 180/180，两端 typecheck、扩展 production build、Node/shell 语法、CI YAML 和 `git diff --check` 通过；普通 macOS CI 已增加真实 `.app` codesign、签名后项目树外 PTY smoke 与 DMG 构建门禁。
+- [x] 项目树外 Windows 复验 `release37-signing-fix-win-01`：显式使用已核验 Node 22.23.4，`auto` 选择 `bun-node-pty`，六项行为与 CWD/原生依赖双隔离全 true；完整发行布局、SHA-256 和外部 `ccc-terminal.exe --pty-smoke` 也通过，外部六项行为全 true。
+- [x] `88f805d14b6d568b2d5a557b7cda46da6df924a9` 已以用户本人身份提交并推送 `main`，无共同作者或 AI 尾注。CI #48 run `43173448220` 三平台全绿；macOS job `131031961213` 的真实 `.app` 签名、签名后外部 PTY 与 DMG 步骤成功，artifact 与扩展步骤也成功。未登录环境的原始日志接口返回 403/404，以上云端结论按 GitHub API 的 run/job/step 状态记录，不声称已读取日志正文。
+- [ ] 不创建 tag、不重发 Release；macOS 实机 Terminal.app、真实窗口、GUI 产品交互与真实 API 中转仍未验收，Bun 直路线仍不宣称通过。
+
+## Release #38 artifact 汇总修复（2026-11-12，本地修复完成）
+
+- [x] 直接读取用户提供的 `logs_116921597043.zip`：run `43177539200`、tag `v2026.11.12.2`、SHA `c59c36d82c615f198e6a859ba53bbe91c5c74be1`。macOS codesign 深校验、签名后完整复制包 PTY 六项行为与 DMG 均成功，Windows 和扩展构建及五个 artifact 上传也成功。
+- [x] 真正失败位于 publish：`download-artifact@v4` 找到 5 个 artifact，却把多行 `bridge-*\nextension` 作为单个 Minimatch，下载 0 个；随后 `ls assets/` 报目录不存在并退出 2，`gh release create` 未执行。该结论来自原始日志和该 Action 固定 SHA 的源码，不再以普通 CI 成功替代 CD 证据。
+- [x] 新工作流回归先取得准确 RED（仅有多行 pattern、没有三个固定 name）；改为分别按 `bridge-win`、`bridge-mac`、`extension` 下载到同一 `assets/`，缺任一名称直接失败，也不纳入两个 PTY 探针报告。实现后聚焦 1/1 与 YAML 解析通过。
+- [x] 完整本地回归：bridge 40 文件 438/438（含启动器 8/8）、extension 24 文件 180/180，两端 typecheck 与扩展 production build 通过，仅有既有大 chunk 警告。
+- [x] `1fb226bafc7ac8ee33b94a65f8579cbeb8958304` 已提交推送，对应 CI #50 run `43181108593` 三平台成功；macOS job `131057021655` 的真实签名、签名后 PTY 与 DMG 门禁再次成功。云端结论按公开 API 的 run/job/step 状态记录，未读取本轮原始日志。
+- [ ] 新配置尚未由 tag Release 实际执行；本轮不创建 tag、不重发 Release，普通 CI 结果不能冒充 CD publish 端到端通过。
+
+## 别名主行打开当前文件夹（2026-10-31，已完成）
+
+- [x] 真实根因：`openInFileManager` 用 `windowsHide:true` 启动 `explorer.exe`，桥接虽返回 `folder.opened`，Windows Shell 却报告新窗口 `Visible=false`。只将该项改为 `false` 的对照实验中，目标窗口变为 `Visible=true`；不是扩展未发请求，也不是运行了旧桥接。
+- [x] 修复与入口：Explorer 启动显式保持 GUI 可见；📂 按钮移到别名主行，无需展开详情，复用现有无参数 `folder.open` 和服务端当前别名/绑定目录解析。详情区旧入口移除，成功反馈在主行下方显示，`folder.error` 仍在消息区可见。
+- [x] TDD：桥接新回归先因实际参数 `windowsHide:true` 与预期 `false` 不符而 RED；扩展两个主行用例先因按钮不存在而 RED，最小修改后转 GREEN。另覆盖未绑定禁用、详情展开后仍只有一个入口及失败错误可见。
+- [x] 自动验证：桥接 17 个测试文件、291/291 项通过；扩展 19 个测试文件、149/149 项通过；两端 typecheck、Windows exe 与扩展 production build 通过，扩展仅有既有大 chunk 警告。
+- [x] 真实 Windows/Chrome 验收：使用新 dist exe、独立 `CCC_BRIDGE_HOME` / `CLAUDE_CONFIG_DIR` 和真实扩展，在详情始终收起时点击主行 📂；两个别名各发送一帧无参数 `folder.open`，分别收到正确目录的 `folder.opened`，主行仅一个按钮且 runtimeErrors=[]。Windows Shell 确认两个目标窗口均为 `Visible=true`，截图与结果位于 `D:/ccc-fast-final-verify-20261026/tool-history-20261027/folder-open-20261031-final-2`。未调用真实 API，未停止或替换 Desktop 当前桥接。
+- [x] 发布追查（2026-11-03）：远端 `v2026.10.31.2` 指向 `72b188b`，该 tag 的源码和用户实际运行的 CI exe 均仍为 `windowsHide:true`；修复当时只在未提交工作区，CI 按 tag 构建并无漏文件。旧 Release 不回改，修复必须由新提交和新 tag 发布。
+- [ ] 新版发布验收：推送本次提交并发布 `v2026.11.03.1` 后，核对 Windows CI 资产内的 Explorer 启动参数为 `windowsHide:false`，再下载干净环境验证真实窗口可见；发布前不得宣称线上版本已修复。
+
+## GitHub 首页与 Release 说明（2026-10-31）
+
+- [x] README 改为简洁项目首页：定位、CI/下载/许可证/平台徽章、真实界面主图、三平台下载、核心亮点、快速上手和文档入口；完整说明不因首页精简而删除。
+- [x] 原详细内容拆分为 `docs/guide.md`（安装、功能、交互矩阵、安全与 FAQ）和 `docs/development.md`（架构、开发、测试、发布与验证边界）；Markdown 本地链接检查通过。
+- [x] 首页功能图采用用户提供的 `捕获.JPG` / `捕获1.JPG`：第一张展示当前网页与侧边栏问答，第二张展示独立窗口、原网页指向和双视图会话；分别整理为 `docs/img/main.png` / `docs/img/popup.jpg`。原截图保持不变且不提交，文档图片不含配对串或 API 密钥。
+- [x] Release 改为读取完整 Git 历史，自动组合固定下载说明、上一 tag 至当前 tag 的非合并提交列表和 compare 链接，不再只依赖 PR 驱动的 `--generate-notes`。同一段 shell 已 dry-run，实际生成包含提交条目的 Markdown；Bun YAML 解析和 `bash -n` 通过。
+- [ ] 未实际打 tag 或改写已有 Release；新正文逻辑待下一个 `v*` 标签执行真实 GitHub 发布端到端验证。
+
+## 会话交互与 CMD 可见信息完整性（2026-10-31，已完成）
+
+目标：非技术用户无需 CMD 也能完成 Claude Code 的选择、审批与计划流程；CMD 会话中用户可见的文字、选择结果和状态均进入插件中文时间线。关键结果直接显示，长输出、diff、原始参数等完整折叠，不静默丢弃。
+
+- [x] Task 0：真实 CLI 探针与 CMD 可见信息基线；覆盖计划模式、Ask 扩展字段、工具结果、UserDialog、MCP elicitation 和实际能力清单。
+- [x] Task 1：共享 TimelineItem / InteractionRequest / InteractionRecord；Map 并发挂起、统一 settle、迟到响应与快照一致性。
+- [x] Task 2：Ask 作答结果和权限裁决持久显示；双视图、重载、历史恢复与完整详情。
+- [x] Task 3：CC 实际 permissionMode、ExitPlanMode 专用审批、完整计划与退回反馈；空审批回调按 toolUseId 恢复完整输入。
+- [x] Task 4：工具结果、错误、运行状态、正文与工具真实顺序；长内容折叠不截断，Edit structuredPatch 实时/历史均恢复完整 diff。
+- [x] Task 5：历史分页、完整正文、在途快照与转录/侧车去重合并；工具执行和交互决定不再互相覆盖。
+- [x] Task 6：UserDialog、MCP form/url elicitation 专用流程；未适配的 requiresUserInteraction 工具安全拒绝，未实测能力明确标边界。
+- [x] Task 7：README/TODO、全量测试/typecheck/selftest/build、隔离 exe + 本机假上游 + 双 WS + 真实 Chrome 验收。
+- [x] 全程不调用真实 API，不停止或替换 Desktop 当前桥接，不自动 commit/push/tag。
+
+最终自动验证（2026-10-31）：
+
+- [x] 桥接 16 个测试文件、290/290 项通过；扩展 19 个测试文件、146/146 项通过；两端 TypeScript typecheck 通过。
+- [x] 桥接离线 selftest 通过，未调用真实 claude/API；扩展 production build 通过，仅有既有的大 chunk 警告。
+- [x] Windows x64 与 macOS arm64 exe 构建通过：`bridge/dist/ccc-bridge-win-x64/ccc-bridge.exe`、`bridge/dist/ccc-bridge-darwin-arm64/ccc-bridge`。
+- [x] Ask 真实 Chrome 最终验收：多题、单选、多选、Other 和自定义答案在 A/B 双视图及重载后完整保留，无多余通用工具活动，runtimeErrors=[]；`D:/ccc-fast-final-verify-20261026/tool-history-20261027/exe-chrome-ask-1793386528176/ask-chrome-result.json`。
+- [x] refusal UserDialog 真实 Chrome 验收：实际选择持续显示，A/B、重载及同端口桥接重启恢复通过，内部安全分类器说明未冒充用户气泡，360px 无横向溢出；`D:/ccc-fast-final-verify-20261026/tool-history-20261027/exe-chrome-user-dialog-1793385765156/user-dialog-chrome-result.json`。
+- [x] 工具详情/错误/分页真实 Chrome 验收：120 行长输出完整、Edit diff 实时/A/B/重载后完整、Read 失败状态和错误详情可见、加载更早记录不重复不丢最新，runtimeErrors=[]；`D:/ccc-fast-final-verify-20261026/tool-history-20261027/exe-chrome-tool-details-1793390063402`。
+- [x] 计划/权限真实 Chrome 验收：两份计划分别退回和批准，完整计划、planFilePath、反馈和实际模式正确；Write 拒绝无副作用、允许真实写入，正文→工具→决定→正文顺序及重载恢复通过，手动拒绝显示「操作未获批准」，runtimeErrors=[]；`D:/ccc-fast-final-verify-20261026/tool-history-20261027/exe-chrome-plan-permission-1793390189374`。
+- [x] MCP 真实 CLI 原始控制通道探针：form/url elicitation 均出现，url 后续收到 elicitation_complete，errors=[]、exitCode=0；`D:/ccc-fast-final-verify-20261026/tool-history-20261027/task0-raw-elicitation-1793370963300/summary.json`。
+- [x] compact summary 与 Task 报告修复：内部压缩摘要不再冒充用户消息或污染会话标题；同一压缩的实时/转录记录按同文案和 1 秒事件窗口合并，相隔 60 秒的同文案压缩不误去重。实时及历史 Task 长报告均只显示任务状态，完整报告与元数据默认折叠；历史只认 `turnOrigin` / `origin.kind` 内部标记，用户手输相似 XML 仍保留用户气泡。新增测试均先取得有效 RED 再转 GREEN。
+- [x] compact/Task 首轮真实 Chrome 验收：新 dist exe + 真实 CLI + 本机假上游，A/B 双视图在实时及原生重载后均只有一条压缩记录，摘要不冒充用户或普通助手气泡，Task 报告默认折叠且可展开，压缩后普通问答正常，runtimeErrors=[]；截图与 `result.json`（ok=true）位于 `D:/ccc-fast-final-verify-20261026/tool-history-20261027/exe-chrome-compact-task-1793420519941`。
+- [x] 摘要完整保留、旧 Task 读取迁移与斜杠命令修复（2026-10-31）：compact summary 通过 `summary.uuid` 与 boundary 的 `compactMetadata.preservedSegment.anchorUuid` 精确关联，完整摘要进入对应记录的默认折叠详情；实时完成帧复用同一转录关联，不再只有重载历史才能看摘要。旧版侧车长 Task 报告在读取合并后规范化，原文与旧元数据均保留且不改写用户历史文件。扩展在网页附带开启时仍把 `/compact` 原文交给 CLI，跳过页面、选中文字、上传说明、`[用户问题]` 与防注入包装；首条斜杠命令不消费 `guardPending`，下一条普通消息仍加防护前缀。
+- [x] 本轮有效 RED：新增实时压缩服务器测试先因 `detail` 为 `undefined` 失败，再修改 `server.ts` 转 GREEN；真实 Chrome 首轮也复现实时记录无摘要详情，修复后实时与重载均通过。普通消息、首条斜杠命令与后续防注入、旧 Task 读取迁移均有对应回归测试。
+- [x] 最终真实 Chrome 验收：真实扩展 UI 在 `attachEnabled:true`、页面正文与选中文字同时存在时发送普通消息、`/compact` 和压缩后普通消息；`/compact` 的实际发送原文只有 `/compact`，普通消息仍完整附带网页。A/B 双视图实时及重载后各只有一条压缩记录，详情默认折叠且含完整摘要，摘要不在用户或普通助手气泡；旧侧车长 Task 重载后显示短状态与完整折叠报告，压缩后问答正常，runtimeErrors=[]。截图与 `result.json`（ok=true）位于 `D:/ccc-fast-final-verify-20261026/tool-history-20261027/exe-chrome-compact-attach-1793437701125`。
+- [x] 真实旧会话只读复查：生产解析器读取 `D--CopilotCC-Dir/c2cd9cfd-4dab-4e5c-822f-eff3692438b6` 共 273 项，4 次压缩均有关联摘要详情（长度 11572、11845、14497、9207），compact summary 作为用户消息的数量为 0；旧 `task-ab15aabdc55bfc5d5` 已迁移为短状态，3071 字完整报告进入详情。未改写真实转录或侧车。
+- [ ] 未验证边界：auto_mode_server_fallback 仅完成契约/单元链路，未触发真实 CLI 回调 E2E；MCP form/url 尚未完成真实 Chrome 人工填写/提交完整 E2E；当前 init.tools 未启用的 OfferChromeSetup、ShowOnboardingRolePicker、PublishPlugin、ProposeGoal、ProposeSkills 没有专用实现或真实 E2E。没有独立 EnterPlanMode 卡片，实际模式由 CC init/status 真值显示；最终 Chrome 验收未单独触发 EnterPlanMode 工具回调。
+- [x] 测试环境记录：桥接首次全量运行曾在 server.test.ts 的在线改端口用例出现一次 `TypeError: fetch failed` / `bad port`（278/279）；该用例定向复跑及桥接全量复跑均通过，未修改产品代码。此为未再现的瞬时失败，不能宣称根因已定位或已修复。
+
+## 原生 fast 模式（2026-10-26，进行中）
+
+- [x] 协议：原生 fast 类型、settings.set/state/error、fields 显式变更掩码与同步测试（20 个协议测试通过）。
+- [x] 会话：settings.fastMode 启动、applyFlagSettings 运行时切换、init/result 真值与 fastFresh 逐帧新鲜度（32 个会话测试通过）。
+- [x] 工作区：fast-only 不打断当前轮次，多视图设置与状态镜像（40 个镜像测试通过，含 ABA、连续失败、fastOnly、权威执行设置、字段补丁、旧客户端启动序列与交错帧、fastPending 与主动/恢复重置回归）。
+- [x] 扩展：持久化、执行选项行 fast off/on、CC 实际状态和窄栏布局（完整扩展 76 个测试通过，含输入区渲染、设置写队列、settingsRef 权威内存合并、字段补丁与 fastOnly 回归）。
+- [x] CLI 2.1.301 模型一致性：真正 off→on 保存恢复基线并请求 Opus，off 恢复进入 fast 前的模型；重复 on 幂等，seeding/hello 不触发新提升，fast 期间手动或同值模型选择会更新基线。fast 引发的模型变化不重建 Query、不打断在途轮次。
+- [x] 自动档恢复与迁移：提升前保存 CC `applied.model` 的完整实际模型 ID，off 恢复该具体 ID；恢复基线仅由桥接持久化，旧版 fast-on 无基线记录一次性迁移。元数据不可用时回退提升前 init，仍无证据则保留当前模型并给出非致命警告。
+- [x] 状态机边界：新增 15 项服务器提升/恢复测试，覆盖 Sonnet 与自动档往返、跨重启、手动模型、同帧矩阵、失败完整回滚、延迟快照、旧 Query 和在途同值基线更新；多视图与 busy 不变量保留。
+- [x] 自动回归：桥接 194 项、扩展 76 项测试及两端类型检查、桥接离线自检通过；扩展 build/zip 完成，zip 68 条目与构建目录字节一致。协议复制件一致；本轮 Windows exe 构建、冒烟和隔离复验单独记录。
+- [x] 本轮 Windows 构建与隔离：标准 `npm run build:exe` 清理被 PID 3824 占用的 dist exe 时返回 EPERM/EBUSY；未停止用户进程，也未覆盖旧 dist exe。macOS 产物已由同一脚本重建；Windows 使用相同 Bun 参数输出到 `D:/ccc-fast-final-verify-20261026/candidate-win-1793030001835/ccc-bridge.exe`，SHA-256 为 `51e1a668637eec6aa9576728a1324eff59138d4df7ae1b47e18799a969cd5e01`。
+- [x] 隔离运行记录：`run-1793030092698-55c7707d` 的冒烟、WS、交错帧、执行设置与绑定持久化均通过，进程树已停止，stderr 仅有开发模式 allowedOrigins 警告；所有验证文件保留。
+- [ ] 手动验收：本轮新 exe 已通过隔离冒烟、WS、交错帧、执行设置和绑定落盘复验，未调用真实 API；Chrome 中 Sonnet→on→Opus/on、off→Sonnet/off、自动档恢复、生成中停止和多视图同步仍待用户实测。
+  - [ ] Sonnet/off → fast on：请求模型切到 Opus，实际 fast/model 以 CC 回报为准；fast off 后请求恢复 Sonnet。
+  - [ ] 自动档（含首轮前）→ on/off：off 恢复当次 CC 完整实际模型；fast 期间手动改模型或同值选择后，off 不回到更早模型。
+  - [ ] 生成中切换 fast 不打断当前轮次；停止按钮真正停止；侧边栏与弹窗的设置、草稿、流式和运行时状态同步。
+- [x] 本轮候选产物：Windows exe `51e1a668637eec6aa9576728a1324eff59138d4df7ae1b47e18799a969cd5e01`；根目录 Windows zip `7e42870e547db83c755dba85f3d2ba8d6481ba79b05f37444b72f81e1927e390`，唯一文件条目为 `ccc-bridge-win-x64/ccc-bridge.exe` 且与候选字节一致；扩展 zip `dd66f5862d80726d2d58fdb34f57310168845f8ca114286c1fc842756d5962ef`（68 条目一致）；macOS arm64 二进制 `8649714aef5137d217ee06f12fecefd8325ca401a8ec9a1a567cb02c6b3b1f88`。
+- [x] 上一候选产物（fast 模型一致性修正前）：Windows exe SHA-256 `7286c8922ce52a0bc11f47b3e5474e1b5b17306a4a2b0b39fca71585191f6f23`；Windows zip `a404e08a0f0529de936e7a044ee07297f2c1256fec0c49f00d312f0df72577dc`；扩展 zip `dd66f5862d80726d2d58fdb34f57310168845f8ca114286c1fc842756d5962ef`。
+- [x] 真实探针：本机 CLI 2.1.301 + 当前中转，Opus 启动 fast=true 回报 on；同一 Query 运行时 off → on → off，三轮实际状态依次为 off/on/off，首轮不被切换打断。Fable 启动 fast=true 时实际回报 off，产品按 CC 真值显示，不自行改写模型。
+- [x] Sonnet/fast 故障定位（修正第一次不完整结论）：直接 Agent SDK + CLI 2.1.301 的早期探针只证明“Sonnet + 单独 fast 标志”仍回报 off；用户随后在交互式 CLI 实测 `/fast on` 会同时切到 Opus，`/fast off` 会恢复之前模型，证明 CopilotCC 还缺模型提升与恢复层，不能把问题只归因于上游。真实组合探针已验证 on+Opus、off+恢复模型可在同一 Query 生效，首轮不被切换打断。
+  首个组合探针在第四轮有效帧采集完成后，清理代码因对 void 返回值调用 .catch 报 TypeError；启动对照已独立重跑并成功，非密钥结果均保存在获批隔离目录。
+- [x] 自动档恢复探针：`model:null`、`model:"default"` 与 `setModel()` 都只恢复到 CC 内建默认 Opus，不能恢复用户 settings 自动解析的 Fable；首轮前 `getSettings().applied.model` 可取得完整 `claude-fable-5-1`，保存后用 off+该具体 ID 可恢复 Fable/off。显式 Opus Query 的 applied 不能冒充旧自动档基线；未公开元数据只做局部能力检测和降级。
+
+## 压缩进度可见性（2026-10-29，真实全链探针已通过）
+
+用户反馈：CC 自动压缩期间聊天框长时间无动静，用户不知道背后在做什么会焦虑，也无法对压缩后的记忆质量建立预期。设计要求显示"正在压缩…"与完成后真实压缩率；CLI/SDK 全程不输出进度百分比（真 CLI 2.1.301 探针实证），故采用真实跳秒 + 完成后按 1-post/pre 实算压缩率，拒绝伪造百分比动画。
+
+- [x] 真实事件源探针：本机假上游 + 真 CLI 触发 /compact，stream-json 实录帧序为 status(compacting) → status(null, compact_result) → compact_boundary 元数据，且 done 帧比 boundary 帧早到约 4ms（13ms vs 17ms）。
+- [x] 协议：shared/protocol.ts 新增 chat.compact 两相帧（start / done{result,error?,preTokens?,postTokens?,durationMs?}）与 chat.sync.compacting 快照位；scripts/sync-protocol.mjs 同步两端复制件。
+- [x] 桥接归并（关键时序修正）：done 帧比 compact_boundary 元数据帧早到约 4ms，若扩展分别处理则完成行永远拿不到压缩率。claude-session.ts 挂起 done 起 250ms 归并窗口，窗口内 boundary 到则合并元数据一次发 done；超时/失败按无元数据裸发；close() 清挂起定时器。server.ts 以 onCompact 维护 workspace.compacting 并广播，chat.sync 快照携带，新会话/重置路径复位。
+- [x] 扩展显示：顶部状态栏"正在压缩…（Xs）"真实跳秒（1s setInterval 驱动重渲染）；完成时聊天记录插一行系统记录（role:"tool" 无 toolName，复用附带状态行渲染，MessageList 零改动）：成功有元数据 🗜 已压缩上下文 156k → 42k tokens（-73%）；无元数据 🗜 已压缩上下文；失败 ⚠️ 上下文压缩失败：…，继续使用当前上下文。负压缩率（假上游小会话 3→879）正确省略百分比。压缩中重连经 chat.sync.compacting 立即可见提示；断线/换会话/中止/报错全路径清除。
+- [x] TDD：桥接协议 +1、会话 +4（start/done 归并/失败裸发/超时裸发/close 清挂起）、镜像 +1（广播+快照）；扩展 format +4（compactRecordText 成功/无元数据/失败/负率省略）、App +4（start 提示、done 记录行、sync 快照提示、断线清除）。类型级协议变更以 npm run typecheck 的 TS2322 作为有效 RED（vitest 剥离类型不产生运行时 RED）。
+- [x] 回归：桥接 202/202（196+6）、扩展 97/97（89+8）全绿，两端 typecheck 干净，桥接 selftest 通过；bridge exe 与扩展均已重建。
+- [x] 真实全链探针：dist exe（隔离 CCC_BRIDGE_HOME/CLAUDE_CONFIG_DIR）+ 真 CLI 2.1.301 + 本机假上游 + CDP Extensions.loadUnpacked 真 Chrome，COMPACT_PROBE_RESULT ok=true、状态栏提示曾出现（MutationObserver 预装标记防百毫秒级小会话闪现错过）、记录行"🗜 已压缩上下文 3 → 879 tokens"、frames=[start, done{success, preTokens:3, postTokens:879, durationMs:12}]、runtimeErrors 为空。探针脚本在获批目录 D:/ccc-fast-final-verify-20261026/tool-history-20261027。
+- [x] 实测纠偏（2026-10-30 用户反馈，2026-10-31 已修复）：当时插件聊天框发 `/compact` 会被附加网页内容而不能按命令执行，证明探针手写 stream-json 帧不代表 CopilotCC 完整链路可用。现已在真实扩展 UI、网页附带开启且有选中文字的路径验证命令原文直达 CLI，并保留后续普通消息的防注入前缀；最终验收记录见上方。
+- [x] 历史持久化（2026-10-30 用户要求）：transcript.ts 解析 compact_boundary 条目，按原顺序回放为无 toolName 的 tool 记录行，文案与实时同口径（compactBoundaryText 独立实现），扩展零改动。真实转录复读：当前会话 2000 条消息窗口解析出 28 条压缩行（169k → 33k（-80%）等），每条位置紧跟压缩后续聊消息。新增 3 用例（顺序回放/缺元数据/负率省略百分比）。
+- [x] 输入框拖拽调高（2026-10-30 用户反馈原生右下角手柄反人类）：textarea 原生 resize 手柄停用，改为消息列表与输入区交界处的 5px 拖拽带（hover 上下箭头光标 + 灰带提示），向上拖增大、向下缩小，下限 40px、上限窗口高 60%；拖拽过才受控（默认 rows=3 外观不变），高度不持久化（与原生 resize 行为一致）。新增 3 用例（手柄与 CSS/上下拖与松开停跟/下限）。
+- [x] 回归：桥接 205/205（202+3）、扩展 100/100（97+3），两端 typecheck 干净，bridge exe 与扩展均已重建。
+- [ ] 人工复核：用户真实长会话（auto-compact，压缩持续数秒~数十秒）中状态栏跳秒与完成后压缩率文案的视觉确认；小会话压缩仅百毫秒级，自动探针只能证明链路通。另待复核：历史回看时压缩记录行的位置与文案、消息区底缘拖拽调输入框高度的手感。
+
+## AskUserQuestion 选择式提问（2026-10-30，隔离全链与真实 Chrome 自动探针已通过）
+
+- [x] 可行性实证：SDK 0.3.304 + 真 CLI 2.1.301 + 本机假上游，生产透传的 `permissionMode:"auto"` 下 `AskUserQuestion` 仍进入 `canUseTool`；返回 `{behavior:"allow", updatedInput:{...input, answers}}` 后生成正常非错误 tool_result，answers 键为完整问题文本。
+- [x] 协议与桥接：新增 `chat.ask` / `chat.ask.resolved` / `chat.ask.answer` 与 `chat.sync.askReq`；严格解析 questions 和 answers。会话层支持作答回填、未作答拒绝、10 分钟超时、重复作答幂等及 abort/close 释放；server 镜像挂起提问，快照补卡，任一视图作答后广播 resolved。
+- [x] 扩展卡片：新增 AskCard，一次多题、单选、多选、Other 自由文本与完整作答校验；多选按选择顺序以 `", "` 连接，answers 以问题文本为键。App 接入实时广播、快照恢复、提交撤卡和手动中止清理；长表单内部滚动，不挤没输入框。
+- [x] TDD：组件缺失与 App 的实时提问、跨视图 resolved、快照恢复三个核心场景先取得有效 RED，再最小实现转绿；新增 6 个 AskCard DOM 用例和 4 个 App 集成用例。Other 文本测试改用原生 value setter 绕过 React value tracker，确认失败来自测试事件模拟而非组件逻辑。
+- [x] 完整回归：桥接 15 个文件 213/213、扩展 16 个文件 110/110，两端 typecheck、桥接 selftest、扩展 build、Windows/macOS 桥接二进制构建全部通过；协议复制件同步。
+- [x] 隔离全链探针：新 dist exe 在项目树外使用独立 `CCC_BRIDGE_HOME` / `CLAUDE_CONFIG_DIR`，真实 CLI 只连 `127.0.0.1` 假上游。视图 A 收到 `chat.ask` 后接入视图 B，B 从 `chat.sync.askReq` 恢复同一提问并作答，A/B 均收到 resolved；第二轮请求含 `is_error:null` 且答案为“方案 A”的 tool_result，最终收到 `mock final reply`，errors=[]。结果保留于 `D:/ccc-fast-final-verify-20261026/tool-history-20261027/ask-e2e-1793359284948/ask-e2e-result.json`，未调用真实 API，未停止或替换用户正在使用的桥接。
+- [x] 真实 Chrome 显示修复：自动探针先稳定复现“卡片可作答，但上方多出 `🔧 AskUserQuestion + 原始 JSON`”；实时 assistant 与历史 transcript 两条链路分别新增有效 RED，随后只过滤 AskUserQuestion 的普通工具活动，Write 等其他工具和正文顺序不变。重建新 dist exe 后复跑同一探针：askCard=true、answered=true、askToolLines=[]、tool_result 非错误、最终回答为 `mock final reply`、runtimeErrors=[]，ok=true。结果保留于 `D:/ccc-fast-final-verify-20261026/tool-history-20261027/exe-chrome-ask-1793361300413/ask-chrome-result.json`。
+- [ ] Chrome 人工验收：真实侧栏/弹窗中确认多题、多选、Other 输入、长卡片滚动与提交手感；自动 DOM/WS 探针不代替视觉验收。`ExitPlanMode` 等其他选择式交互不在本轮实现范围内，不能宣称通用终端选择界面已经完成。
+
+## 历史工具活动与本地命令回放（2026-10-27，真实浏览器链路已验证）
+
+- [x] 首轮根因复现：旧版 readTranscript 不输出 assistant tool_use，并把 /model 的 caveat/command/stdout 当成用户正文。首轮修复后真实转录已能恢复工具，但用户实测历史与实时仍不可见，因此首轮 DOM/WS 通过不能视为产品验收完成。
+- [x] App 集成 RED：真实 BridgeClient + App + MessageList 下，实时 chat.tool 通过；历史 toolName 恢复失败，证明此前组件测试漏掉了重载链路。
+- [x] 桥接 RED：transcript 目标 13 项测试实际执行，3 项分别因工具块缺失、顺序不符和本地命令被当作用户正文而失败。
+- [x] 桥接 GREEN：历史保留工具活动和顺序，/model 命令与 stdout 合并为一条活动，普通用户正文不丢失；桥接目标 45 项、扩展消息链 6 项通过。
+- [x] 完整回归与真实转录复读：桥接 15 个文件共 196 项、扩展 14 个文件共 88 项测试通过，两端类型检查及桥接离线 selftest 通过，`git diff --check` 无错误。生产解析器对真实会话返回 60 条消息（user 17、assistant 15、tool 28），包含 Write/Edit/Bash 和 7 条 /model 活动，simpleTable.md 的 Write 已恢复，用户正文中的原始本地命令标签为 0。
+- [x] 扩展分发：build/zip 成功，zip 完整性通过，68 个文件与 chrome-mv3 文件集合一致且逐字节相同；SHA-256 `7f4201a9db235f604517182d3747582eacc8c40d6b793bbae6962b41adc07747`。
+- [x] 隔离 exe 验证：新 exe 在 `D:\ccc-fast-final-verify-20261026\tool-history-20261027\run-1793083480471` 通过架构冒烟和真实 WS 历史回放；9 条消息覆盖 Write/Edit/Bash、/model、正文顺序和普通用户相似标签保护，chat.send 帧数为 0。stderr 仅有隔离配置刻意使用空 allowedOrigins 的开发模式警告；验证进程已停止，未停止或替换用户当时运行的桥接；二次诊断时用户进程为 PID 16852。
+- [x] 桥接分发打包：根目录 zip 通过完整性检查，唯一条目为 `ccc-bridge-win-x64/ccc-bridge.exe`，包内 exe 与新 dist exe 逐字节一致；zip SHA-256 `eb74d4518101e7edd23a5edb8c7541b010f167da6fce76e6572a9ac96863d082`，exe SHA-256 `0b62b8f12655efa3f443512734f502d7ceff91eca01a30f30a63331f7e427772`。未替换正在使用的 exe。
+- [x] 二次根因与 RED/GREEN：真实 Chrome 复现 65 条消息中的 31 条工具均已进入 DOM，但高度全部为 0；纵向 flex 消息列表中工具行默认允许收缩，overflow:hidden 又使自动最小高度可为 0，长会话因此把历史和实时工具行一起压没。新增 CSS 回归测试先有效 RED，再在 .tool-activity 加 flex-shrink:0 后转绿；扩展 15 个文件共 89 项测试、类型检查和构建通过。
+- [x] 二次桥接实证：真实 CLI 2.1.301 在本机假上游下同时输出 stream_event 与完整 assistant/tool_use；生产 SDK 会话实际发出 Write onTool。隔离 dist exe 经真实 CLI 执行只读 Read 后广播 chat.tool，并收到 chat.delta/chat.done，无 chat.error；无需修改桥接生产代码，也未调用真实 API。
+- [x] 真实 Chrome 自动验收：修复后同一真实会话 31/31 工具行高度均为 16.5px，包含 kimi-code-console.md 的 Write、/model、Read/Edit/Bash 和分类 emoji，caveat 不可见且运行时错误为空。隔离 exe + 真实 CLI + 本机假上游 + 真实 Chrome 的完整实时 Read 同样收到 chat.tool/chat.done，活动行高度 16.5px。
+- [ ] 用户现有 Chrome 人工复核：加载新 zip 或新构建目录并重载扩展后，在自己的窄侧栏和独立弹窗确认视觉效果；未擅改 Desktop 当前加载目录。
+
+## 工具活动行与分类图标（2026-10-27）
+
+- [x] 设计确认：工具调用使用区别于回答正文的紧凑活动行，按工具显示跨平台 emoji；不改桥接、协议或工具执行。
+- [x] RED：新增工具活动结构、图标映射、CSS 单行和既有附带状态兼容测试；实际 4 项中 3 项按预期失败，既有附带状态兼容项通过。
+- [x] GREEN：保留 chat.tool 的 name/summary，扩展以可选 toolName 渲染结构化活动行；常用工具、MCP 和未知工具回退均有真实 DOM 测试。目标 4 项、完整扩展 13 个文件共 86 项测试及 TypeScript 类型检查通过。
+- [x] 构建分发：扩展 build/zip 成功；zip 通过完整性检查，68 个文件与 chrome-mv3 构建目录的文件集合一致且逐字节相同。SHA-256 为 `00575bbb06d89a3a08122868cf36e96eedce9a1fbce915de96ff29bb3b33a3e7`；未重建桥接 exe。
+- [ ] Chrome 手动验收：窄侧栏和独立弹窗中的工具活动行、分类 emoji、长摘要省略及与正文气泡的视觉区分仍待用户实测；附带状态行兼容已由 DOM 测试覆盖。
+
+## 输入区单行与 effort 入口（2026-10-27）
+
+- [x] 单行排版：输入框上方执行选项固定一行，只保留附带网页、fast off/on、权限模式和模型下拉；移除常驻 effort 下拉与 CC fast 真值，窄栏通过下拉收缩和省略避免生成第二层。
+- [x] 下方交互：模型·effort 文本改为按钮，点击向上展开 effort 选项；选择后仍调用原有 onEffortChange，点击外部或 Escape 关闭且不触发停止。CC fast on/off、pending 与 cooldown 真值紧跟模型状态右侧。
+- [x] 边界保持：未修改 App、桥接、WS 协议、fast 状态机、busy、草稿、上传或停止逻辑；effectiveEffort=null 仍表示 CC 明确未下发，不回退请求值。
+- [x] TDD 与回归：新增交互测试先取得 6 项有效 RED，再完成实现；输入区 9 项、扩展 12 个文件共 82 项测试和 TypeScript 类型检查通过。旧 CSS 的 wrap 变异产生预期单行断言 RED，随后已逐字节恢复。jsdom 中改用 node:fs 读取 CSS，并补 Node 类型，避开 HTTP import.meta.url 与空 CSS 查询导入问题。
+- [x] 构建分发：扩展 build/zip 成功；zip 通过完整性检查，68 个文件条目与 chrome-mv3 构建目录的文件集合一致且逐字节相同。新 SHA-256 为 `073d5608dd61bca621f0d383e841ff37c4c885c9be12b2f2c170c70f604ceb28`；未重建桥接 exe。
+- [ ] Chrome 手动验收：窄侧栏与独立弹窗中的上方单行、下方 effort 弹层、点击外部/Escape 关闭及 fast 真值位置仍待用户实测，自动测试不代替视觉验收。
+
+## 修复记录（2026-10-26）
+
+- **托盘 exe 工作区未落盘**：项目树外隔离探针发现托盘入口漏传 `workspaceStore`，内存设置与绑定正常但 `workspace.json` 从不更新，普通 CLI 入口原本装配正确。`tray.ts` 现已注入同一配置目录下的 `WorkspaceStore`；新增两个生产入口装配回归，先确认托盘用例 RED、修复后双入口转绿。重新构建的 exe 已通过隔离复验：`settings.state` 后执行设置立即落盘，绑定后文件夹与执行设置均保留，进程树已停止，首次失败证据与修复后运行目录均保留。
+
+- **macOS DMG 打包误报空间不足（Release #28）**：编译、架构冒烟和签名均通过，`hdiutil -srcfolder` 复制主程序时报 `No space left on device`，发布作业因此跳过。错误形态与稀疏文件导致临时镜像容量误判一致；主程序入包改为 `cat` 显式重写全部字节并用 `cmp` 校验，打包前新增 `df/du/ls -ls` 诊断；`v2026.10.26.2` 的真实 macOS CI 已验证通过，三个发布资产完整。
+
+- **偶发停止失效 + 旧任务继续写文件**：根因是生成中切换模型触发会话重建，旧 `close()` 只结束输入流，没有取消 CLI 轮次，且工作区 `busy` 未清；新会话空闲，后续 `chat.abort` 又被 `turnActive=false` 空操作。现在设置重建会先广播 `chat.aborted` 并清在途状态，旧会话 `close()` 对进行中轮次调用 SDK `interrupt()` 并关闭 Query 流；文件夹/会话切换与桥接退出也复用这条关闭链。
+- **界面选 Sonnet、实际回落 Fable**：另一个 CMD 不会共享模型。桥接内存中的模型设置会在重启后丢失，而扩展旧逻辑只在手动修改时推送；现改为每次 `auth.ok` 后按序发送完整 `settings.set` → `client.ready`，确保恢复会话前模型已生效。
+- **回归与实测**：新增关闭进行中会话、生成中切换模型、认证后补发设置三类回归；桥接 126 个测试、扩展 55 个测试及两端类型检查通过。真实 CLI 探针在 Sonnet 会话的 Bash 工具执行中关闭旧会话，等待 22 秒后延迟文件未生成、无迟到事件。
+
+## 配对信息
+
+- 扩展 ID: `cnalihjaacpahpjkpneacjcfbhboglno`
+- allowedOrigins: `chrome-extension://cnalihjaacpahpjkpneacjcfbhboglno`
+- manifest.key: 见 wxt.config.ts（Task 9 写入）
+
+## 端到端手动验收（Task 13，待用户执行）
+
+桥接已冒烟启动通过，真实 config.json 已生成且 allowedOrigins 已预填为本扩展 ID。验收步骤：
+
+1. `cd bridge && npm start` → 记下打印的 token
+2. `chrome://extensions` 加载 `extension/.output/chrome-mv3`（确认 ID = cnalihjaacpahpjkpneacjcfbhboglno）
+3. 点图标开侧栏 → 粘贴 token → 状态灯变绿
+4. 绑定一个已存在的文件夹 → 显示已绑定（无"已续聊"徽标）
+5. 打开技术文档页提问"这页讲了什么，100 字总结" → 回答确实来自该页面
+6. 同页追问某概念（不附全文）→ 回答能引用页面内容（上下文保留）
+7. 让它"把 XX 知识点写成 notes/xx.md"（auto 模式）→ 文件夹真实出现该文件
+8. 网页选中文字 → 右键"用 Claude Code 询问选中内容" → 侧栏带入引用
+9. 切"逐条审批"再让其写文件 → 审批卡片点允许后写入成功
+10. 关侧栏重开、重新绑定同文件夹 → "已续聊"徽标 + 历史消息回放
+11. 杀掉 bridge → 状态灯变红；重启 bridge → 自动重连变绿且可继续对话（resume 生效）
+12. 全部通过后把顶部 Task 13 勾选并提交
+
+## 修复记录（2026-10-20）
+- 验收第 5 项失败：页面内容未附加且无任何提示（静默降级）。已修复：
+  - `page-extract.ts` 返回 `SnapshotResult{page,error}`，失败原因不再吞掉；
+  - `App.tsx` 发送后追加附带状态行（📄已附带/⚠️失败原因/ℹ️同页不重复附带）；
+  - `wxt.config.ts` 增加 http/https 全站 host_permissions，消除 activeTab 授权死角（切 tab 后侧栏仍可读当前页）。
+- `page-extract.ts` 增加回退：Defuddle 提不出正文时（非文章型页面，如 GitHub 列表页）退化为页面纯文本，保证任何页面都能附带。
+  - tsc 通过、扩展 12 测试全绿、已重新 build。待用户重载扩展后重测第 5 项。
+- 新需求（2026-10-20）：附带标记 + 右键查看实际发送内容。已实现：`UiMsg` 增加 `sentText`/`attachKind`，用户气泡角标 📄(全文)/📎(选中)，右键弹层展示完整发送文本并支持复制；发送失败/部分失败仍保留 ⚠️ 状态行。
+- 易用性修复（2026-10-20）：附带状态行可点击展开查看实际发送全文（details 内嵌 pre），与右键气泡等效。
+- 交互修正（2026-10-20）：附带状态行从 details 内联展开改为点击弹出临时浮层（复用右键查看器），看完即关，不在消息区留长文。
+- 渲染增强（2026-10-20）：消息气泡补 KaTeX 数学公式（remark-math + rehype-katex + katex css），表格/行内代码补暗色样式。GFM 与代码块此前已支持。
+- 新功能（2026-10-20）：代码块语法高亮（rehype-highlight + github-dark 主题）与右上角复制按钮；文件夹栏"切换聊天…"下拉（切换即绑定并回放对应历史）；聊天框上方模型（默认/fable/opus/sonnet/haiku）与 effort（默认/low/medium/high/xhigh/max）下拉，经 settings.set 推送桥接并带 resumeId 重建会话保上下文；消息区"⬇ 回到底部"按钮（离底超 120px 时出现）。
+- 桥接修复（2026-10-20）：src/index.ts 自检脚本误用服务端专用 encode() 发客户端消息（folder.bind/chat.send），改为 JSON.stringify；bridge 补上 tsc --noEmit 检查（此前只给扩展配了，该历史错误因此长期未被发现）。协议 settings.set 扩展 model/effort 字段并同步两端副本，新增 2 个协议测试（桥接共 28 个单测）。
+- 调整（2026-10-20）：模型/effort 选择栏从聊天框顶部移到输入框上方（贴近权限模式切换行），去掉与输入框叠压的分隔线。
+- 已知问题（2026-10-20，根因已基本定位）：cmd 里交互式 claude -c 看不到桥接会话历史（界面报 No conversations found in this project.）。原因：交互式界面的会话枚举依赖 claude.json 的 projects 注册项与 history.jsonl 记录，SDK 驱动的会话（条目 entrypoint=sdk-cli/sdk-ts）不写这两处，故交互式枚举为空；会话 jsonl 本身完好落盘于 ~/.claude/projects/ 对应项目目录，print 模式 claude -p -c 实测可正常续接（上下文完整）。早前怀疑的路径大小写假设已被实验双向排除。绕开方式：claude -p -c "问题" 单发续接；或 claude --resume 后跟会话 ID 显式指定（ID 见 ~/.ccc-bridge/sessions.json）。
+- 修复与功能（2026-10-20）：① 模型/effort 选择并入输入区执行选项同一行（不再单独占行）；② 回放溯源升级：协议 HistoryMessage 增加可选 sentText/attachKind 字段，transcript.ts 回放时拆解桥接发送包装——气泡只显示用户问题，完整发送内容（去防注入前缀）保留在 sentText 供右键溯源，📄/📎 附带标记同样保留，重载前后行为与当前会话完全一致（桥接 29 个单测全绿）；③ 页面提取信息量提升：Defuddle 传 removeLowScoring:false 保留低评分内容块，且结果 <1500 字符且不足全文 1/3 时改用全文纯文本；④ 绑定行右侧加会话 ID 芯片，点击复制 claude --resume <id> 续接命令（sessionId 由 folder.bound/chat.done 推送到侧栏，新会话首轮回复后可见）。
+- 新功能（2026-10-20）：一个文件夹多会话——协议加 session.list/new/switch/delete 与 SessionInfo；桥接枚举 ~/.claude/projects/<slug>/*.jsonl 生成会话列表（标题取首条用户消息拆包装前 30 字，mtime 倒序；deleteTranscript 防路径穿越）；FolderBar 改双下拉（切换文件夹/切换会话）+ ＋新会话/🗑删会话（删除带确认并清本地转录）；切会话清空消息区并回放目标历史；桥接测试 29→37。
+- 新功能（2026-10-20）：桥接托盘 exe——tray.ts 入口（systray2 托盘菜单：复制 token/打开配置目录/退出；图标由 scripts/gen-icon.mjs 生成内嵌 base64）；scripts/build-exe.mjs 用 bun build --compile 出 win-x64（--windows-hide 无黑窗）与 darwin-arm64 交叉编译产物，traybin 原生二进制同级配套；macOS 需 chmod +x 与 codesign ad-hoc 签名（README 有步骤）。
+- 修复（2026-10-20）：① 扩展 WS 断线重连后不回绑文件夹（服务端每条连接状态独立），客户端显示已绑定但发消息报"请先绑定文件夹"；改为 conn 每次进入 open 都回绑当前/上次文件夹，folder.bound 的 refs 守卫保证同会话重绑不清屏。② 托盘 exe 黑窗：bun 编译 flag 误写 --windows-hide（被静默忽略，PE 子系统仍为 CONSOLE），改 --windows-hide-console 后子系统为 GUI；copyToClipboard 的 clip 补 windowsHide。③ 托盘菜单移除"打开配置目录"（config.json 仅 token/port/allowedOrigins 可配，README 已写明），菜单精简为复制 Token/退出。④ FolderBar：绑定后路径回填输入框；会话下拉空态占位"（此文件夹暂无历史会话）"。桥接 37 + 扩展 12 测试全绿，双平台 exe 已重建（win 版子系统已验证为 GUI）。
+- 新功能与加固（2026-10-20）：① 配对串——shared/pairing.ts（ccc1.+base64url(JSON{h,p,t})，纯 JS 编解码不依赖 Buffer/atob，sync-protocol.mjs 扩展为同步 protocol.ts+pairing.ts 两个文件）；兼容裸 token 回退默认 127.0.0.1:19280；托盘菜单"复制配对串"，npm start 与 --print-pairing 输出配对串。② 端口保证——startServer 异步化（返回实际端口），监听失败或被无关程序占用自动顺延（最多 10 个端口）；auth.ok 携带 instance 字段，启动后自探测握手认亲，同 token 重复实例直接拒绝；runtime.json 单实例守卫（claim/write/release + 退出钩子）；探测连接用 terminate 断开（CONNECTING 状态 close() 不断 socket 会泄漏）。③ 扩展——TokenGate 改单框配对串输入；连接状态栏加「⚙ 配对」按钮支持中途改端口/换桥（换桥清空界面状态后重连）；ExtSettings 增 host 字段（默认 127.0.0.1，界面不暴露）。④ 实验确认本机 Windows 下 Node 同端口重复 listen 会抛 EADDRINUSE（早前"双桥并存"未复现，防御仍保留）。桥接 45 + 扩展 16 测试全绿。
+- 新功能（2026-10-20）：托盘直接改端口——桥接同端口内置 /config 设置页（与 WS 共用端口，不占额外端口；Host 头校验防 DNS rebinding + token 鉴权，GET 表单页 / POST 改端口）；托盘菜单加「修改端口…」用默认浏览器打开该页，保存后在线切换（先在新端口完成监听+自探测再拆旧服务，失败不影响现状），写回 config.json 并经 update-menu 刷新托盘状态行与 tooltip，页面直接给出新配对串，扩展「⚙ 配对」粘贴一次即完成重配对；server.ts 重构为 http.createServer + WebSocketServer({server})（修：ws 会把 http server 的 error 转发到 wss，监听失败须挂 wss error 监听防未捕获异常）；npm start 打印设置页地址。扩展无需改动。桥接 45→47 + 扩展 16 测试全绿。
+- 改进（2026-10-20）：修改端口从「打开网页设置页」升级为「系统原生弹窗输入」主路径（win=PowerShell VisualBasic InputBox，-EncodedCommand 传中文防代码页乱码；mac=AppleScript display dialog；linux=zenity/kdialog 依次尝试），改完新配对串自动复制到剪贴板并弹结果提示；StartedServer 暴露 setPort（持久化与 onPortChanged 回调收进 rebind，托盘进程内直调不走 HTTP）；弹窗工具不可用时回退原网页设置页。桥接 47→48 + 扩展 16 测试全绿。
+- 修复（2026-10-20）：托盘「修改端口」弹窗看不见——VisualBasic InputBox 从无窗口后台进程弹出时不抢前台，被 Chrome 压住（用户连点两次都看不到，残留两个等输入的 powershell 进程）；改为自绘 WinForms Topmost 对话框（Shown 时 Activate + 全选默认值，powershell 加 -Sta），MsgBox 结果提示加 4096 SystemModal 置顶。另发现本机沙箱拦截 node/timeout 嵌套 spawn powershell（EPERM），powershell 实测只能由 Bash 直调（已存记忆）。exe 已重建。
+- 修复（2026-10-21）：弹窗置顶后仍不可见，根因升级定位——GUI 子系统 exe 以 windowsHide 拉起 console 子进程时，SW_HIDE 启动标志被子进程第一个窗口继承，InputBox/WinForms 弹窗进程活着（WinForms 程序集已加载、92MB 常驻等输入）但窗口恒隐藏；wmic 实锤残留进程父进程=ccc-bridge.exe。「修改端口…」放弃弹窗路径，固定走浏览器打开本机设置页（openUrl，实测可靠的形态），tray.ts 删除 promptText/showMessage/runCmdCapture/psEncoded 等全部弹窗机制；孤儿弹窗进程已清理（注意：另有父进程非桥接的 powershell 属用户自己的，不动）。桥接 48 测试全绿，双平台 exe 已重建并冒烟通过。
+- 新功能（2026-10-21）：输入区发送按钮同行最左显示当前生效的「模型 · effort」只读指示（InputBox 加 send-row 布局，样式随 style.css），改动入口仍是上方下拉。扩展 16 测试全绿并已重新 build。
+- 完善（2026-10-21）：模型/effort 指示从「显示下拉原值（空则写"默认"）」改为「显示实际生效值」——协议 chat.done 增加可选 model/effort 字段（SDK system/init 每轮开头重发：model=实际模型 ID；effort=经环境变量/组织上限/模型能力降级后的实际档位，null=不下发 effort 参数，老 CLI 缺字段=不上报且不缺省覆盖旧值）；claude-session 捕获最新一帧随 onDone 传出并暴露 runtimeInfo()；扩展缓存到 chrome.storage（ccc.runtime，换桥清空），重载后首轮回复前也有真值；显示压短（claude-fable-5-1→"fable 5.1"，新增 lib/format.ts + 3 例测试）；显示优先级：手动选择 > 上报值 > 不显示该段（不再出现"默认"字样）。
+- 修复（2026-10-21）：effort 指示拿不到真值——探针（bridge/scripts/probe-frames.mjs，真实 SDK query 逐帧打印）实证 SDK 流全程不下发 effort（init 缺字段、assistant 帧、result.modelUsage 均无）；改为 result/success 时读会话转录末尾最近一次 api-request-blob 的 effort（transcript.ts 新增 extractEffortFromTranscript/readTranscriptEffort：cwd+sessionId 按既有 slug 规则定位 jsonl，仅读末尾 8MB 窗口，最近 blob 无 effort 字段=null、无 blob=undefined 不覆盖 init 值；SAFE_SESSION_ID 防路径穿越复用）；转录证据优先于 init 上报值（每回答粒度，符合"每个回答值都不一样"的实然）。transcript.ts 顺带支持 CLAUDE_CONFIG_DIR。教训：Write 覆盖前先看 git status——transcript.ts 是存量文件（历史回放在用），初版误覆盖后按原版全文+新增函数合并恢复。
+- 新功能（2026-10-21）：「📄 强制看页面」悬浮按钮 + compact 自动续期——协议 chat.done 增加 compacted 字段；claude-session 检测 system/compact_boundary（及 status+compact_result）帧置 compactPending，本轮 done 时上报；扩展 App 增 forceAttach 状态机：点亮后下一条消息无视附带开关与同页去重强制带全文（attachNote 显示"已强制附带"），用后失效，chat.done 按 compacted 自动续亮一轮，chat.error 清零；InputBox textarea 外套 .ta-wrap（position:relative）按钮绝对定位于右上角，不占布局，.on 高亮态。
+- 修复（2026-10-21）：消息区不随流式输出滚动——原实现没有任何自动滚动，onScroll 只维护按钮显隐。MessageList 引入跟随模式（followRef）：在底部阈值内即跟随，新落地消息/流式增量到达时即时赋值贴底（smooth 追不上增量）；上滚离底即退出跟随，内容增长时重估按钮（流式第一个字到达按钮立即出现）；用户消息数增加（自己发送或历史回放落地）强制恢复跟随；点「回到底部」平滑滚到底，落地后由 onScroll 恢复跟随。
+- 优化（2026-10-21）：托盘/exe 图标从红色圆点改为 Claude 橙桥形——scripts/gen-icon.mjs 全量重写为桥形生成器（32 单位坐标系形状库：胶囊条/圆弧/抛物线垂缆，6x 超采样覆盖率转 alpha 抗锯齿；手写 PNG/ICO 编码，ICO 内嵌 16/32/48/256 四档 PNG）；a 拱桥 / b 拱桥+桥墩 / c 悬索桥三变体可选（生成浅/深底预览条到 %TEMP%/ccc-icon-preview.png），当前用 c；托盘 src/icon.ts 与 exe assets/icon.ico 同源，build-exe.mjs 经 bun --windows-icon 内嵌 exe 图标（ico 缺失时报错提示先跑 gen-icon）；exe 资源段已验证内嵌 256px PNG，冒烟通过。
+- 新功能（2026-10-21）：CI/CD 与 Release 组织——.github/workflows/ci.yml（push/PR 触发，ubuntu/windows/macOS 三平台跑两端 typecheck+单测+扩展构建）；release.yml（打 v* tag 触发：测试门禁 → windows runner 编 win-x64 zip（7z）、macos runner 编 darwin-arm64 zip（附 setup.command 一键初始化，ditto 保留可执行位）、ubuntu 出扩展 zip（wxt zip）→ gh release create --generate-notes 汇总发布）；build-exe.mjs 支持 win|darwin 平台过滤参数（mac runner 不碰 --windows-icon 的 PE 写入）；wxt.config.ts 删除硬编码 version 改继承 package.json（CI 按 tag npm version 写入）；两端 package.json 加 typecheck、扩展加 zip 脚本；新增 .gitattributes（脚本强制 LF 行尾 + 图标/图片二进制保护）；bridge/scripts/mac-setup.command（chmod+x/xattr 去隔离/codesign ad-hoc 一条龙）；README 按 Best-README-Template 实践重组（Release 下载快速开始前置 + 资产对照表 + 白名单配置进快速开始 + 开发者区后置）。
+- 修复（2026-10-21）：模型/effort 下拉残留"默认"伪状态——未手动选择时只显示"模型默认/effort 默认"，用户无从得知当前实际生效值；自动档 label 改为动态呈现桥接上报真值（自动 · fable 5.1 / 自动 · high），首次聊天真值未到时如实显示"自动（跟随 CLI 配置）"；props 注释同步更新，UI 全链路不再出现"默认"字样。
+- 修复（2026-10-21）：侧栏 CSP 误报——DOMParser 解析出的文档会继承扩展页 CSP，解析含 on* 内联事件处理器属性的真实页面 HTML 时，Chrome 对每个属性报一条 "Executing inline event handler violates CSP"（仅编译期检查，解析文档 scripting 禁用、无实际执行；headless Chrome 最小复现实验：脏 HTML 恰好报 4 条与用户所见一致，剥离后 0 条）。page-extract.ts 新增 stripInlineHandlers() 在字符串层剥离 on* 属性（兼容双引号/单引号/无引号/大写/换行写法），Defuddle 与全文纯文本两条解析路径共用；新增 tests/page-extract.test.ts 5 例；README 安全设计补对应说明。
+- 修复（2026-10-21）：release.yml 发布作业报 "failed to run git: not a git repository" —— publish job 缺 actions/checkout@v4，gh release create 无 git 仓库上下文无法定位远端仓库（build-win/build-mac/build-ext 三作业其实都已成功）。补 checkout 后用新 tag v2026.10.21.2 重发；旧 tag v2026.10.21.1 保留（对应一次失败 run，重跑无效——Re-run 仍用旧 tag 上的旧 workflow 定义）。
+- 易用性（2026-10-21）：桥接白名单出厂预置——config.json 首次生成即写入发布版扩展固定 Origin（config.ts 的 DEFAULT_EXTENSION_ORIGIN，由固定 manifest key 派生），新用户免手抄；存量空数组配置不迁移（空数组仍是开发模式放行+警告）。server.ts Origin 校验放行无 Origin 头的本机进程（selftest/探针，浏览器 WS 必发 Origin）。新增 key→ID 推导一致性测试。README 快速开始砍掉原第 3 步。
+- 新功能（2026-10-21）：别名系统——「文件夹+会话」组合命名为别名（AliasRecord：id 16hex / name / folder / sessionId|null；存桥接 ~/.ccc-bridge/aliases.json 随配置目录走，重装扩展不丢）；协议新增 alias.list/create/update/delete/select 与 folder.pick；服务端粘性同步 syncCurrentAlias（select/create 后文件夹或会话变化自动写回别名，无当前别名不反向吸附，消除客户端竞态）；bindFolder(p, forceSessionId) 三分支抽取共用（undefined=按 sessions.json 映射 / null=强制新会话 / string=续聊，转录已删退回新会话并修正别名）；原生文件夹选择框 folder-picker.ts（win=PowerShell FolderBrowserDialog 挂 TopMost 隐形 owner 防压后台；mac=osascript choose folder；取消/不支持/出错统一回 null，UI 留手输退路；5 分钟超时兜底；pickSeq 代际号作废迟到结果）；扩展 AliasBar 包 FolderBar（平时一行别名下拉，＋新建才展开绑定表单，详情可点开；删除别名弹确认声明"仅删别名，会话保留"；提交时文件夹变了强制新会话）；App.tsx 接 alias.list.data / folder.picked（pickResolverRef 请求-响应配对）。桥接 60→72（alias-manager 5 例 + alias 路由 7 例）+ 扩展 24 测试全绿，selftest 离线通过，扩展 wxt build 通过。
+- 修复（2026-10-21）：exe 托盘模式别名功能静默失效——tray.ts 与 index.ts 各自装配 startServer 依赖，AliasManager 只注入了 index.ts（npm start 路径），exe 入口 tray.ts 漏注入，alias.* 消息全被 if (!aliases) 守卫静默丢弃（72 例单测全经 boot() 注入 aliases，覆盖不到生产装配层）；tray.ts 补齐注入（import + 实例 + deps），一次性探针实测重建 exe 的 alias.list 往返正常。教训：ServerDeps 新增字段时 index.ts 与 tray.ts 两个入口都要接线。
+- 新功能（2026-10-21）：别名创建表单支持手动输入会话 ID——下拉加「手动输入 ID…」项，选中后出现 ID 文本框（任意文件夹路径均可搭配手输 ID，不再强制新会话），可直接粘贴整行 claude --resume 命令（前端剥离命令前缀）；桥接鬼会话退回新会话时补发 folder.error 警告（必须在 folder.bound 之后发：客户端收 bound 清屏会抹掉先发的警告），alias.select 鬼会话用例补警告断言。桥接 72 + 扩展 24 测试全绿。
+- 修复（2026-10-21）：新建别名表单与详情区互斥——原先两者可同时展开，文件夹+会话控件叠两套（用户截图指出红蓝框功能重叠）；＋新建时自动收起详情，点详情自动放弃创建表单。纯扩展侧改动。
+- 更名与图标（2026-10-21）：产品定名 CopilotCC——扩展 manifest name/action、侧栏 title、右键菜单、托盘状态行与 tooltip、/config 设置页、README 标题全部换新；技术标识不动（npm 包名 ccc-* / 配置目录 ~/.ccc-bridge / zip 资产名 / 扩展固定 key 与 ID / 仓库名）。扩展补图标：gen-icon.mjs 重构为可 import（主流程加执行守卫，导出 render/encodePng/encodeIco/VARIANTS），scripts/gen-ext-icon.mjs 复用悬索桥变体 c 生成 16/32/48/128 PNG 到 extension/public/icon/，wxt.config.ts 注册 manifest.icons 与 action.default_icon，与托盘/exe 同一视觉身份；PNG 全平台 Chrome 通用。桥接 72 + 扩展 24 测试全绿，双端 typecheck 与构建通过。
+
+### 2026-10-21：修复 Release 缺扩展 zip（upload-artifact 隐藏目录排除）
+
+- 根因：actions/upload-artifact v4.4+ 默认排除隐藏目录下的文件。wxt zip 产物在 `extension/.output/`（点开头即隐藏目录），glob 匹配到的唯一文件被过滤，无文件时只 warn 不报错，build-ext 绿色但 artifact 为空，publish 汇总后 Release 只有 win/mac 两包（v2026.10.21.5 实际症状）。
+- 修复（release.yml）：扩展 zip 先 `cp extension/.output/*-chrome.zip .` 拷到仓库根（非隐藏路径）再上传，path 改为 `ccc-extension-*-chrome.zip`；三个 upload-artifact 全部加 `if-no-files-found: error`（今后静默缺包直接变红）；publish 创建 Release 前加 `ls -la assets/` 让收集结果日志可见。
+- 教训：CI 步骤绿色不等于产物真的上传了，artifact 上传必须配 `if-no-files-found: error` 兜底；点开头目录（.output/.next/.wxt 等）下的文件 upload-artifact 默认不收，要么拷出来要么 `include-hidden-files: true`。
+- 验证：本地 `npx wxt zip` 产物为 `extension/.output/ccc-extension-<version>-chrome.zip`（1.35 MB），路径文件名与预期一致；v2026.10.21.6 流水线需确认 build-ext 上传步骤不再 warn、Release 资产含扩展 zip。
+
+### 2026-10-21：mac 包改 dmg、win 包改单文件 exe
+
+- 背景：用户预期 mac 是 dmg 包；win zip 里两个 exe（ccc-bridge.exe + traybin/tray_windows_release.exe）令人困惑，预期单文件。托盘组件是 systray2 的平台进程（主程序拉起的子进程，不能单独运行），它硬性要求 CWD/traybin 布局。
+- win 单文件：托盘组件（3.6 MB）base64 内嵌进 exe——build-exe.mjs 编译前把 src/traybin-win-b64.ts 临时覆盖为真实内容、编完还原占位（仓库只存占位，脚本内 TRAYBIN_B64_PLACEHOLDER 与入库占位须逐字一致）；tray.ts 首跑释放到 ~/.ccc-bridge/traybin/（大小不一致即重写=升级跟随），chdirToTraybinParent 候选顺序：内嵌释放目录 → exe 旁（mac 包/旧版 win 包）→ CWD → node_modules（开发态）。与图标内嵌（icon.ts）同一模式。
+- mac dmg：release.yml 的 ditto zip 改 hdiutil create（-volname CopilotCC -format UDZO），dmg 是真实文件系统，天然保留可执行位；README 强调 dmg 只读，须先把文件夹拷出来再跑 setup.command（codesign 要往二进制写签名）。
+
+### 2026-10-21：修复 exe 进聊天秒断（SDK 原生 CLI 解析靠 CWD 侥幸命中）
+
+- 根因：Agent SDK 未显式传 `pathToClaudeCodeExecutable` 时，沿 import.meta.url/CWD 向上找 node_modules 里的原生 CLI 包。此前 exe 的 CWD 在项目树内（dist/ 位于 bridge/ 之下），侥幸命中 bridge/node_modules 所以一直能跑；单文件改动把 CWD 挪到 ~/.ccc-bridge 后搜索落空，SDK 在 query() 初始化同步抛 "Native CLI binary for win32-x64 not found"，异常沿 bindFolder 冲出无 try/catch 的 WS 消息处理器 → 进程死亡 → WS 1006 → 侧栏"秒断"。推论：历来所有 Release zip 在没有项目树的机器上进聊天必崩，此前只跑本地构建所以从未暴露。
+- 修复：① claude-session.ts 新增 resolveClaudeExecutable()——`CLAUDE_CODE_PATH` 环境变量优先，其次 where/which claude（win 下 shim 是同目录 .cmd/.ps1 无法直接 spawn，优先取相邻 node_modules 里的原生 bin/claude.exe），结果只解析一次并缓存，显式传给 SDK；解析不到则回退 SDK 默认行为。② server.ts 消息分发整体裹 try/catch：处理器内同步异常转 chat.error 发侧栏并 console.error 留痕，进程与连接保活。③ 回归测试：createSession 同步抛异常 → chat.error 且后续消息正常（72→73 全绿）。
+- 顺带修复：release.yml 三处 `npm version` 改 node 直写 package.json——npm version 会做 semver 规范化，把 4 段版本号 2026.10.21.7 改写成 2026.10.2-1.7（.7 扩展 zip 文件名被改写事故）。
+- 教训：编译分发形态下一切"沿 CWD/相对路径找资源"的 SDK 默认行为都是定时炸弹（托盘组件、CLI 解析同型，须全部显式化）；exe 的端到端验证必须在项目树外的隔离目录做（CCC_BRIDGE_HOME 隔离配置 + stderr 重定向 + WS 探针脚本复现，本次靠它抓到确定根因）。
+
+### 2026-10-21：新功能——聊天上传文件（落盘 copilotUploads）
+
+- 侧栏：输入区可拖入文件或点发送键左侧 📁 按钮多选（≤10 个、单文件 ≤30MB、合计 ≤45MB，扩展侧友好拦截先于协议层），待传文件芯片行可单个移除；发送时 FileReader 读成 base64 随 chat.send.uploads 上送。
+- 协议：chat.send 增加 uploads?: UploadFile[]（name + dataB64），三层上限 MAX_UPLOAD_FILES=10 / 单文件 41MB b64 字符 / 总量 60MB b64 字符（ws 100MiB 帧内），越界整帧拒绝。
+- 桥接：saveUploads 落盘绑定文件夹根目录 copilotUploads/（basename+剥控制字符防穿越，重名自动 -1 后缀不覆盖，坏 b64/空文件/超 30MB 逐条 failed 回 chat.error，全失败则本次不发送）；随后把 [上传文件] 说明块（composeUploadNote 含真实落盘路径）拼在客户端原文前发给 Claude。
+- 气泡/回放：attachKind 新增 "upload"（📁 标记），右键气泡/点击附带状态行溯源完整发送内容与看页面一致；转录回放按 [上传文件] 标记识别（优先级高于页面/选中，一条消息可同时带两者）。
+- 防注入：GUARD_PREFIX 扩展覆盖 [上传文件] 块（文件名是数据不是指令）；transcript.test.ts 的 GUARD 字面量夹具改 import claude-session 同源常量，前缀文案再改不拖垮测试。
+- shared 单源：upload-note.ts（UPLOAD_DIR + composeUploadNote）经 sync-protocol.mjs 逐字同步两端。
+- 验证：桥接 83 + 扩展 29 测试全绿，双端 typecheck/构建通过；隔离 exe 端到端探针（CCC_BRIDGE_HOME 隔离 + 临时绑定目录 + 带 txt 上传发问）实测文件落盘一致、Claude 经 Read 读出内容、桥接存活。探针心得：WS 握手即鉴权——URL 必须 /ws?token=...（auth 消息是空操作）；握手后服务器会推 session.list.data 等帧，等特定帧须按类型过滤。
+
+### 2026-10-22：新功能——页面信息丰富度（按别名配置）
+
+- 协议：PageRichness = brief/standard/rich + isPageRichness 守卫；AliasInfo 与 alias.create/update 增加可选 pageRichness（非法值剥掉不下发）；alias.list.data 随别名下发扩展。
+- 桥接：AliasRecord 持久化 pageRichness（aliases.json；未设置不落字段 = 标准档）；create/update 透传；syncCurrentAlias 部分更新天然保留该字段。
+- 扩展：attach-policy 新增 PAGE_RICHNESS_CAPS（精简 5 千 / 标准 3 万 / 丰富 10 万字符），composeMessage 按当前别名档位截断；附带状态行显示实际注入字符数（截断时标注原文字数）；AliasBar 新建表单与详情区顶部都加丰富度下拉，详情区改动即发 alias.update 落盘。
+- 验证：桥接 86 + 扩展 30 测试全绿（协议校验/管理器持久化/路由透传/组装截断四层用例），双端 typecheck、扩展 wxt build、桥接 exe 构建通过。
+
+### 2026-10-22：修复 macOS 上传文件名清洗漏反斜杠（CI 抓到的跨平台 bug）
+
+- 根因：sanitizeUploadName 用 path.basename 去路径穿越，POSIX 实现不认反斜杠，Windows 风格穿越名（..\..\evil.txt）在 macOS 上整串漏过清洗；本地 Windows 测试一直绿所以从未暴露，CI macos-latest 矩阵抓到。
+- 修复：basename 改按正反斜杠切分（name.split(/[\\/]/).pop()），两端平台行为一致；测试夹具不动（期望本就是跨平台契约）。桥接 86 全绿。
+- 教训：凡路径/分隔符处理的代码，Windows 本地绿不代表 POSIX 绿；上传/落盘类功能的清洗逻辑一律手写分隔符处理，不依赖 path 模块的平台语义。
+
+### 2026-10-22：修复详情区「页面丰富度」行深色主题下隐形
+
+- 根因：richness-row 行样式写死 `color: #555` 灰字（浅色主题习惯），侧栏实际是深色主题（body 底 #1e1f24、主文字 #e4e6eb），灰字压在深底上近乎隐形，用户报告"背景是灰色的字也是灰色的"；下拉也没有暗底控件样式。
+- 修复：行文字删掉写死的灰字与 12px 字号，继承面板主文字色；下拉补齐暗底控件约定（background #2a2b31 / color inherit / border #444 / 圆角 4px），与 .alias-switch、.alias-create select 一致。
+- 教训：侧栏是深色主题，新 UI 元素配色一律 `color: inherit` + 复用既有控件样式（#2a2b31 底 / #444 边），不引入任何新灰色。
+
+### 2026-10-22：新功能——随时强停本轮生成（等价 CLI 的 ESC）
+
+- 根因（用户报告"少了强停机制"）：停止键的显示条件是"流式文字已开始"（streaming !== null），而 Claude Code 轮次里思考与工具调用常占大头，首字之前没有任何停止入口；发送键此时是禁用态，观感就是"没法停"。
+- 协议：ServerMessage 新增 chat.aborted（无字段）——桥接确认中止立即下发，客户端据它解除 busy。
+- 桥接：claude-session 跟踪 turnActive（send 起、result 帧止）；abort() 空闲时空操作（防 done 在途竞态误吞下一轮 result），进行中则立即发 onAborted（不等 CLI 收尾帧）+ 吞掉该轮收尾 result + 挂起审批立即按拒绝释放 + interrupt() 通知 CLI 停止（拒绝吞掉，不影响已下发的 aborted）；server 事件接线 onAborted → chat.aborted。
+- 扩展：新增 busy 状态（发送即置位；chat.done/error/aborted、换文件夹/会话、断线、换桥接清零），InputBox 的 streaming prop 改 busy——停止键整轮可见；停止键改红色 ■ 样式；输入框 Esc 中止（输入法组合中的 Esc 不拦截）；submit 加 busy 兜底防 Enter 连发。
+- 中止观感对齐 CLI：已生成的部分文字保留为正式气泡，追加"⏹ 已手动停止本轮生成"标记。
+- 验证：桥接 90 + 扩展 30 测试全绿（新增 abort 中止/空闲空操作/interrupt 拒绝/路由下发 4 例），双端 typecheck、扩展构建通过。
+- 教训：「进行中」状态要锚在用户动作（发送）上，不能锚在 UI 表现（首字到达）上——否则思考/工具调用期就是控制真空。
+
+### 2026-10-22：修复「强制看页面」按钮悬浮遮挡输入文字
+
+- 根因：按钮绝对定位悬浮在输入框右上角（rgba 半透明底），输入文字较长时从按钮底下穿过被遮挡（用户报告"挡住我输入的文字了"）。
+- 修复：按钮从输入框悬浮层挪到底部发送行，放在模型·effort 指示右边，改为普通行内开关（实底 #2a2b31，点亮蓝底）；删除 .ta-wrap 包裹层（display:block 并入 textarea 主规则）；send-row 布局从 space-between 改为左组排列 + send-actions margin-left:auto 钉右，model-effort 加省略号收缩防窄屏溢出。
+- 验证：扩展 typecheck + 30 测试 + 构建通过（纯扩展侧改动，桥接未动）。
+- 教训：悬浮/绝对定位的控件压在有内容的区域上，迟早遮挡输入；控制件一律进正常文档流。
+
+### 2026-10-22：修复输入区上下两行硬约束回归（按钮挪位后遗症）
+
+- 根因：「强制看页面」挪进发送行后两处破行——①输入框上方 toggles 行仍是 flex-wrap: wrap，附带网页 + 权限/模型/effort 三个下拉在窄面板超出宽度换成两行；②发送行 model-effort 指示开着 min-width: 0 可无限压缩，而同行开关与按钮组全部 flex-shrink: 0，指示被挤到零宽，用户看到"当前使用模型不见了"。
+- 修复：toggles 行改 nowrap，三个下拉 min-width: 0 可压缩截断（完整值在下拉里选），行恒为一行；发送行 model-effort 改 flex: 0 1 auto + min-width: 4.5em 保底（永不消失，完整文本在悬浮提示 title）；hint 文案去掉"模型/effort"前缀压缩为裸值 `fable 5.1 · high`；send-row 间距 8px→6px 再省宽度。功能一个不少：附带网页/权限/模型/effort/强制看页面（含点亮态）/模型指示/上传/发送/停止全保留。
+- 验证：扩展 typecheck + 30 测试 + 构建通过（纯扩展侧改动，桥接未动）。
+- 教训：flex 行内可压到零的指示文本等于会消失——指示类元素必须给保底 min-width；多控件行一律 nowrap + 可压缩项显式截断，把"换行"从可能项里删掉，否则窄面板必破行。
+
+### 2026-10-22：修复「强制看页面」开关点亮态不可分辨（状态反馈不可见）
+
+- 根因：点亮态是深灰底 #2a2b31 → 深蓝 #2f4f7f 的单色差，两者亮度接近，且该 muted 蓝与发送按钮、用户气泡同色，深色主题下读不出"已点亮"语义——用户按下后无法确认是否生效，也不知道再点一次可取消（切换与取消功能一直存在，是反馈不可见）。
+- 修复：点亮态改亮蓝底 #3b82f6 + 亮边 #60a5fa（与灰底对比悬殊），按钮文案点亮时追加 ✓（颜色之外的第二冗余通道），悬浮提示随状态切换（点亮态明示"再点一次即取消"），补 aria-pressed；README 同步说明：点亮带 ✓、再点熄灭即取消、发送后消息区的「📄 已强制附带页面…」状态行是生效凭证。
+- 验证：扩展 typecheck + 30 测试 + 构建通过（纯扩展侧改动，桥接未动）。
+- 教训：开关态反馈要双通道（颜色 + 文本/图标），单靠色差在深色主题下不可靠；主题主色已被常规按钮占用时，不能再用同色系深色表达"已激活"状态。
+
+### 2026-10-22：修复回复中本地文件名被渲染成错误链接（点击误跳 sidepanel.html）
+
+- 根因：Claude 回复里提到本地文件常写成 `[标准知识.md](标准知识.md)` 这类相对链接；react-markdown 默认渲染成 `<a href="标准知识.md">`，相对地址按侧栏页面基地址解析成 chrome-extension://…/sidepanel.html 之类的扩展内部地址，点击即误跳（用户报告"标准知识.md 变成可点击的，点击打开了 sidepanel.html"）。
+- 修复：MessageList 增加 MdLink 链接渲染——仅 http/https 绝对地址可点击（顺带补 target=_blank rel=noreferrer 新标签打开，此前点真链接会顶替侧栏自身页面）；其余一律降级为纯文本（仅保留悬浮提示说明它本来是不可打开的地址；初版加了点状下划线 + help 光标，用户反馈问号光标观感怪异，回退为彻底普通文字）。判定逻辑 isWebHref 落 format.ts 纯函数便于测试。
+- 顺带加固：snapshotActiveTab 增加扩展自身页面守卫——用户把 sidepanel.html 开成普通标签页时活动 tab 就是它，注入会成功并把聊天 UI 与扩展地址喂进上下文；现在注入前按 tab.url 拦、注入后按 location.href 再拦一次，双保险不附带。
+- 验证：扩展 typecheck + 35 测试全绿（新增 isWebHref 3 例 + 自身页面守卫 2 例）+ 构建通过（纯扩展侧改动，桥接未动）。
+- 教训：应用壳层（侧栏/内嵌页）里的 Markdown 渲染不能放行相对链接——相对地址会按壳页面基地址解析成无意义或错误目标；链接渲染必须白名单协议（http/https），其余一律降级。且降级就要降彻底：任何"它本来是链接"的样式暗示（下划线、help 光标）都是噪音。
+
+## 2026-10-22 macOS dmg 重构：标准 .app + ad-hoc 预签 + 一键解除隔离（免费分发）
+
+**现象**：CI 出的 dmg 打开是裸文件夹而非 .app，双击报"已损坏"；用户期望"加个签名放行就行"。
+**根因**：浏览器下载带 com.apple.quarantine 隔离标记；没有 Apple Developer ID（$99/年）+ 公证时，ad-hoc 签名在隔离态下一律报"已损坏"，对 App 右键→打开也无法绕过——免费分发唯一路径是先解除隔离。
+**修复**：dmg 改标准布局——正规 CopilotCC Bridge.app（Info.plist + 悬索桥 icns + LSUIElement 菜单栏驻留；traybin 放 Contents/MacOS 下，零改动兼容 tray.ts 的 exe 旁解析）+ CI 内 ad-hoc 预签并以 codesign --verify --deep --strict 卡质量门 + Applications 软链 + 「首次使用-右键打开我.command」一键脚本（拷入 /Applications → xattr -cr 解除隔离 → 校验补签 → open 启动）。整条链由 bridge/scripts/build-mac-app.sh 串好，release.yml 只调它。
+**教训**：
+- ad-hoc 签名 + quarantine = "已损坏"且右键无绕过；Developer ID + notarytool 公证才有"放行即可"体验（$99/年）。免费方案的用户动作底线 = 一次性右键打开解除隔离脚本，文档必须把这步写到最显眼。
+- .app 化时托盘组件解析沿 path.dirname(process.execPath) 自然落到 Contents/MacOS，traybin 跟着放那里即零代码改动；writeIcon 写 os.tmpdir() 不动包内容，不破坏包签名。
+- dmg 内的 .command 进 dmg 前必须 chmod +x（hdiutil 保留权限位），用户右键→打开才有效。
+
+## 2026-10-22 mac 打包脚本：变量后紧跟全角标点被 bash 吞进变量名（CI 红在最后一行 echo）
+
+**现象**：build-mac-app.sh 在 macOS runner 上 dmg 已生成，却在收尾 echo 报 `APP: unbound variable` 退出 1，构件未上传。
+**根因**：`$APP，`/`$VER）` 变量名后紧跟全角标点，mac runner 的 bash 把标点首字节吞进变量名；set -u 下未定义即死。bash -n 查不出，Windows 本地也复现不了（Git Bash 不这么解析）。
+**修复**：变量与全角标点相邻一律 ${VAR} 花括号（mac-setup.command 的 `$APP。` 同步加固）；提交前 `grep -n '\$[A-Za-z_][A-Za-z0-9_]*[^ -~]'` 可机器化扫雷。
+**教训**：中文插值字符串里的变量展开永远带 ${}——这是唯一不依赖 locale 与 bash 版本行为的写法；set -u 再次立功，把静默输出残句变成构建期硬失败。
+
+## 2026-10-23 macOS 菜单栏图标不出现：systray2 自带托盘二进制是 x86_64 单架构
+
+**现象**：dmg 安装/解除隔离都顺了，App 也能打开，但菜单栏看不到桥形图标（桥接进程其实在跑，WS 正常）。
+**根因**：systray2@2.1.4 自带的 tray_darwin_release 是 x86_64 单架构 Mach-O（头部 cputype 0x01000007，xxd 前 8 字节可辨）；没装 Rosetta 的 Apple Silicon 上 spawn 即失败，图标永远不会出现。Windows 托盘正常只是因为 win 版本来就是 x64——架构盲区一直没被覆盖。
+**修复**：托盘助手自研——bridge/tray/main.swift（按 node_modules/systray2/index.js 客户端口径实现 ready/整份菜单/update-*/clicked/exit 协议，同名 tray_darwin_release 使客户端零改动），CI 在 mac runner 用 swiftc 现场编 arm64（-target arm64-apple-macos12.0），编完跑协议回路冒烟（ready + 中文初始菜单 + exit）卡质量门；tray.ts 的 ready() 加 8s 超时（能 spawn 但迟迟不就绪的静默挂死也走 tray-error.log 致命日志）；开发态 scripts/build-tray-mac.sh 产 bridge/tray/bin/，候选顺序优先于 node_modules。
+**教训**：
+- 分发包里每一个非自家二进制都要验证目标架构：Mach-O 头 4-7 字节是 cputype（0x01000007=x86_64，0x0100000C=arm64；CAFEBABE=universal 胖二进制），xxd 一眼可辨，不收"它在某台机器上能跑"的口供。
+- "能打开 ≠ 全链路能跑"：主进程活着、WS 正常，不代表子进程托盘起来了——启动期失败必须落盘可查（tray-error.log 就是第一证据来源）。
+- 静默挂死是最坏的失败形态：spawn 成功但协议不就绪要有超时兜底，否则用户只能看到"什么都没发生"。
+
+## 2026-10-23（之二）把"架构发错"变成 CI 必挂的测试
+
+**背景**：上一条目复盘时被问"这么明显的不兼容为什么 CI 测不出来"——答案是当时只验证构建、没验证运行；这条把缺口补上。
+**加固**：
+- check-arch.mjs：纯字节级架构断言（PE Machine / Mach-O cputype / ELF e_machine），任何 runner 几毫秒跑完，挂进 CI 门禁审计第三方预编译托盘组件（win 内嵌件必须 x64）。负例已本地验证：对 x86_64 的 darwin 托盘断言 arm64 必 exit 1——这个测试本来就能抓住那个 bug。
+- 产物级 --smoke：tray.ts 加 `--smoke <platform> <arch>` 分支（能 exec 到这就证明架构对，不匹配退出码 1），win/mac 两个构建 job 打包前都跑；mac 侧托盘助手另有协议回路冒烟（ready + 中文菜单 + exit）。
+**教训**：让"这类 bug 必被 CI 抓住"的关键不是更贵的运行环境，而是断言载体选对——架构写在文件头 8 字节里，读出来比对，ubuntu runner 都能审 mac 包；运行级冒烟则覆盖"字节对但起不来"的剩余空间（缺运行库、签名损坏等）。
+
+## 2026-10-23（之三）独立窗口镜像模式 + 别名打开文件夹/续聊脚本
+
+设计稿：docs/superpowers/specs/2026-10-23-mirror-popup-and-folder-open-design.md（用户已逐轮拍板）
+
+- 架构决策：桥接从"每连接一份状态"重构为"进程内唯一工作区 + 视图广播订阅"。侧边栏/弹窗都是视图，关哪个都不杀会话；视图开关永不中断生成，停止只有用户亲手点。
+- 快照恢复：新视图 client.ready → folder.bound → 主动推 history → lists → chat.sync{busy,streamText,user,permReq,draft}；中途打开补齐在途流与草稿。
+- 用户消息改桥接回显上屏（chat.send 带 display/note → 广播 chat.user），双视图气泡天然一致；附带说明与上传结果走广播 tool 泡。
+- 草稿镜像走 WS 广播（chrome.storage 有每分钟写配额，逐键同步会爆）；IME composition 期间不上报；后到覆盖；发送即清。
+- 视图重连不再自动回绑 lastFolder（会把工作区拽回旧文件夹）；快照为空才引导首绑；folder.bound 一律刷新 lastFolder（修 alias.select 不刷新的 stale 回绑）。
+- 弹窗=同一份 App + URL 参数（?popup=1&tab=&alias=）；钉住 tabId 提取页面；同 tab 去重聚焦；多弹窗=同一工作区多视图。
+- 关联徽标（双端 key）：后台 SW 向被钉页面注入 Shadow DOM 徽标（色点=hash(aliasId)，别名名），点击聚焦弹窗；onUpdated 重注入、窗口/标签关闭全路径清理。
+- 续聊脚本：继续聊天-<别名>.sh（非法字符清洗、空名"未命名"、截 60），标记注释防误删，内容不变跳过写；删别名/改名换文件夹全路径清理。
+
+**实施落地（同日完成）**：
+- 桥接：server.ts 重构为进程内唯一工作区 + broadcast 视图广播（108 测试绿，含 server-mirror.test.ts 8 个镜像用例：双端回显一致/真流式/中途快照顺序/草稿不回显/ws close 不杀会话等）；新增 resume-script.ts（7 用例）；folder-picker.ts 加 openInFileManager（spawn 事件即算成功，explorer 非零退出码不误报）。
+- 扩展：page-extract 拆 snapshotTab(tabId, knownUrl?) 供弹窗钉页提取；popup-mode.ts（URL 参数解析/构造）+ popup-registry.ts（纯状态机钉住注册表，SW 回收后靠扫描弹窗 URL 自愈）+ background.ts 接管弹窗去重打开/Shadow DOM 徽标生命周期；App 镜像化（快照驱动回绑、chat.user 回显上屏取代乐观上屏、草稿受控+200ms 防抖镜像+IME 守卫、弹窗顶栏 📌/🎯/⇱）；InputBox 草稿改受控；AliasBar 详情区加「📂 打开文件夹」。扩展 54 测试绿 + 构建通过。
+- wxt.config 权限未变：tabs.get/读 url 由 host_permissions 覆盖，tabs/windows 事件不需新权限。
+- 坑位记录：node 版 vitest 环境没有 DOMParser，页面提取类单测只能覆盖到守卫与注入参数透传层；heredoc 超 ~170 行在本环境会莫名炸引号，大文件一律分段追加或用写文件工具。
+
+## 2026-10-23（之四）兼容修复：升级后聊天记录"丢失" + 续聊脚本 Windows 直跑
+
+用户报告：新版换上去后旧版别名聊天记录"没了"；.sh 在 PowerShell 跑不了。
+
+**根因（数据从未丢：转录在 ~/.claude/projects/，映射在 sessions.json/aliases.json）**：
+- alias.sessionId=null 的语义 bug：alias.select 把 null 当"永远强制新会话"，sessions.delete 毁映射再开新会话；弹窗每次打开自动重发 alias.select，等于每次开弹窗都把会话清空重开。（创建别名后首条消息的 onSessionId 不写回别名，null 是永久态——新旧版都有的老坑，弹窗把它变成必然触发。）
+- 工作区绑定只在内存：桥接重启/升级后文件夹+别名全丢，只剩扩展 lastFolder 回绑兜底（不含别名）。
+
+**修复**：
+- alias.select 的 null → undefined（回退 sessions.json 映射续聊；无映射才新开）；alias.create 保留"显式新会话"语义不变。
+- onSessionId 落地即 syncCurrentAlias + pushAliasList：新会话 ID 立刻写回当前别名，null 变暂态。
+- 新增 workspace-store.ts：bindFolder/alias.delete 时持久化 {folder, aliasId} 到 workspace.json；client.ready 首个视图接入时懒恢复（别名在按别名恢复，文件夹失效放弃，扩展 lastFolder 兜底）。
+- resume-script.ts 成对落盘 .sh + .bat（bat：chcp 65001 防中文乱码、cd /d %~dp0、exit /b 1 不关终端窗口、CRLF 行尾）；删除与标记保护同步覆盖双文件；folder.opened 闪示当前平台可直跑的那个文件名。
+- 测试：桥接 108 → 116（resume-script +4：bat 命名/内容/无会话/标记保护；server-mirror +4：null 别名回退续聊/新会话写回别名/重启恢复快照/失效文件夹放弃）。扩展无代码改动（54 绿）。
+
+**教训**："会话依附的键"（别名.sessionId、工作区绑定）必须随会话生命周期写回与持久化，只在绑定点写一次=换条路径就丢；新视图自动重放用户动作（弹窗自动 alias.select）会把幂等性 bug 变成数据级事故——服务端处理"选中"类消息要默认幂等。
+
+## 2026-10-23（之五）别名下拉空白：快照门控回归修复
+- 症状：换上镜像版（.3+）后，桥接一重启别名下拉就整个空白，聊天区也空；aliases.json 数据其实一直在。
+- 根因：镜像重写（d0e15f3）把 `alias.list.data` 关进了 pushSnapshot 的 `if (workspace.folder)` 门内；扩展又删掉了旧版的主动 `alias.list` 拉取，纯等推送；而 `lastFolder` 只在手动绑定时写入（别名绑定不写），chat.sync 兜底回绑从不触发。三个缺口叠加 → 全新桥接下别名列表永远到不了扩展。旧镜像测试还把"空工作区只回 chat.sync"固化成了预期行为。
+- 修复：pushSnapshot 把别名列表移出 folder 门控（别名是全局数据，不依附绑定）；旧测试改写为回归用例（无绑定 + 有别名 → 快照必须含 alias.list.data 且先于 chat.sync）。
+- 教训：①"快照按绑定门控"要逐个消息类型过一遍归属——全局数据（别名）与文件夹数据（历史/会话列表）不能一刀切；②删掉客户端的主动拉取前，必须保证推送路径覆盖全部状态组合（含空工作区）；③老测试固化的"预期行为"可能本身就是 bug，重构时对它保持怀疑。
+
+## 2026-10-23（之六）CI 托盘冒烟健壮性
+- 症状：.5 的 macOS 构建挂"托盘助手冒烟失败"且输出为空；同一份 Swift 代码 .3 刚绿过（当天零改动），属 runner 无 WindowServer 会话的偶发拉起失败。
+- 处理：冒烟重试 3 次（间隔 2s）；stderr 并入捕获——再失败时 ✘ 行直接带真实崩溃原因，不再盲猜。
+- 注意：脚本有 `set -euo pipefail`，循环体内一律用 if 条件形式（`cmd && break` 清单尾状态会把 set -e 触发在 for 语句级，诊断信息打不出来）。
+
+## 2026-10-23（之七）macOS GUI 环境找不到 claude CLI
+- 症状：Mac 上桥接已连接，发消息报 "Native CLI binary for darwin-arm64 not found"；终端里 claude 明明能跑。
+- 根因：Finder/Dock 启动的 .app 不读 ~/.zshrc，PATH 只有 /usr/bin:/bin 等系统默认，`which claude` 必然失败 → 回落 SDK 默认解析 → pkg 包内没有 darwin-arm64 原生二进制 → 报错。
+- 修复：解析链加两级 unix 兜底——常见安装位置（~/.claude/local/claude、/opt/homebrew/bin、/usr/local/bin、~/.local/bin）逐个验执行位 → 最后借登录 shell（zsh -lic 'command -v claude'）拿到用户终端里的真实 PATH（解析结果缓存，只探一次）。
+- 教训：macOS GUI 应用与终端是两个环境。任何依赖 PATH/环境变量的功能都要追问一句"Finder 双击启动时还成立吗"。
+
+## 2026-10-23（之八）macOS CI 测试竞态：裸等"下一条消息"撞上绑定尾巴
+- 症状：macOS CI 挂 uploads 测试（expected 'session.list.data' to be 'chat.error'），本地与 win/ubuntu 一直绿。
+- 根因：.3 镜像重写让 folder.bind 连发三条广播（bound → session.list → alias.list），而该测试只消费第一条后断言"下一条即 chat.error"；慢 runner 上 session.list.data 会错开批次晚到，被断言撞上。潜伏四轮 CI 纯属运气。
+- 修复：改为按类型等 chat.error（其他类型跳过）。已枚举 server.test.ts 全部 9 处裸等点，仅此一处同时满足"成功绑定 + 只等首条 + 再发消息 + 断言下一条类型"的竞态条件。
+- 教训：广播架构下"下一条消息"断言天生脆弱——测试等待必须按类型过滤；新增广播消息时，回头审计所有裸 `ws.on("message")` 等待点。
+
+## 2026-10-23（之九）macOS 报 Not logged in：GUI 环境缺 ANTHROPIC 变量
+- 症状：Mac 上发消息报 "Not logged in · Please run /login"；用户走中转 API（zshrc 里的 ANTHROPIC_BASE_URL/AUTH_TOKEN），从不需要 login。
+- 根因：与"找不到 CLI"同源的上一层——.app 不读 ~/.zshrc，密钥/代理变量没带进桥接进程，SDK spawn 出的 claude 无任何凭据。
+- 修复：createClaudeSession 起手调 ensureShellEnvFallback（unix 限定、结果缓存）：密钥类变量缺失时 `zsh -lic env` 取用户终端全量环境，把 ANTHROPIC_*/CLAUDE_*/代理变量中缺失的补进 process.env（只补不覆盖）。
+- 教训：环境隔离不止 PATH 一层——"程序能找到"之后还有"凭据能拿到"。依赖 shell 环境的任何能力都要把 GUI 启动链路整段走通验证。
+
+## 2026-11-16 Windows 终端启动慢根因修复（标题缓存 + 异步转录 I/O）
+
+- [x] 根因（来自 `startup.log` / `startup-diag.log` 与只读探针）：8 秒不在终端进程本身，而是桥接主线程同步打开 358.9MB 转录时被 Kaspersky（`avp.exe` 常驻、Defender RTP 已关闭）同步扫描；开关事件循环冻结约 7.8–7.9 秒，`waitForStatus` 轮询和 PowerShell `execFile` 回调一起被推迟。对照证据：同一插件终端第二次 `embedded total=306ms`；同一路径 PowerShell 自身 `ps=34ms`；4 天未动的大转录 `open=1,046,432ms`、打开后 `read64k=0ms`。
+- [x] 会话标题缓存：`transcript.ts` 新增 `configureSessionTitleCache` / `refreshSessionTitles`，标题按“绝对路径 + 文件大小指纹”缓存到 `<configDir>/session-titles.json`；命中缓存不再打开转录，文件变小判定被重建并失效，`deleteTranscript` 同步清缓存。超过 4MB 且未缓存的转录在同步路径只返回 `(空会话)` 占位，由异步读取 64KB 头部补全后补发会话列表；头部无标题的负结果按文件大小记忆，避免反复打开。
+- [x] 历史分页异步化：`readTranscriptPageAsync` 用 `fs.promises`；最新页只读尾部窗口（8MB 起、上限 64MB，按需扩大），`before` 分页全量异步读取以保持与同步实现完全一致；`readTranscriptTimeline` 重构为共享的 `parseTranscriptEntries` + `buildTimeline`。`server.ts` 的 `readHistoryPage`、`pushSnapshot`、`session.history`、压缩摘要补全改异步/定向补帧；`terminal-service.pushMirror` 按会话串行化并返回 Promise，真实退出仍保证“最终镜像 → 恢复 SDK → idle”的顺序。
+- [x] effort 读取保护：`readTranscriptEffort` 对超过 64MB 的转录直接返回 `undefined`（沿用 init 上报值），不再在每轮 result 同步打开超大文件。
+- [x] 测试：新增标题缓存 2 项、异步分页 3 项、超大转录 effort 保护 1 项；更新镜像/终端退出/镜像服务测试等待异步完成。bridge 全量 41 文件 / 464 通过 / 1 跳过（Darwin 专项），`tsc --noEmit` 通过。
+- [ ] 待验证：用带现有启动诊断插桩的新 Windows 构建在隔离目录实测系统终端与插件终端首次打开，确认 `startup.log` 中 `status`/`identity` 不再约 8 秒；随后按用户确认撤掉临时诊断插桩并清理临时产物。
+
+## 2026-11-16（之二）插件终端关闭 5s 阻塞与历史打开 7.9s 的修复
+
+- [x] 关闭阻塞根因：node-pty 1.1.0 `WindowsPtyAgent.kill()` 在 JS 线程同步调用 `_ptyNative.kill()` → 原生 `ClosePseudoConsole` 等待控制台客户端；claude.exe 未及时退出时系统等满约 5 秒宽限期。实测 `pty.nativeKill 5035ms`、`event-loop blocked ~5029ms`。
+- [x] 关闭修复：`BunPtyBackend` 在 Windows 关闭前先 `taskkill /PID <pid> /T /F`（3 秒上限、失败回退原生关闭），再调 `raw.kill()`。真实机器日志 `pty.nativeKill 3ms`、`terminal.close returned 89ms`，不再出现 blocked 行；本地卡死客户端复现 5011ms → 5–72ms。
+- [x] 打开慢根因（来自 diag5 实测）：单次页读取 `open=7885–7913ms`、`read=3–5ms`、`parse=13–15ms`——耗时全在 `fs.promises.open` 被 Kaspersky 按文件版本整文件扫描；`before` 分页还会用 `fs.promises.readFile` 二次打开。
+- [x] 打开修复：`transcript.ts` 新增有界 LRU 转录句柄缓存（上限 32），命中时只用 `handle.stat()` 校验大小不减且 ino/dev/birthtime 未变，绝不重新 open；最新页、`before` 全量页与标题异步补全共用同一句柄；变小/换文件自动重开；`deleteTranscript` 先退役缓存句柄，避免 Windows delete-pending 阻止同 ID 重建。新增 4 项回归测试（连续分页只 open 一次、重建后重开、`before` 复用、标题与分页共用）。bridge 全量 41 文件 / 471 通过 / 1 跳过，`tsc --noEmit` 通过；Bun 探针实测 14MB 转录三次分页合计只 open 1 次。
+- [ ] 待验证：用新构建 `ccc-diag6.exe` 在真实机器复测插件终端打开/翻历史，确认 `pageAsync` 的 `open` 从约 7.9s 降到几十毫秒，关闭仍保持 ~90ms。
+
+## 2026-11-16（之三）diag7 预开句柄实测 + 全屏启动失败计数规避（NO_FLICKER）
+
+- [x] diag7 真实机器结果：启动预开最后绑定会话的转录句柄后，首次历史渲染 <100ms（此前 `pageAsync` 整段 7943ms）；插件终端打开 367–577ms（probe 47ms、settings 1ms、spawn 29–37ms、identity 188–208ms）；关闭 96ms。桥接侧读取已达标，剩余等待在 CLI 进程内部。
+- [x] AV 扫描特征补全：新建 14MB 临时文件 open 0–3ms、静默会话转录 open 2–20ms，而活动的大转录每个新版本首次 open 约 7.8s——是 Kaspersky 按“文件+路径+版本”扫描，不是目录或体积的普遍问题。另有新证据：桥接进程长期持有该转录句柄期间，其他进程对同一文件的 open/stat 可阻塞 >45s~240s（探针 exit=124 被杀），此前 diag6/diag7 运行期间即可复现。
+- [x] 句柄缓存的边界说明：文件句柄是进程私有，缓存只让桥接自己的读取免扫；插件终端是新的 `claude --resume` 进程，它自己打开转录仍要过 AV 扫描——这就是“文件已经打开过、插件终端仍慢”的原因。CLI 侧只能靠杀软排除目录/进程解决。
+- [x] 新回归（全屏渲染回退提示）：桥接的 taskkill 快速关闭若发生在全屏会话开始 10 秒内，会被 CLI 记作一次全屏启动失败；两次后回退经典渲染并打印提示。修复：`cli-capabilities.ts` 新增 `supportsNoFlicker`（>= 2.1.236 才支持，unknown 不猜）；`embedded-terminal.ts` 与 `system-terminal.ts` 按探测版本注入 `CLAUDE_CODE_NO_FLICKER=1`（系统终端经请求字段 `noFlicker` 传入包装进程，由 `terminal-child.ts` 校验并在子进程环境注入）。旧版本不注入、请求不带未知字段。
+- [x] 测试：新增 `tests/cli-capabilities.test.ts` 版本矩阵与三条启动路径用例（注入/不注入、请求标记、非布尔拒绝）；四个相关文件 48/48 通过；bridge 全量 42 文件 / 492 通过 / 1 跳过；`tsc --noEmit` 通过。
+- [ ] 待验证：用 `D:\ccc-fast-final-verify-20261026\tool-history-20261027\diag-bridge-20261116\ccc-diag8.exe`（配套同目录新编 `ccc-terminal.exe`）复测：快速开关插件终端不再出现 fullscreen 回退提示、仍为全屏渲染；同时确认打开/关闭耗时维持 diag7 水平。
+- [ ] 待用户决定：给 Kaspersky 添加排除（`C:\Users\aaahzb\.claude\projects` 与 claude.exe/桥接 exe 受信任）以消除 CLI 侧 resume 的 7.8s 扫描；长期持有句柄对其他进程 open 的阻塞风险，是否改为空闲关闭句柄。
+
+### 追加修复：关闭提示中的「退出码 undefined」
+
+- [x] 现象与定位：关闭终端后提示「终端已退出（exit） · 退出码 undefined」。日志确认是主动关闭后的正常退出帧，`pty.exit event code=undefined`——Windows ConPTY 被 taskkill 强杀后 node-pty 运行时不给退出码（其类型声明写的是 number，与实际不符）；界面只把 `null` 当作“无退出码”，`undefined` 就漏成文案。
+- [x] 修复：`PtyExitEvent.exitCode` 放宽为 `number | null`；`BunPtyProcess` 在退出事件处把非 number 归一为 `null`；`NodePtyBackend` 的 helper 退出帧缺 `exitCode` 时按 `null` 分发，不再误判 `HELPER_INVALID_FRAME` 并连带结束所有会话。
+- [x] 测试：新增 2 条回归（强杀缺退出码→null、helper 缺字段→null 且后端不失效）；bridge 全量 42 文件 / 494 通过 / 1 跳过；`tsc --noEmit` 通过。
+- [ ] 待验证：用 `ccc-diag9.exe`（同目录新版 `ccc-terminal.exe` 保持 19:12 构建）关闭终端，确认提示只显示「终端已退出（exit）」；diag8/9 均含 NO_FLICKER 门控。
+
+### 追加修复：首字出现前滚轮导致随后滚轮失效（插件终端）
+
+- [x] 现象：插件终端里，在画面出现第一个字之前滚动鼠标，字符出现后不点「可滚历史」按钮就无法滚轮浏览。
+- [x] 根因：上次的“向上滚轮自动导出”在 CLI 未就绪时也会触发——空画面、已 attach、`baseY=0` 立即发 Ctrl+O；CLI 尚未启动输入处理，3 秒后判定未出现 transcript 并进入 8 秒冷却。冷却期内向上滚轮被处理器吞掉，表现为“首字出现后滚不动”，点按钮会绕过冷却所以又正常。
+- [x] 修复：`TerminalApp.tsx` 新增 `hasVisibleText`（扫描当前视口是否有非空行）；自动导出条件加上“画面已有可见字符”。启动阶段的滚轮不再消耗冷却，首字出现后的第一次滚轮即可正常自动导出；手动按钮行为不变。
+- [x] 测试：新增“首字出现前滚轮不启动导出、出现后立即可用”回归；三条既有滚轮用例补充“画面已渲染”前提。`terminal-page` 15/15，扩展全量 25 文件 / 190 通过，`tsc --noEmit` 通过；已重新构建 `.output/chrome-mv3`。
+- [ ] 待验证：重新加载扩展后，启动瞬间先滚轮、再等首字出现，确认不点按钮也能立即用滚轮自动导出历史；同时复核 alternate 视图翻页与 8 秒冷却行为未回退。
+
+### 追加修复：桥接关闭强断 WS 导致 Ubuntu/macOS 最终帧丢失（CI/CD 门禁）
+
+- [x] 现象：tag `v2026.11.16.1` 的发布前门禁只有一条失败——`server-embedded-terminal.test.ts` 的“桥接正常关闭等待真实 PTY 退出和 lease 最终清理后才完成”。Ubuntu 在第 483 行 `mirrorIndex === -1`（最终镜像没收到），macOS 在第 484 行 `restoreIndex === -1`（镜像到了、`folder.bound` 没到），Windows 通过；日志里的 `Commit: 15dbd9c…` 是 GitHub runner 镜像版本，不是仓库提交。
+- [x] 根因：`closeRunning()` 在广播完最终镜像/恢复/idle 帧后立即对所有客户端 `terminate()`（`socket.destroy()`）。`ws@8.22` 的 `WebSocketServer.close()` 只等待 clients 归零，不会替服务端优雅关闭；Windows 的 TCP 栈保留了已写入的缓冲，所以本地与 Windows CI 一直绿，POSIX 上客户端可能还没读完就被 RST 丢帧。同一退出流程在不关闭服务器的“重连超时”用例里三平台都通过，证明最终帧的产生与顺序本身正确，差异只在关闭阶段。
+- [x] 修复：`server.ts` 新增 `closeWebSocket()`——OPEN/CLOSING 时发送 1001（going away）关闭帧并等待客户端回应（收到回应说明它已读完之前全部数据），500ms 超时才 `terminate()`；CONNECTING 直接中止。`closeRunning()` 先并发优雅关闭全部客户端，再 `wss.close`/`http.close`，关停时长仍有界。
+- [x] 先 RED 后 GREEN：现有用例新增“控制连接关闭码必须是 1001”断言；修复前 Windows 稳定得到 1006，修复后 1001。该用例连续 30 次全过；bridge 全量 42 文件 / 494 通过 / 1 跳过，扩展 25 文件 / 190 通过，两端 `tsc --noEmit` 通过。
+- [x] 云端复验（第二轮）：Ubuntu/macOS 桥接 40 文件 / 2 跳过、扩展 24 文件 / 188 用例全部通过，关闭修复生效；Windows 暴露另一条独立失败，见下节。
+
+### 追加修复：Windows 包装进程自报身份，移除启动链上的 PowerShell 依赖（第二轮门禁）
+
+- [x] 现象：tag 门禁仅 Windows 失败，`terminal-child.test.ts > src/index.ts 成功路径启用启动日志并按段记录包装耗时` 在 9226ms 后报“包装进程在写 status 前退出（code=1）”，错误码 `TERMINAL_CHILD_IDENTITY`；同一文件 `src/tray.ts` 用例通过。
+- [x] 根因：包装进程写 status 前调用 `readProcessIdentity(process.pid)`，Windows 上再拉起 `powershell.exe Get-Process` 查“自己”。CI 并行满载时 PowerShell 冷启动超过 8s 硬超时，查询返回 null，包装进程直接失败。此前两次分别用 WMI、放宽到 8s 绕过，均为阈值修补，仍会复发。
+- [x] 修复：新增 `selfProcessIdentity()`——Windows 包装进程直接用 `process.execPath` 与 `Date.now() - process.uptime()*1000` 自报身份，启动链不再派生 PowerShell；身份新增 `startedAtSource: "self"`，恢复核对时对自报启动时间允许 30s 初始化偏差，PID 与路径仍严格比较（Windows 单次开机内 PID 递增不复用）。macOS 保持精确 `ps` 查询，内嵌终端身份逻辑不变；`system-terminal` 与 lease 持久化同步透传来源字段。
+- [x] 先 RED 后 GREEN：三条新用例分别因缺少 `selfProcessIdentity`、status/handle 缺少来源字段而失败；修复后定向 3 文件 33 通过 / 1 跳过，真实入口用例连续 5 次 2 通过 / 13 跳过。
+- [x] 全量：桥接 42 文件 / 497 通过 / 1 跳过，`tsc --noEmit` 通过。
+- [x] 已随 `v2026.11.16.3` 推送复验：Ubuntu/macOS 全绿，Windows 暴露另一条独立失败，见下节。
+
+### 追加修复：Windows 身份查询改为 pwsh 优先并放宽测试期限（第三轮门禁）
+
+- [x] 现象：tag `v2026.11.16.3` 三平台门禁只有 Windows 失败，且失败点已不是包装进程——`process-identity.test.ts > 真实 Windows 查询不依赖 WMI，返回当前进程路径与启动时间` 在 5012ms 报 `Test timed out in 5000ms`；同文件其余 41 条通过，Ubuntu/macOS 全部通过（桥接 488/490、扩展 188）。
+- [x] 根因：测试期限取 vitest 默认 5 秒，短于实现自身的 8 秒 `execFile` 超时。CI 满载时 PowerShell 冷启动落在 5–8 秒区间，实现还在等待，测试先判失败；即使放宽测试，单一 `powershell.exe` 也可能超过 8 秒而返回 null。上一轮已把包装进程移出该路径，失败只剩真实查询用例。
+- [x] 修复：`readProcessIdentity` 在 Windows 按 `pwsh.exe`（PowerShell 7，GitHub windows-latest 自带、冷启动通常数百毫秒）→ `powershell.exe` 顺序尝试；只有 shell 本身无法启动（ENOENT/EACCES/EPERM/EINVAL）才回退，进程不存在、权限或超时立即返回 null，避免把等待翻倍；单次查询上限放宽到 15 秒。新增可注入 `execFile` 依赖，三条确定性用例覆盖“优先 pwsh / 缺失回退 / 失败不重复启动”。
+- [x] 先 RED 后 GREEN：三条新用例先因依赖被忽略、注入的 execFile 未被调用而失败（3 failed / 6 passed），实现后定向 9 通过 / 1 跳过。
+- [x] 全量：桥接 42 文件 / 500 通过 / 1 跳过；`tsc --noEmit` 通过。真实查询用例期限 30 秒、不存在 PID 用例 25 秒，均长于实现上限。
+- [ ] 本轮修复待提交、推送 main 并打 tag 触发三平台门禁复验。
+
+### 追加修复：插件终端关闭改为先请 CLI 正常退出，宽限 1 秒再强杀
+
+- [x] 现象：用户在另一个终端打开 Claude Code 时提示“上次没有正确关闭”（实为全屏渲染器上次未完成启动）。此前关闭插件终端时直接 `taskkill /T /F` + `raw.kill()`，CLI 没有机会执行退出清理。
+- [x] 根因（反编译 CLI 2.1.323 字符串与启动逻辑确认）：非环境变量强制全屏时，CLI 会把 `fullscreenBootPending[pid]`（含启动时刻/主机/版本）写入全局配置；只有正常退出的 `process.on("exit")` 钩子会删除该条目。`taskkill`/TerminateProcess 跳过钩子，条目残留，下次启动判为一次 strike，提示“fullscreen renderer didn't finish starting last time”。当 `CLAUDE_CODE_NO_FLICKER=1`（`env_on`）时 CLI 完全跳过该 canary，所以隔离探针必须不带该变量才能复现；插件/系统终端对支持版本都会设置它，因此本轮修复主要保证“任何情况下都不用强杀”，同时覆盖版本探测失败等未注入 NO_FLICKER 的路径。
+- [x] 关键测量：隔离探针（真实 claude.exe + node-pty，独立 `CLAUDE_CONFIG_DIR`/`HOME`、本机假上游）连续多次运行：两次 Ctrl+C（间隔 60/120ms，输入框有空文字均有效）后真实进程在 563–566ms 退出，退出码 0；node-pty 的 `exit` 事件约在 1540ms 触发，是其 `FLUSH_DATA_INTERVAL=1000ms` 清洗定时器造成的观测延迟，不是进程存活时间。因此宽限期取最小整秒 **1 秒**（约 0.44 秒余量）；900ms 间隔的 Ctrl+C 不会触发退出，故两次按键间隔固定 120ms（CLI 的确认窗口约 800ms）。
+- [x] 修复：`bun-pty-backend.ts` 的 `BunPtyProcess.kill()` 在 Windows 改为先向 PTY 写两次 `\x03`，用 `isProcessAlive`（signal 0，仅 ESRCH 判死）每 100ms 轮询真实进程；1 秒内退出则跳过 `taskkill`，仍调用 `raw.kill()` 关闭伪控制台释放句柄；超时才按原逻辑 `taskkill /T /F`。非 Windows 行为不变。新增可注入 `closeGraceMs` / `closeInterruptGapMs` / `isAlive`，默认 1000/120/`isProcessAlive`。
+- [x] 先 RED 后 GREEN：新增 3 条用例（宽限期内自行退出不 taskkill、超时才强杀、进程提前结束不睡满宽限期），修复前 3 failed / 14 passed，修复后 17/17 通过。
+- [x] 全量：桥接 42 文件 / 502 通过 / 1 跳过；`tsc --noEmit` 通过。
+- [x] 真实路径验证：用生产类 `BunPtyBackend` + 真实 claude.exe 在隔离目录关闭，`kill()` 耗时 682–684ms，返回后 OS 进程已不存在，退出码 0（不是强杀的 null），无残留。
+- [x] 系统终端模式保持强杀并记录原因：`taskkill` 不带 `/F` 无法结束控制台进程；历史 WM_CLOSE 探针只让目标退出、未执行 SIGINT 处理器（`signalReceived: false`）；向共享控制台注入 Ctrl+C 会同时命中批处理启动器（弹出 Terminate batch job 提示），需改进程组架构才能安全实现。系统终端正常关窗本身由系统投递控制台关闭事件，不属于本路径。
+- [x] 已提交 `eadb217` 并打 tag `v2026.11.17.1`；`git push` 被会话权限拒绝，需用户手动推送 main 与 tag。
+- [x] 隔离 A/B 复核（`probe-e2e.mts`，生产类 + 真实 CLI，不设 `CLAUDE_CODE_NO_FLICKER`）：优雅关闭 678ms、退出码 0、OS 进程消失、配置中无全屏启动标记残留；对照直杀 525ms、无退出事件（确属强杀）。但两种方式在该隔离 ConPTY 中都没有复现“上次未正确关闭”提示（都未写入全屏启动标记），说明本环境未进入该 canary 路径，提示消失无法在隔离环境端到端证明。
+- [ ] 真机复核（最终验收）：插件终端关闭后 1 秒内退出，再次打开不再提示；已存在的残留提示可能需要先成功完成一次全屏启动（或执行一次 `/tui fullscreen`）才会清除，不能据此判定修复无效。若别的终端仍提示，需确认该提示是否来自插件终端关闭（本桥接对支持版本会设置 `CLAUDE_CODE_NO_FLICKER=1`，该变量本身会让 CLI 跳过此 canary）。
+- [ ] 推送后触发三平台门禁并跟到全绿。
+
+### CI 修复：Windows 发行布局测试在密集 I/O 下超过默认 5 秒
+
+- [x] 门禁 run 118919387501（提交 1198906，tag v2026.11.17.1）：Ubuntu、macOS 通过；Windows 仅 `tests/native-layout.test.ts > macOS 打包显式恢复发行副本的 spawn-helper 执行位` 失败，报 “Test timed out in 5000ms”。
+- [x] 定位证据：该用例同步复制 64MB node-pty 包并逐文件哈希，Windows runner 实测 9543ms；同文件下一条用例 4788ms、macOS 全套 1859ms、本机单次 packagePty 约 0.68 秒——是满载 runner 的 I/O 慢，不是逻辑挂起，用例最终完成。
+- [x] 修复：对该文件 5 条调用 packagePty 的用例显式设置 `{ timeout: 30_000 }`，不改生产逻辑。
+- [x] 本地 11/11 通过、全量 42 文件 / 502 通过 / 1 跳过、`tsc --noEmit` 通过；真实效果需下一轮 Windows CI 验证。
+- [ ] 提交、打新 tag（v2026.11.17.1 已推送不可移动，用 v2026.11.17.2）、推送 main 与 tag，等待三平台门禁全绿。
+
+### 追加修复：聊天输入框不再把输入法的确认回车当成发送
+
+- [x] 现象（macOS）：中文输入法打完字母不选词直接按回车，聊天输入框把“确认候选/落成英文”的回车当成发送；期望第一次回车只落字，第二次才发送。
+- [x] 根因：`InputBox` 的 keydown 只看 `Enter && !shiftKey` 就 preventDefault 并 submit，未判断输入法组合状态；现有 `composingRef` 只用于防止广播草稿覆盖输入，没参与发送判定。
+- [x] 修复：keydown 先计算 `composing = nativeEvent.isComposing || keyCode === 229`（部分浏览器组合中只报 229）；组合中的回车不拦截、不发送，交给输入法确认；Esc 停止生成也复用同一判断。
+- [x] TDD：新增 2 条用例（组合中回车不发送且不 preventDefault；确认后下一次回车才发送），修复前 2 failed / 14 passed，修复后 16/16；扩展全量 25 文件 / 192 通过；`tsc --noEmit` 通过。
+- [x] 终端侧未改：插件自定义按键处理只拦复制/粘贴，回车交回 xterm；xterm 组合逻辑自带 isComposing 判断，理论上不会把确认键发给 PTY，但尚未在 macOS 真机实测。
+- [ ] 提交；本地未推送的 tag v2026.11.17.2 移到新提交；推送 main 与 tag，三平台门禁一并复验。

@@ -7,8 +7,9 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
+import { localApprovedVerificationRoot } from "./verification-root.mjs";
 
-const APPROVED_ROOT = "D:\\ccc-fast-final-verify-20261026\\tool-history-20261027\\dual-terminal-20261110";
+const APPROVED_ROOT = localApprovedVerificationRoot();
 const MAX_REQUEST_BYTES = 4 * 1024 * 1024;
 const CLI_TIMEOUT_MS = 60_000;
 

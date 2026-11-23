@@ -1,8 +1,7 @@
 import { describe, expect, it } from "vitest";
 import * as os from "node:os";
 import * as path from "node:path";
-// @ts-expect-error 路径策略脚本以 JSDoc 记录接口，Vitest 直接执行同一 ESM 文件。
-import { resolvePortableVerificationRoot } from "../scripts/portable-verification-root.mjs";
+import { localApprovedVerificationRoot, resolvePortableVerificationRoot } from "../scripts/verification-root.mjs";
 
 const base = path.resolve(os.tmpdir(), "ccc-portable-root-policy");
 const localApprovedRoot = path.join(base, "approved");
@@ -18,6 +17,16 @@ function options(githubActions = false): {
 } {
   return { localApprovedRoot, runnerTemp, projectRoot, githubActions };
 }
+
+describe("本机验收批准根目录配置", () => {
+  it("CCC_VERIFY_ROOT 显式指定绝对批准目录", () => {
+    expect(localApprovedVerificationRoot({ CCC_VERIFY_ROOT: localApprovedRoot })).toBe(localApprovedRoot);
+  });
+
+  it("拒绝依赖当前工作目录的相对批准目录", () => {
+    expect(() => localApprovedVerificationRoot({ CCC_VERIFY_ROOT: "relative/approved" })).toThrow("绝对路径");
+  });
+});
 
 describe("绿色单文件生命周期验收根目录", () => {
   it("本机只接受原批准目录的严格子目录", () => {

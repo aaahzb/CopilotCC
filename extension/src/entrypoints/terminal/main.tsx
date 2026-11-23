@@ -1,4 +1,3 @@
-import React from "react";
 import { createRoot } from "react-dom/client";
 import TerminalApp from "./TerminalApp";
 import "@xterm/xterm/css/xterm.css";

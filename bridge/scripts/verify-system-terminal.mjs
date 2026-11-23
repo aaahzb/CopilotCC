@@ -9,8 +9,9 @@ import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
+import { localApprovedVerificationRoot } from "./verification-root.mjs";
 
-const APPROVED_ROOT = "D:\\ccc-fast-final-verify-20261026\\tool-history-20261027\\dual-terminal-20261110";
+const APPROVED_ROOT = localApprovedVerificationRoot();
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const EXTENSION_PATH = path.join(PROJECT_ROOT, "extension", ".output", "chrome-mv3");
 const DIST_DIR = path.join(PROJECT_ROOT, "bridge", "dist", "ccc-bridge-win-x64");

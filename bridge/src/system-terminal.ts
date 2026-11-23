@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { probeCliVersion, selectHookTransport, supportsNoFlicker } from "./cli-capabilities";
 import { isProcessAlive } from "./process-identity";
-import { UUID_RE, type TerminalBackend } from "./protocol";
+import type { TerminalBackend } from "./protocol";
 import { terminalChildCommand, terminalHookCommand, type TerminalChildCommand } from "./runtime-entry";
 import type { TerminalChildRequest } from "./terminal-child";
 import { writeTerminalSettings } from "./terminal-hooks";

@@ -3,11 +3,12 @@ import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { localApprovedVerificationRoot } from "./verification-root.mjs";
 
 const root = path.resolve(process.argv[2] ?? "");
 const mode = process.argv[3] ?? "bridge";
 const method = process.argv[4] ?? "wm-close";
-const approved = path.resolve("D:\\ccc-fast-final-verify-20261026\\tool-history-20261027\\dual-terminal-20261110");
+const approved = localApprovedVerificationRoot();
 assert(root.startsWith(`${approved}${path.sep}`), "隔离探针目录必须位于已批准的双终端验收根目录");
 assert(!fs.existsSync(root), "隔离探针目录必须全新，不能覆盖旧证据");
 assert(["bridge", "node", "bun", "csharp"].includes(mode), "探针模式只支持 bridge/node/bun/csharp");

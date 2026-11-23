@@ -1284,27 +1284,27 @@ export async function startServer(deps: ServerDeps): Promise<StartedServer> {
     const openBoundSession = (resumeId?: string): void => {
       if (!terminal?.isActive()) openSession(resumeId);
     };
-    if (forceSessionId === undefined) {
-      const rec = sessions.get(workspace.folder);
-      openBoundSession(rec?.sessionId);
-      broadcast({ type: "folder.bound", ...(reset ? { reset: true } : {}), path: workspace.folder, resumed: Boolean(rec), title: rec?.title ?? "", sessionId: rec?.sessionId ?? null });
-    } else if (forceSessionId === null) {
+    let rec = sessions.get(workspace.folder);
+    let missingSessionId: string | undefined;
+    if (forceSessionId === null) {
       sessions.delete(workspace.folder); // 别名指向"新会话"：清掉映射，下一条消息开全新会话
-      openBoundSession(undefined);
-      broadcast({ type: "folder.bound", ...(reset ? { reset: true } : {}), path: workspace.folder, resumed: false, title: "", sessionId: null });
-    } else {
+      rec = undefined;
+    } else if (forceSessionId !== undefined) {
       const target = listSessions(workspace.folder).find((s) => s.sessionId === forceSessionId);
       if (target) {
-        sessions.set(workspace.folder, { sessionId: target.sessionId, title: target.title, updatedAt: new Date(target.updatedAt).toISOString() });
-        openBoundSession(target.sessionId);
-        broadcast({ type: "folder.bound", ...(reset ? { reset: true } : {}), path: workspace.folder, resumed: true, title: target.title, sessionId: target.sessionId });
+        rec = { sessionId: target.sessionId, title: target.title, updatedAt: new Date(target.updatedAt).toISOString() };
+        sessions.set(workspace.folder, rec);
       } else {
         // 别名指向的会话已被删除：退回新会话，别名的 sessionId 由 syncCurrentAlias 顺带修正
         sessions.delete(workspace.folder);
-        openBoundSession(undefined);
-        broadcast({ type: "folder.bound", ...(reset ? { reset: true } : {}), path: workspace.folder, resumed: false, title: "", sessionId: null });
-        broadcast({ type: "folder.error", message: `会话 ${forceSessionId} 在该文件夹下没有转录，已改为开新会话` }); // 必须在 folder.bound 之后发：客户端收 bound 会清屏，先发警告会被抹掉
+        rec = undefined;
+        missingSessionId = forceSessionId;
       }
+    }
+    openBoundSession(rec?.sessionId);
+    broadcast({ type: "folder.bound", ...(reset ? { reset: true } : {}), path: workspace.folder, resumed: Boolean(rec), title: rec?.title ?? "", sessionId: rec?.sessionId ?? null });
+    if (missingSessionId !== undefined) {
+      broadcast({ type: "folder.error", message: `会话 ${missingSessionId} 在该文件夹下没有转录，已改为开新会话` });
     }
     pushSessionList();
     syncCurrentAlias();

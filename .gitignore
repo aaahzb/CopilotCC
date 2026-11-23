@@ -4,8 +4,16 @@ dist/
 .wxt/
 *.log
 
-# 用户截图，永不提交
-/捕获.JPG
+# 用户截图、交接材料、本地产物与临时探针，永不提交
+/捕获*.JPG
+/*.zip
+/*.zip.sha256
+/venv/
+/MACOS-DEBUG-START-HERE.md
+/extension/tests/tmp-*
 
 # 本地编译的 mac 托盘助手（build-tray-mac.sh 产出）
 bridge/tray/bin/
+
+# Claude Code 本地代理工作树，永不提交
+/.claude/worktrees/

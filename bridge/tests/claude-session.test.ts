@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
-import { createClaudeSession, GUARD_PREFIX, parseEnvDump, parseShellProbeOutput, wellKnownClaudePaths, type SessionEvents, type SessionRuntimeInfo } from "../src/claude-session";
+import { createClaudeSession, parseEnvDump, parseShellProbeOutput, wellKnownClaudePaths, type SessionEvents, type SessionRuntimeInfo } from "../src/claude-session";
+import { GUARD_PREFIX } from "../src/tool-format";
 import * as path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 

@@ -1,0 +1,25 @@
+{
+  "name": "copilotcc",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "npm --prefix bridge start",
+    "dev:bridge": "npm --prefix bridge run dev",
+    "dev:extension": "npm --prefix extension run dev",
+    "sync:protocol": "node scripts/sync-protocol.mjs",
+    "check:generated": "node scripts/sync-protocol.mjs --check",
+    "check:docs": "node scripts/check-docs.mjs",
+    "test:scripts": "node --test scripts/*.test.mjs",
+    "test:bridge": "npm --prefix bridge test",
+    "test:extension": "npm --prefix extension test",
+    "test": "npm run test:scripts && npm run test:bridge && npm run test:extension",
+    "typecheck": "npm --prefix bridge run typecheck && npm --prefix extension run typecheck",
+    "build": "npm --prefix extension run build",
+    "check": "npm run check:generated && npm run check:docs && npm run test:scripts",
+    "verify": "node scripts/verify.mjs"
+  }
+}

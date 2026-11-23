@@ -4,7 +4,7 @@ import { loadSettings, saveSettings, pushFolderHistory, takePendingQuote, loadRu
 import { decideAttach, composeMessage, deriveAttachKind, isCliSlashCommand, PAGE_RICHNESS_CAPS, type PageSnapshot } from "../../lib/attach-policy";
 import type { PendingUpload } from "../../lib/upload-files";
 import { snapshotActiveTab, snapshotTab } from "../../lib/page-extract";
-import type { ServerMessage, PermissionModeSetting, SessionInfo, AliasInfo, AskRequest, InteractionRequest, InteractionRecord, TimelineItem, TerminalPublicState } from "../../lib/protocol";
+import type { ServerMessage, PermissionModeSetting, SessionInfo, AliasInfo, AskRequest, InteractionRequest, InteractionRecord, TimelineItem, TerminalPublicState, ElicitationResponse, UserDialogResponse } from "../../lib/protocol";
 import type { PairingInfo } from "../../lib/pairing";
 import { TokenGate } from "../../components/TokenGate";
 import { AliasBar } from "../../components/AliasBar";
@@ -801,6 +801,11 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
     connect(next); // connect 会同步设置 settingsRef，必须传入刚合并的内存镜像而非存储快照
   }
 
+  function respondInteraction(requestId: string, response: ElicitationResponse | UserDialogResponse): void {
+    if (terminalControlledRef.current) return;
+    clientRef.current?.send({ type: "chat.interaction.respond", requestId, response });
+  }
+
   if (!settings) return <div className="loading">加载中…</div>;
   if (showGate || !settings.token || authError) {
     return (
@@ -912,24 +917,14 @@ export default function App(props: { popupTabId?: number | null; popupAliasId?: 
           key={request.requestId}
           request={request}
           disabled={terminalControlled}
-          onRespond={(requestId, response) => {
-            if (terminalControlledRef.current) return;
-            clientRef.current?.send({
-              type: "chat.interaction.respond", requestId, response,
-            });
-          }}
+          onRespond={respondInteraction}
         />
       ) : (
         <ElicitationCard
           key={request.requestId}
           request={request}
           disabled={terminalControlled}
-          onRespond={(requestId, response) => {
-            if (terminalControlledRef.current) return;
-            clientRef.current?.send({
-              type: "chat.interaction.respond", requestId, response,
-            });
-          }}
+          onRespond={respondInteraction}
         />
       ))}
       <InputBox

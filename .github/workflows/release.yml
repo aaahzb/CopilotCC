@@ -32,6 +32,8 @@ jobs:
           cache-dependency-path: |
             bridge/package-lock.json
             extension/package-lock.json
+      - name: 仓库：生成副本 / 文档链接 / 脚本测试
+        run: npm run check
       - name: 桥接：类型检查 + 单测 + 预编译件架构审计
         working-directory: bridge
         run: |
@@ -49,7 +51,7 @@ jobs:
 
   build-win:
     name: 构建 Windows x64 绿色单文件
-    needs: test
+    needs: [test, build-ext]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -57,6 +59,16 @@ jobs:
         with:
           node-version: 22
       - uses: oven-sh/setup-bun@v2
+      - uses: actions/download-artifact@v4
+        with:
+          name: extension
+          path: ${{ runner.temp }}/ccc-release-extension
+      - name: 解压最终扩展 zip 供单文件真实 Chrome 验收
+        run: |
+          mkdir -p extension/.output/chrome-mv3
+          # Git Bash 自带 GNU tar 不读 zip；显式使用 Windows 10+ 系统 bsdtar。
+          "C:/Windows/System32/tar.exe" -xf "$RUNNER_TEMP"/ccc-release-extension/ccc-extension-*-chrome.zip -C extension/.output/chrome-mv3
+          test -f extension/.output/chrome-mv3/manifest.json
       - name: 安装依赖并按 tag 写入版本号
         working-directory: bridge
         run: |
@@ -83,6 +95,15 @@ jobs:
           node scripts/run-portable-launcher-tests.mjs
           node scripts/build-portable-exe.mjs
           node scripts/verify-portable-exe.mjs --root "$RUNNER_TEMP/ccc-portable-release-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+      - name: 最终单文件与扩展 zip：真实 Chrome 离线验收
+        working-directory: bridge
+        env:
+          CCC_VERIFY_ROOT: ${{ runner.temp }}
+        run: |
+          mkdir -p "$CCC_VERIFY_ROOT/bin"
+          cp "$RUNNER_TEMP/ccc-pty-fake-win.exe" "$CCC_VERIFY_ROOT/bin/fake-claude.exe"
+          node scripts/verify-embedded-terminal.mjs \
+            --root "$RUNNER_TEMP/ccc-portable-chrome-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --portable
       - uses: actions/upload-artifact@v4
         with:
           name: pty-route-windows

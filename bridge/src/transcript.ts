@@ -4,7 +4,7 @@ import type { FileHandle } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { EffortLevelSetting, HistoryMessage, SessionInfo, AskQuestion, InteractionRecord, TimelineItem } from "./protocol";
-import { GUARD_PREFIX, summarizeTool } from "./claude-session";
+import { GUARD_PREFIX, summarizeTool, toolResultText } from "./tool-format";
 import { diagSlow } from "./startup-diagnostics";
 
 /**
@@ -418,46 +418,6 @@ function findLocalCommands(entries: TranscriptEntry[]): {
   return { activities, consumed };
 }
 
-/** 将转录中的结构化补丁追加到普通结果文本，历史回放与实时显示同一份完整 diff。 */
-function appendStructuredPatch(output: string, fallback: unknown): string {
-  if (!fallback || typeof fallback !== "object" || Array.isArray(fallback)) return output;
-  const patches = (fallback as { structuredPatch?: unknown }).structuredPatch;
-  if (!Array.isArray(patches)) return output;
-  const lines = patches.flatMap((patch) => {
-    if (!patch || typeof patch !== "object") return [];
-    const p = patch as { oldStart?: unknown; oldLines?: unknown; newStart?: unknown; newLines?: unknown; lines?: unknown };
-    if (![p.oldStart, p.oldLines, p.newStart, p.newLines].every((value) => typeof value === "number") || !Array.isArray(p.lines)) return [];
-    return [
-      `@@ -${p.oldStart},${p.oldLines} +${p.newStart},${p.newLines} @@`,
-      ...p.lines.filter((line): line is string => typeof line === "string"),
-    ];
-  });
-  return lines.length > 0 ? [output, lines.join("\n")].filter(Boolean).join("\n\n") : output;
-}
-
-/**
- * 将转录 tool_result 内容转为完整文本；结构化内容使用缩进 JSON，不做长度截断。
- * @param content tool_result.content
- * @param fallback 同条 user 记录的 toolUseResult；补充 structuredPatch，无内容时作为完整回退
- * @returns 完整输出文本
- */
-function transcriptResultText(content: unknown, fallback: unknown): string {
-  if (content === undefined || content === null) {
-    if (typeof fallback === "string") return fallback;
-    return fallback === undefined || fallback === null ? "" : JSON.stringify(fallback, null, 2);
-  }
-  const output = typeof content === "string" ? content
-    : Array.isArray(content) ? content.map((block) => {
-      if (typeof block === "string") return block;
-      if (block && typeof block === "object" && (block as { type?: string }).type === "text") {
-        return String((block as { text?: unknown }).text ?? "");
-      }
-      return JSON.stringify(block, null, 2);
-    }).filter(Boolean).join("\n")
-      : JSON.stringify(content, null, 2);
-  return appendStructuredPatch(output, fallback);
-}
-
 /**
  * 按 tool_use_id 配对普通工具结果；调用和结果即使跨记录也能合并。
  * @param entries 按转录顺序排列的记录
@@ -471,7 +431,7 @@ function findToolResults(entries: TranscriptEntry[]): Map<string, { output: stri
     for (const block of entry.message.content) {
       if (block.type !== "tool_result" || typeof block.tool_use_id !== "string") continue;
       results.set(block.tool_use_id, {
-        output: transcriptResultText(block.content, entry.toolUseResult),
+        output: toolResultText(block.content, entry.toolUseResult),
         isError: block.is_error === true,
         structured: entry.toolUseResult,
         resolvedAt: Number.isFinite(parsedTime) ? parsedTime : 0,

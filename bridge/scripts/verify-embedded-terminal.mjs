@@ -10,8 +10,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import WebSocket, { WebSocketServer } from "ws";
 import { resolveRealCli, runRealCli, startRealCliUpstream } from "./real-cli-test-fixture.mjs";
+import { localApprovedVerificationRoot } from "./verification-root.mjs";
 
-const APPROVED_ROOT = "D:\\ccc-fast-final-verify-20261026\\tool-history-20261027\\dual-terminal-20261110";
+const APPROVED_ROOT = localApprovedVerificationRoot();
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const EXTENSION_PATH = path.join(PROJECT_ROOT, "extension", ".output", "chrome-mv3");
 const DIST_DIR = path.join(PROJECT_ROOT, "bridge", "dist", "ccc-bridge-win-x64");
@@ -1456,8 +1457,13 @@ function trackTerminalConsole(handle, leaseId) {
   assert(status.leaseId === leaseId && Number.isInteger(status.pid) && status.pid > 0,
     "隔离终端包装身份无效");
   const identity = processIdentity(status.pid);
+  const expectedStart = Date.parse(status.startedAt);
+  const actualStart = identity ? Date.parse(identity.startedAt) : Number.NaN;
+  const startMatches = status.startedAtSource === "self"
+    ? Math.abs(actualStart - expectedStart) <= 30_000
+    : actualStart === expectedStart;
   assert(identity && identity.executable.toLowerCase() === String(status.executable).toLowerCase()
-    && Date.parse(identity.startedAt) === Date.parse(status.startedAt), "隔离终端包装身份复核失败");
+    && startMatches, "隔离终端包装身份复核失败");
   ownedProcesses.set(status.pid, { role: "system-terminal", leaseId, ...identity });
   terminalWindows.add(handle);
   terminalConsolePids.set(handle, status.pid);
