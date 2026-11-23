@@ -289,6 +289,8 @@ public static class WindowProbe {
   [DllImport("user32.dll")] static extern short VkKeyScan(char character);
   [DllImport("user32.dll")] static extern uint MapVirtualKey(uint code, uint mapType);
   [DllImport("user32.dll", SetLastError=true)] static extern bool PostMessage(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam);
+  [DllImport("user32.dll", SetLastError=true)] static extern IntPtr SendMessageTimeout(
+    IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam, uint flags, uint timeout, out IntPtr result);
   [DllImport("user32.dll")] static extern IntPtr GetProcessWindowStation();
   [DllImport("user32.dll", SetLastError=true)] static extern IntPtr OpenInputDesktop(uint flags, bool inherit, uint access);
   [DllImport("user32.dll")] static extern IntPtr GetThreadDesktop(uint threadId);
@@ -417,9 +419,10 @@ public static class WindowProbe {
       consoleWindow = GetConsoleWindow();
       if (consoleWindow == IntPtr.Zero) throw new Exception("GetConsoleWindow(close) returned zero");
     } finally { FreeConsole(); }
-    // 先脱离目标 Console，再仅向已核对的隔离 Console 窗口请求正常关闭。
-    if (!PostMessage(consoleWindow, 0x0010, IntPtr.Zero, IntPtr.Zero)) {
-      throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "PostMessage(console WM_CLOSE) failed");
+    // 先脱离目标 Console，再同步请求已核对的隔离 Console 正常关闭；SMTO_ABORTIFHUNG 防止卡死探针。
+    IntPtr messageResult;
+    if (SendMessageTimeout(consoleWindow, 0x0010, IntPtr.Zero, IntPtr.Zero, 0x0002, 3000, out messageResult) == IntPtr.Zero) {
+      throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "SendMessageTimeout(console WM_CLOSE) failed");
     }
     return new JavaScriptSerializer().Serialize(new { sent=true, consolePid=pid, isolatedConsole=true, target=consoleWindow.ToInt64().ToString() });
   }

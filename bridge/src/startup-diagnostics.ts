@@ -29,6 +29,22 @@ export function diagLog(text: string): void {
 }
 
 /**
+ * 同步记录控制台关闭信号；信号后事件循环若停止，也不能丢失这一条定位证据。
+ * @param text 不含敏感信息的诊断文本
+ */
+export function diagLogSync(text: string): void {
+  const dir = logDir;
+  if (!dir) return;
+  try {
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    fs.appendFileSync(path.join(dir, "startup-diag.log"), `${new Date().toISOString()} [diag] ${text}\n`,
+      { encoding: "utf8", mode: 0o600 });
+  } catch {
+    // 诊断写入失败不影响正常关闭。
+  }
+}
+
+/**
  * 记录一段同步耗时；低于阈值不写，避免日志噪音。
  * @param label 阶段名（不得含用户内容）
  * @param startedAt Date.now() 起点
