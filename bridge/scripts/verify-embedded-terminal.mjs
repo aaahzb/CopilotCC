@@ -1973,10 +1973,19 @@ async function resizePtyTo132x36(leaseId) {
   const height = Math.max(620, Math.round(info.bounds.height + (36 - initial.rows) * metrics.rowHeight));
   evidence.observations.resizeAttempts = [{ from: { cols: initial.cols, rows: initial.rows },
     before: { width: info.bounds.width, height: info.bounds.height }, requested: { width, height } }];
-  await browserCdp.send("Browser.setWindowBounds", { windowId: info.windowId, bounds: { width, height } });
+  await browserCdp.send("Browser.setWindowBounds", {
+    windowId: info.windowId, bounds: { left: 0, top: 0, width, height },
+  });
   // 目标帧可能在起始索引记录前到达；最终 /size 会独立排除已经过时的历史尺寸。
-  const target = await waitFor(() => resizeEvents()
-    .find((event) => event.cols === 132 && event.rows === 36) ?? null, "真实 PTY 132×36 resize", 15000);
+  let target;
+  try {
+    target = await waitFor(() => resizeEvents()
+      .find((event) => event.cols === 132 && event.rows === 36) ?? null, "真实 PTY 132×36 resize", 15000);
+  } catch (error) {
+    const latest = resizeEvents().at(-1) ?? null;
+    const actual = await browserCdp.send("Browser.getWindowForTarget", { targetId: terminalTargetId });
+    throw new Error(`${error.message}；实际窗口=${JSON.stringify(actual.bounds)}；最近 resize=${JSON.stringify(latest)}`);
+  }
   evidence.observations.resize = { cols: target.cols, rows: target.rows, attempts: 1 };
 }
 
