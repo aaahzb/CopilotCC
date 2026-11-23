@@ -4,13 +4,18 @@ import { GUARD_PREFIX } from "../src/tool-format";
 import * as path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 
+type AskRequest = Parameters<SessionEvents["onAsk"]>[0];
+
 /** 收集事件的 events 桩 */
-function stubEvents(): SessionEvents & { log: Array<[string, ...unknown[]]>; runtime: SessionRuntimeInfo[] } {
+function stubEvents(): SessionEvents & { log: Array<[string, ...unknown[]]>; runtime: SessionRuntimeInfo[]; ask: Promise<AskRequest> } {
   const log: Array<[string, ...unknown[]]> = [];
   const runtime: SessionRuntimeInfo[] = [];
+  let resolveAsk!: (request: AskRequest) => void;
+  const ask = new Promise<AskRequest>((resolve) => { resolveAsk = resolve; });
   return {
     log,
     runtime,
+    ask,
     onRuntime: (info) => runtime.push(info),
     onDelta: (t) => log.push(["delta", t]),
     onTool: (n, s, toolUseId, input) => log.push(["tool", `${n}:${s}`, ...(toolUseId ? [{ toolUseId, input }] : [])]),
@@ -19,7 +24,7 @@ function stubEvents(): SessionEvents & { log: Array<[string, ...unknown[]]>; run
     onDone: (s, info) => log.push(["done", s, info]),
     onError: (m) => log.push(["error", m]),
     onPermission: (r) => log.push(["permission", r]),
-    onAsk: (r) => log.push(["ask", r]),
+    onAsk: (r) => { log.push(["ask", r]); resolveAsk(r); },
     onSessionId: (id) => log.push(["sid", id]),
     onAborted: () => log.push(["aborted"]),
     onInteractionSettled: (r) => log.push(["interactionSettled", r]),
@@ -69,19 +74,17 @@ describe("AskUserQuestion 提问", () => {
     const { fn, calls } = fakeQuery([INIT, DONE]);
     const ev = stubEvents();
     const s = createClaudeSession("D:\\notes", { permissionMode, events: ev, queryFn: fn });
-    await new Promise((r) => setTimeout(r, 50));
-    const canUseTool = calls[0].options.canUseTool as (n: string, i: Record<string, unknown>) => Promise<{ behavior: string; updatedInput?: Record<string, unknown>; message?: string }>;
+    expect(calls).toHaveLength(1);
+    const canUseTool = calls[0]!.options.canUseTool as (n: string, i: Record<string, unknown>) => Promise<{ behavior: string; updatedInput?: Record<string, unknown>; message?: string }>;
     return { s, ev, canUseTool };
   }
 
   it("auto 模式也转发提问，答案回填 updatedInput.answers 且原参数保留", async () => {
     const { s, ev, canUseTool } = await setup("auto");
     const p = canUseTool("AskUserQuestion", ASK_INPUT);
-    await new Promise((r) => setTimeout(r, 20));
-    const askLog = ev.log.find(([k]) => k === "ask") as [string, { requestId: string; questions: unknown[] }];
-    expect(askLog).toBeTruthy();
-    expect(askLog[1].questions).toEqual(ASK_INPUT.questions);
-    s.respondAsk(askLog[1].requestId, { "选哪个？": "A" });
+    const req = await ev.ask;
+    expect(req.questions).toEqual(ASK_INPUT.questions);
+    s.respondAsk(req.requestId, { "选哪个？": "A" });
     const res = await p;
     expect(res.behavior).toBe("allow");
     expect(res.updatedInput?.answers).toEqual({ "选哪个？": "A" });
@@ -98,8 +101,7 @@ describe("AskUserQuestion 提问", () => {
       }],
     };
     const pending = canUseTool("AskUserQuestion", richInput);
-    await vi.waitFor(() => expect(ev.log.some(([kind]) => kind === "ask")).toBe(true));
-    const req = (ev.log.find(([kind]) => kind === "ask") as [string, { requestId: string; questions: Array<{ options: Array<{ preview?: string }> }> }])[1];
+    const req = await ev.ask;
     expect(req.questions[0]!.options[0]!.preview).toBe("A 的预览\n第二行");
     s.respondAsk(req.requestId, { "选哪个？": "A" });
     await pending;
@@ -109,9 +111,8 @@ describe("AskUserQuestion 提问", () => {
   it("用户未作答（null）按拒绝释放", async () => {
     const { s, ev, canUseTool } = await setup();
     const p = canUseTool("AskUserQuestion", ASK_INPUT);
-    await new Promise((r) => setTimeout(r, 20));
-    const askLog = ev.log.find(([k]) => k === "ask") as [string, { requestId: string }];
-    s.respondAsk(askLog[1].requestId, null);
+    const req = await ev.ask;
+    s.respondAsk(req.requestId, null);
     expect((await p).behavior).toBe("deny");
     await s.close();
   });
@@ -127,8 +128,7 @@ describe("AskUserQuestion 提问", () => {
   it("close() 释放挂起提问并上报已取消记录", async () => {
     const { s, ev, canUseTool } = await setup();
     const p = canUseTool("AskUserQuestion", ASK_INPUT);
-    await new Promise((r) => setTimeout(r, 20));
-    const req = (ev.log.find(([kind]) => kind === "ask") as [string, { requestId: string }])[1];
+    const req = await ev.ask;
     await s.close();
     expect((await p).behavior).toBe("deny");
     expect(ev.log).toContainEqual(["interactionSettled", { requestId: req.requestId, outcome: "cancelled", decider: "close" }]);

@@ -425,8 +425,8 @@ function permissionSummary(toolName: string, input: Record<string, unknown>): st
  */
 export function createClaudeSession(cwd: string, opts: SessionOptions): ClaudeSessionLike {
   const events = opts.events;
-  ensureShellEnvFallback(); // 密钥/代理变量兜底（须在 SDK spawn 之前补进 process.env）
   const queryFn = opts.queryFn ?? (sdkQuery as unknown as NonNullable<SessionOptions["queryFn"]>);
+  if (!opts.queryFn) ensureShellEnvFallback(); // 密钥/代理变量兜底（须在 SDK spawn 之前补进 process.env）
   let closed = false;
   let sessionId = opts.resumeId ?? "";
   let rtModel: string | undefined; // init 上报的实际模型
@@ -1082,7 +1082,8 @@ export function createClaudeSession(cwd: string, opts: SessionOptions): ClaudeSe
     }
   }
 
-  const cliPath = resolveClaudeExecutable(); // 编译分发形态下 SDK 默认解析必崩，显式给真值
+  // 编译分发必须显式给真值；测试注入 SDK 时不探测真实 CLI。
+  const cliPath = opts.queryFn ? undefined : resolveClaudeExecutable();
   const stream = queryFn({
     prompt: userStream(),
     options: {
