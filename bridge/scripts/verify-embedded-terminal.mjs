@@ -3025,5 +3025,10 @@ try {
     evidence.error = `${evidence.error ? `${evidence.error}; ` : ""}定向清理复核失败`;
   }
   saveEvidence();
+  if (!evidence.ok && process.env.GITHUB_ACTIONS === "true") {
+    const message = String(evidence.error || "未知验收错误")
+      .replaceAll("%", "%25").replaceAll("\r", "%0D").replaceAll("\n", "%0A");
+    console.error(`::error title=真实 Chrome 离线验收::${message}`);
+  }
   if (evidence.ok) console.log(`EMBEDDED_TERMINAL_VERIFICATION_OK=${resultFile}`);
 }
