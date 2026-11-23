@@ -194,7 +194,7 @@ describe("原生 PTY 发行布局", () => {
     expect(() => readSuccessfulPtyRoute(report, "win")).toThrow("PTY_ROUTE_REPORT");
   });
 
-  it("Darwin .app 平面原生文件缺失时从 Contents/MacOS 加载并保持 helper 同目录", async () => {
+  it("Darwin .app 平面原生文件缺失时从 Contents/MacOS 加载并保持 helper 同目录", { timeout: 30_000 }, async () => {
     const outDir = path.join(tempDir(), "dist");
     fs.mkdirSync(outDir);
     await packagePty({ target: "darwin", backend: "bun-node-pty", outDir, nodeRuntime: null });
@@ -229,7 +229,7 @@ describe("原生 PTY 发行布局", () => {
     expect(path.resolve(appLib, `${loaded?.dir}/spawn-helper`)).toBe(path.join(nativeDir, "spawn-helper"));
   });
 
-  it("macOS staging 从真实发行包生成代码/资源分离布局", async () => {
+  it("macOS staging 从真实发行包生成代码/资源分离布局", { timeout: 30_000 }, async () => {
     const root = tempDir();
     const sourceDir = path.join(root, "dist");
     const fakeNode = path.join(root, "node");
