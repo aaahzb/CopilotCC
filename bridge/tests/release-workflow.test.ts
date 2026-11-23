@@ -64,4 +64,16 @@ describe("最终 Windows 发行产物验收", () => {
   it("CI 的 Windows 门禁同样运行最终单文件真实 Chrome", () => {
     expect(ciWorkflow).toMatch(/name: Windows：最终绿色单文件与扩展真实 Chrome 离线验收[\s\S]*?node scripts\/verify-embedded-terminal\.mjs \\\n\s+--root [^\n]+ --portable/);
   });
+
+  it("CI 与 Release 在真实 Chrome 验收前提供足够的 Windows 显示区域", () => {
+    const displayCommand = "Set-DisplayResolution -Width 1920 -Height 1080 -Force";
+    for (const workflow of [ciWorkflow, releaseWorkflow]) {
+      expect(workflow).toMatch(
+        /shell: powershell\n\s+run: Set-DisplayResolution -Width 1920 -Height 1080 -Force$/m,
+      );
+      expect(workflow.indexOf(displayCommand)).toBeGreaterThanOrEqual(0);
+      expect(workflow.indexOf("node scripts/verify-embedded-terminal.mjs"))
+        .toBeGreaterThan(workflow.indexOf(displayCommand));
+    }
+  });
 });

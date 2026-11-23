@@ -107,6 +107,11 @@ jobs:
           npm test
           npm run build
 
+      - name: Windows：设置真实 Chrome 验收显示分辨率
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: Set-DisplayResolution -Width 1920 -Height 1080 -Force
+
       - name: Windows：最终绿色单文件与扩展真实 Chrome 离线验收
         if: runner.os == 'Windows'
         working-directory: bridge

@@ -95,6 +95,10 @@ jobs:
           node scripts/run-portable-launcher-tests.mjs
           node scripts/build-portable-exe.mjs
           node scripts/verify-portable-exe.mjs --root "$RUNNER_TEMP/ccc-portable-release-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+      - name: Windows：设置真实 Chrome 验收显示分辨率
+        shell: powershell
+        run: Set-DisplayResolution -Width 1920 -Height 1080 -Force
+
       - name: 最终单文件与扩展 zip：真实 Chrome 离线验收
         working-directory: bridge
         env:
