@@ -1,6 +1,7 @@
 /** 单实例守卫：runtime.json 记录 {pid, port}——入口启动前查、启动后写、退出时删 */
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { diagLog } from "./startup-diagnostics";
 
 /** 运行态信息（~/.ccc-bridge/runtime.json） */
 export interface RuntimeInfo {
@@ -90,8 +91,13 @@ export function releaseRuntimeOnExit(dir: string, onShutdown: () => Promise<void
     process.on(sig, () => {
       if (shuttingDown) return;
       shuttingDown = true;
-      void Promise.resolve().then(onShutdown).catch(() => {}).then(() => {
+      diagLog(`shutdown.signal ${sig}`);
+      void Promise.resolve().then(onShutdown).catch(() => {
+        diagLog("shutdown.server rejected");
+      }).then(() => {
+        diagLog("shutdown.server settled");
         releaseRuntime(dir);
+        diagLog("shutdown.runtime released");
         process.exit(0);
       });
     });
