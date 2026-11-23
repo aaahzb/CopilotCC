@@ -33,7 +33,7 @@ afterEach(async () => {
   for (const server of servers.splice(0)) await server.close();
   if (previousConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
   else process.env.CLAUDE_CONFIG_DIR = previousConfigDir;
-  for (const dir of tempDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+  for (const dir of tempDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 30 });
 });
 
 interface Collector {
