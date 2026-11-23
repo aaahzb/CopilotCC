@@ -3,16 +3,25 @@ import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import WebSocket from "ws";
 import { localApprovedVerificationRoot } from "./verification-root.mjs";
 
 const root = path.resolve(process.argv[2] ?? "");
 const mode = process.argv[3] ?? "bridge";
 const method = process.argv[4] ?? "wm-close";
+const scenario = process.argv[5] ?? "idle";
 const approved = localApprovedVerificationRoot();
 assert(root.startsWith(`${approved}${path.sep}`), "隔离探针目录必须位于已批准的双终端验收根目录");
 assert(!fs.existsSync(root), "隔离探针目录必须全新，不能覆盖旧证据");
 assert(["bridge", "node", "bun", "csharp"].includes(mode), "探针模式只支持 bridge/node/bun/csharp");
-assert(method === "wm-close", "最小探针只保留已验证的 wm-close 正常关闭路径");
+assert(["wm-close", "ctrl-break-group"].includes(method), "探针关闭方式只支持 wm-close/ctrl-break-group");
+assert(["idle", "sdk-child"].includes(scenario), "探针场景只支持 idle/sdk-child");
+assert(scenario === "idle" || mode === "bridge", "sdk-child 场景只支持真实桥接");
+const fakeCli = process.env.CCC_PROBE_FAKE_CLI;
+if (scenario === "sdk-child") {
+  assert(fakeCli && path.isAbsolute(fakeCli) && fs.existsSync(fakeCli),
+    "sdk-child 场景需要 CCC_PROBE_FAKE_CLI 指向隔离假 CLI");
+}
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const dist = path.resolve(scriptDir, "..", "dist", "ccc-bridge-win-x64");
 const tools = path.join(root, "tools");
@@ -56,6 +65,7 @@ const signalFile = path.join(work, "signal.txt");
 const targetScript = path.join(work, "signal-target.cjs");
 fs.writeFileSync(targetScript, `const fs = require("fs");
 process.on("SIGINT", () => { fs.writeFileSync(process.argv[3], "SIGINT"); process.exit(0); });
+process.on("SIGBREAK", () => { fs.writeFileSync(process.argv[3], "SIGBREAK"); process.exit(0); });
 setInterval(() => {}, 1000);
 fs.writeFileSync(process.argv[2], "ready");
 `, "utf8");
@@ -71,7 +81,20 @@ if (mode === "csharp") {
 }
 const child = spawn(probe, ["console-start-wait", targetExe, work, targetArguments], {
   cwd: tools,
-  env: { ...process.env, CCC_BRIDGE_HOME: home, CLAUDE_CONFIG_DIR: path.join(root, "claude-config") },
+  env: {
+    ...process.env,
+    CCC_BRIDGE_HOME: home,
+    CLAUDE_CONFIG_DIR: path.join(root, "claude-config"),
+    ...(scenario === "sdk-child" ? {
+      CLAUDE_CODE_PATH: fakeCli,
+      ANTHROPIC_BASE_URL: "http://127.0.0.1:9",
+      ANTHROPIC_API_KEY: "mock-local-only",
+      ANTHROPIC_AUTH_TOKEN: "mock-local-only",
+      NO_PROXY: "127.0.0.1,localhost",
+      HTTP_PROXY: "", HTTPS_PROXY: "", ALL_PROXY: "",
+      CCC_FAKE_CLI_DELAY_STREAM_INIT_MS: "0",
+    } : {}),
+  },
   detached: false,
   windowsHide: true,
   stdio: ["ignore", "pipe", "ignore"],
@@ -85,7 +108,45 @@ child.stdout.on("data", (chunk) => {
   const firstLine = launcherOutput.split(/\r?\n/, 1)[0];
   bridgePid = JSON.parse(firstLine).pid;
 });
-const result = { mode, method, launcherPid: child.pid, sent: false, exited: false, signalReceived: null, error: null };
+
+/** @param {() => unknown} condition 条件 @param {string} label 等待目标 @returns {Promise<unknown>} 条件真值 */
+async function waitFor(condition, label) {
+  const deadline = Date.now() + 15000;
+  while (Date.now() < deadline) {
+    const value = condition();
+    if (value) return value;
+    await delay(50);
+  }
+  throw new Error(`等待超时：${label}`);
+}
+
+/** 通过真实 WS 驱动隔离 SDK 子进程完成一轮聊天，保留子进程后测试同 Console 正常关闭。 */
+async function completeSdkChat() {
+  const runtime = JSON.parse(fs.readFileSync(path.join(home, "runtime.json"), "utf8"));
+  const config = JSON.parse(fs.readFileSync(path.join(home, "config.json"), "utf8"));
+  const socket = new WebSocket(`ws://127.0.0.1:${runtime.port}/ws?token=${encodeURIComponent(config.token)}`);
+  control = socket;
+  const inbox = [];
+  socket.on("message", (data) => inbox.push(JSON.parse(String(data))));
+  await new Promise((resolve, reject) => { socket.once("open", resolve); socket.once("error", reject); });
+  socket.send(JSON.stringify({ type: "client.ready" }));
+  socket.send(JSON.stringify({ type: "folder.bind", path: work, reset: true }));
+  await waitFor(() => inbox.some((message) => message.type === "folder.bound" && message.path === work),
+    "隔离 SDK 文件夹绑定");
+  socket.send(JSON.stringify({ type: "chat.send", text: "NATIVE_FAILURE_CHAT_ACCEPTED" }));
+  await waitFor(() => inbox.some((message) => message.type === "chat.done"), "隔离 SDK 聊天完成");
+  const eventLog = path.join(root, "claude-config", "fake-cli-events.jsonl");
+  const event = await waitFor(() => fs.readFileSync(eventLog, "utf8").split(/\r?\n/)
+    .filter(Boolean).map((line) => JSON.parse(line))
+    .filter((item) => item.kind === "start").at(-1),
+  "隔离 SDK 子进程身份");
+  socket.close();
+  return event.pid;
+}
+
+let sdkChildPid = null;
+let control = null;
+const result = { mode, method, scenario, launcherPid: child.pid, sent: false, exited: false, signalReceived: null, error: null };
 try {
   const desktop = spawnSync(probe, ["desktop"], { cwd: tools, encoding: "utf8", windowsHide: true, timeout: 5000 });
   assert(desktop.status === 0, desktop.stderr || "读取输入桌面失败");
@@ -102,7 +163,12 @@ try {
   assert(Number.isInteger(bridgePid) && bridgePid !== child.pid && bridgePid !== process.pid,
     "控制台启动器未返回独立的目标 PID");
   result.bridgePid = bridgePid;
-  const closeArgs = ["console-close", String(bridgePid), String(process.pid)];
+  if (scenario === "sdk-child") {
+    sdkChildPid = await completeSdkChat();
+    result.sdkChildPid = sdkChildPid;
+  }
+  const closeCommand = method === "ctrl-break-group" ? "console-break-group" : "console-close";
+  const closeArgs = [closeCommand, String(bridgePid), String(process.pid)];
   const interrupted = spawnSync(probe, closeArgs, {
     cwd: tools, encoding: "utf8", windowsHide: true, timeout: 5000,
   });
@@ -124,15 +190,22 @@ try {
   } else {
     assert(result.signalReceived, "目标退出但未记录控制台关闭事件");
   }
+  if (sdkChildPid !== null) {
+    for (let attempt = 0; attempt < 50 && alive(sdkChildPid); attempt += 1) await delay(100);
+    result.sdkChildExited = !alive(sdkChildPid);
+    assert(result.sdkChildExited, "桥接正常关闭后隔离 SDK 子进程仍存活");
+  }
 } catch (error) {
   result.error = error instanceof Error ? error.message : String(error);
   throw error;
 } finally {
+  if (control && control.readyState !== WebSocket.CLOSED) control.terminate();
   if (bridgePid !== null && alive(bridgePid)) process.kill(bridgePid);
+  if (sdkChildPid !== null && alive(sdkChildPid)) process.kill(sdkChildPid);
   if (child.exitCode === null && child.signalCode === null) child.kill();
   for (let attempt = 0; attempt < 30 && child.exitCode === null && child.signalCode === null; attempt += 1) await delay(100);
   result.bridgePid = bridgePid;
-  result.remaining = [child.pid, bridgePid].filter((pid) => pid !== null && alive(pid));
+  result.remaining = [child.pid, bridgePid, sdkChildPid].filter((pid) => pid !== null && alive(pid));
   fs.writeFileSync(path.join(root, mode === "bridge" ? "console-interrupt.json" : `signal-${mode}.json`), JSON.stringify(result, null, 2), "utf8");
 }
 console.log(JSON.stringify(result));

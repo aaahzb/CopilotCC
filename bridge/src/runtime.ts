@@ -78,16 +78,18 @@ export function releaseRuntime(dir: string): void {
 }
 
 /**
- * 注册退出清理钩子（exit / SIGINT / SIGTERM / SIGHUP）。
+ * 注册退出清理钩子（exit / SIGINT / SIGTERM / SIGHUP，Windows 另含 SIGBREAK）。
  * 信号退出先等待服务释放终端等子资源，再删除 runtime.json 并结束进程。
- * Windows 关闭 Console 窗口会转为 SIGHUP，必须与 Ctrl+C 走同一异步清理路径。
+ * Windows 的 Console 关闭与 Ctrl+Break 必须与 Ctrl+C 走同一异步清理路径。
  * @param dir 配置目录
  * @param onShutdown 正常信号退出时等待的服务关闭操作
  */
 export function releaseRuntimeOnExit(dir: string, onShutdown: () => Promise<void> = async () => {}): void {
   let shuttingDown = false;
   process.on("exit", () => releaseRuntime(dir));
-  for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+  const signals: NodeJS.Signals[] = ["SIGINT", "SIGTERM", "SIGHUP"];
+  if (process.platform === "win32") signals.push("SIGBREAK");
+  for (const sig of signals) {
     process.on(sig, () => {
       if (shuttingDown) return;
       shuttingDown = true;

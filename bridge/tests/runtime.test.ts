@@ -55,7 +55,9 @@ describe("正常退出清理", () => {
     vi.restoreAllMocks();
   });
 
-  it.each(["SIGTERM", "SIGHUP"] as const)("%s 等待异步服务关闭后才释放 runtime 并退出，重复信号只关闭一次", async (signal) => {
+  it.each([
+    "SIGTERM", "SIGHUP", ...(process.platform === "win32" ? ["SIGBREAK"] : []),
+  ])("%s 等待异步服务关闭后才释放 runtime 并退出，重复信号只关闭一次", async (signal) => {
     const handlers = new Map<string, () => void>();
     vi.spyOn(process, "on").mockImplementation(((event: string, listener: () => void) => {
       handlers.set(event, listener);

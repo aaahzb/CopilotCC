@@ -1,6 +1,6 @@
 /**
  * 阶段 B/C 双终端端到端验收：完整发行目录或绿色单文件 + 真实 Chrome/xterm + 真实 PTY + 隔离假 CLI。
- * 用法：node bridge/scripts/verify-embedded-terminal.mjs --root <已批准根目录下的新目录> [--portable] [--negative-control attach]
+ * 用法：node bridge/scripts/verify-embedded-terminal.mjs --root <已批准根目录下的新目录> [--portable] [--negative-control attach] [--skip-clipboard]
  */
 import { spawn, spawnSync, execFileSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
@@ -28,6 +28,11 @@ const EXTERNAL_SID = "22222222-2222-4222-8222-222222222222";
 const token = randomBytes(24).toString("base64url");
 const realCliResumeOnly = process.argv.includes("--real-cli-resume-only");
 const portable = process.argv.includes("--portable");
+const skipClipboard = process.argv.includes("--skip-clipboard");
+const CLIPBOARD_EVIDENCE = new Set([
+  "realClipboardMultilineCopy", "ctrlCCopiesSelection", "ctrlShiftCCopiesSelection",
+  "buttonPasteMultilineChinese", "ctrlShiftVPasteMultilineChinese",
+]);
 const realCliPath = realCliResumeOnly ? resolveRealCli() : null;
 const REAL_MARKERS = {
   initialUser: "REAL_CLI_ORIGINAL_USER",
@@ -291,6 +296,7 @@ public static class WindowProbe {
   [DllImport("user32.dll", SetLastError=true)] static extern bool PostMessage(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam);
   [DllImport("user32.dll", SetLastError=true)] static extern IntPtr SendMessageTimeout(
     IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam, uint flags, uint timeout, out IntPtr result);
+  [DllImport("kernel32.dll", SetLastError=true)] static extern bool GenerateConsoleCtrlEvent(uint ctrlEvent, uint processGroupId);
   [DllImport("user32.dll")] static extern IntPtr GetProcessWindowStation();
   [DllImport("user32.dll", SetLastError=true)] static extern IntPtr OpenInputDesktop(uint flags, bool inherit, uint access);
   [DllImport("user32.dll")] static extern IntPtr GetThreadDesktop(uint threadId);
@@ -310,8 +316,8 @@ public static class WindowProbe {
     var startup = new STARTUPINFO(); startup.cb = Marshal.SizeOf(startup);
     var command = new StringBuilder("\"" + executable + "\" " + arguments);
     PROCESS_INFORMATION process;
-    // 独占新 Console：只向该 Console 广播；不创建默认禁用 Ctrl+C 的新进程组。
-    if (!CreateProcess(executable, command, IntPtr.Zero, IntPtr.Zero, false, 0x10 | 0x400,
+    // 独占新 Console 和进程组：Ctrl+Break 只投递到该组，验收父进程与用户 Console 都不在组内。
+    if (!CreateProcess(executable, command, IntPtr.Zero, IntPtr.Zero, false, 0x10 | 0x200 | 0x400,
       IntPtr.Zero, workingDirectory, ref startup, out process)) {
       int error = Marshal.GetLastWin32Error();
       throw new System.ComponentModel.Win32Exception(error, "CreateProcess(console) failed: " + error);
@@ -400,9 +406,10 @@ public static class WindowProbe {
     } finally { if (input != IntPtr.Zero) CloseHandle(input); }
   }
 
-  static string CloseConsole(uint pid, uint verifierPid) {
+  static string CloseConsole(uint pid, uint verifierPid, bool ctrlBreak) {
     FreeConsole();
-    IntPtr consoleWindow;
+    IntPtr consoleWindow = IntPtr.Zero;
+    string method = ctrlBreak ? "CTRL_BREAK_EVENT" : "WM_CLOSE";
     try {
       if (!AttachConsole(pid)) {
         int error = Marshal.GetLastWin32Error();
@@ -414,17 +421,27 @@ public static class WindowProbe {
       var attached = new List<uint>();
       for (int i = 0; i < count; i++) attached.Add(buffer[i]);
       if (!attached.Contains(pid) || attached.Contains(verifierPid)) {
-        throw new Exception("Unsafe console ownership for WM_CLOSE: target=" + pid + ", verifier=" + verifierPid);
+        throw new Exception("Unsafe console ownership for close: target=" + pid + ", verifier=" + verifierPid);
       }
-      consoleWindow = GetConsoleWindow();
-      if (consoleWindow == IntPtr.Zero) throw new Exception("GetConsoleWindow(close) returned zero");
+      if (ctrlBreak) {
+        // 文档只支持 CTRL_C/CTRL_BREAK；调用方必须仍附着目标 Console，非零 PID 定向到独立进程组。
+        if (!GenerateConsoleCtrlEvent(1, pid)) {
+          int error = Marshal.GetLastWin32Error();
+          throw new System.ComponentModel.Win32Exception(error, "GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT) failed: " + error);
+        }
+      } else {
+        consoleWindow = GetConsoleWindow();
+        if (consoleWindow == IntPtr.Zero) throw new Exception("GetConsoleWindow(close) returned zero");
+      }
     } finally { FreeConsole(); }
-    // 先脱离目标 Console，再同步请求已核对的隔离 Console 正常关闭；SMTO_ABORTIFHUNG 防止卡死探针。
-    IntPtr messageResult;
-    if (SendMessageTimeout(consoleWindow, 0x0010, IntPtr.Zero, IntPtr.Zero, 0x0002, 3000, out messageResult) == IntPtr.Zero) {
-      throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "SendMessageTimeout(console WM_CLOSE) failed");
+    if (!ctrlBreak) {
+      // 先脱离目标 Console，再同步请求已核对的隔离 Console 正常关闭；SMTO_ABORTIFHUNG 防止卡死探针。
+      IntPtr messageResult;
+      if (SendMessageTimeout(consoleWindow, 0x0010, IntPtr.Zero, IntPtr.Zero, 0x0002, 3000, out messageResult) == IntPtr.Zero) {
+        throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "SendMessageTimeout(console WM_CLOSE) failed");
+      }
     }
-    return new JavaScriptSerializer().Serialize(new { sent=true, consolePid=pid, isolatedConsole=true, target=consoleWindow.ToInt64().ToString() });
+    return new JavaScriptSerializer().Serialize(new { sent=true, method, consolePid=pid, isolatedConsole=true, target=consoleWindow.ToInt64().ToString() });
   }
 
   static IntPtr UniqueTrayWindow(int pid) {
@@ -532,8 +549,8 @@ public static class WindowProbe {
     if (args[0] == "console-send" && args.Length == 3) {
       Console.Write(SendConsole(uint.Parse(args[1]), args[2])); return 0;
     }
-    if (args[0] == "console-close" && args.Length == 3) {
-      Console.Write(CloseConsole(uint.Parse(args[1]), uint.Parse(args[2]))); return 0;
+    if ((args[0] == "console-close" || args[0] == "console-break-group") && args.Length == 3) {
+      Console.Write(CloseConsole(uint.Parse(args[1]), uint.Parse(args[2]), args[0] == "console-break-group")); return 0;
     }
     if (args[0] == "tray-find" && args.Length == 3) {
       Console.Write(new JavaScriptSerializer().Serialize(FindTray(uint.Parse(args[1]), args[2]))); return 0;
@@ -1262,12 +1279,12 @@ async function stopBridge(graceful = false) {
         method: "tray-menu-exit", bridgePid: targetPid, trayPid: tray.pid, command: result.command,
       };
     } else if (graceful) {
-      const result = JSON.parse(execFileSync(windowProbe, ["console-close", String(targetPid), String(process.pid)], {
+      const result = JSON.parse(execFileSync(windowProbe, ["console-break-group", String(targetPid), String(process.pid)], {
         encoding: "utf8", windowsHide: true, timeout: 5000,
       }));
-      assert(result.sent === true && result.isolatedConsole === true && result.consolePid === targetPid,
-        "未确认定向隔离 Console 正常关闭");
-      evidence.observations.gracefulClose = { method: "WM_CLOSE", bridgePid: targetPid };
+      assert(result.sent === true && result.isolatedConsole === true && result.consolePid === targetPid
+        && result.method === "CTRL_BREAK_EVENT", "未确认定向隔离 Console 正常关闭");
+      evidence.observations.gracefulClose = { method: "CTRL_BREAK_EVENT", bridgePid: targetPid };
     } else {
       const owned = ownedProcesses.get(targetPid);
       const actual = processIdentity(targetPid);
@@ -1589,7 +1606,7 @@ function assertRequiredEvidence() {
     "abnormalRestartNeverKillsUnknownIdentity",
     "nativeFailureLeavesChatAndSystemTerminalUsable", "systemAndEmbeddedMutuallyExclusive",
     "commandHooksWithoutFailure", "compiledExeOutsideProjectTree",
-  ];
+  ].filter((name) => !skipClipboard || !CLIPBOARD_EVIDENCE.has(name));
   if (portable) {
     evidence.portableSingleFileOnly = fs.readdirSync(appDir).length === 1
       && fs.readdirSync(appDir)[0] === "CopilotCC.exe";
@@ -1816,7 +1833,6 @@ async function readTestClipboard() {
 
 /** @returns 无返回值；真实系统剪贴板、多行中文、按钮和快捷键全链路验收 */
 async function verifyTerminalClipboardAndShortcuts() {
-  await verifyTerminalToolbar();
   // 首先覆盖系统剪贴板，之后任何 readText 都不会读取用户原内容。
   await seedTestClipboard("CCC_CLIPBOARD_TEST_RESET");
   await selectFixedTerminalOutput();
@@ -2111,7 +2127,9 @@ async function run() {
   evidence.imeCompositionNotDuplicated = transcriptEntries(INITIAL_SID)
     .filter((entry) => entry.type === "user" && entry.message?.content === "组合输入").length === 1;
   await screenshot(terminalPage, "embedded-chinese-ime.png");
-  await verifyTerminalClipboardAndShortcuts();
+  await verifyTerminalToolbar();
+  if (skipClipboard) evidence.observations.clipboard = { skipped: true, reason: "--skip-clipboard" };
+  else await verifyTerminalClipboardAndShortcuts();
 
   await sendTerminalLine("/ticks on");
   await waitOutputMarker("tick-3", "正常会话连续 tick", 8000);
@@ -2444,7 +2462,7 @@ async function run() {
   evidence.pagehideClosesOwnedPty = true;
   await verifyReadonly(false);
 
-  // 定向 WM_CLOSE 必须经过 server.close()；强杀只用于后续异常恢复夹具，不能冒充正常关闭。
+  // 定向 Ctrl+Break 必须经过 server.close()；强杀只用于后续异常恢复夹具，不能冒充正常关闭。
   const fifth = await openFreshEmbedded(generatedSid);
   await stopBridge(true);
   await waitPidExit(fifth.owned.pid);
